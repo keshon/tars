@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/prompts"
+	"github.com/keshon/tars/internal/tools"
 )
 
 // planTemperature is deliberately low: structured output wants stability,
@@ -532,10 +534,29 @@ func missingCommand(cmd string) string {
 		return ""
 	}
 	if _, err := exec.LookPath(first); err != nil {
-		return fmt.Sprintf("starts with %q, which is not an executable on this machine — "+
+		return fmt.Sprintf("starts with %q, which is not an executable on this machine - "+
 			"the check would fail whatever the work did. Use a command this host has", first)
 	}
-	return ""
+	// LookPath succeeding only proves a file with that name exists — stale
+	// shims (pipx/uv wrappers pointing at deleted interpreters) pass it
+	// and die at start. Prove it runs with a side-effect-free --version
+	// probe; a broken binary fails the check whatever the work did, the
+	// same as a missing one.
+	//
+	// Validation must stay fast, so the probe carries its own short
+	// timeout rather than the caller's context.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch res := tools.ProbeCommand(ctx, first, "--version"); res.Status {
+	case "ok":
+		return ""
+	case "missing":
+		// Raced with an uninstall between LookPath and exec — report the
+		// probe's wording, which names the fix.
+		return fmt.Sprintf("starts with %q: %s", first, res.Hint)
+	default:
+		return fmt.Sprintf("starts with %q, which %s", first, res.Hint)
+	}
 }
 
 // shellBuiltins are the constructs LookPath cannot find because they have

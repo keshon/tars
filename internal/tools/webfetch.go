@@ -20,6 +20,11 @@ const (
 	webfetchTimeout    = 30 * time.Second
 )
 
+// webfetchTransport overrides the HTTP transport when non-nil. It is a
+// test seam: unit tests serve canned bodies for public-looking URLs that
+// must validate but can never be dialed in a sandbox.
+var webfetchTransport http.RoundTripper
+
 // Webfetch fetches a URL and returns its text. Unlike check_url (status +
 // 512B prefix for reachability), this extracts readable content so the
 // model can reason about a page. HTML is stripped to text; other content
@@ -57,14 +62,22 @@ func (t Webfetch) Run(ctx context.Context, args json.RawMessage) (string, error)
 
 	ctx, cancel := context.WithTimeout(ctx, webfetchTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, in.URL, nil)
+	clean, err := normalizePublicHTTPURL(in.URL)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clean, nil)
 	if err != nil {
 		return "", fmt.Errorf("bad url: %w", err)
 	}
 	req.Header.Set("User-Agent", "tars-agent/1.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/*;q=0.8,*/*;q=0.1")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if webfetchTransport != nil {
+		client = &http.Client{Transport: webfetchTransport}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch failed: %w", err)
 	}

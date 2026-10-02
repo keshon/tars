@@ -25,6 +25,7 @@ var checks = map[string]func(*testing.T, *repo){
 	"cgo-free":            checkCgoFree,
 	"skill-paths":         checkSkillPaths,
 	"structured-output":   checkStructuredOutput,
+	"cli-flags":           checkCliFlags,
 }
 
 func TestConventions(t *testing.T) {
@@ -404,6 +405,24 @@ func checkCgoFree(t *testing.T, r *repo) {
 	for _, f := range r.goFiles {
 		if cgoImport.MatchString(r.read(t, f)) {
 			t.Errorf("%s imports C%s", r.rel(f), r.rule("cgo-free"))
+		}
+	}
+}
+
+// flagDecl matches a flag registration and captures its name:
+// flag.String("backend", ...) or flag.Bool("yes", ...).
+var flagDecl = regexp.MustCompile(`flag\.(?:String|Bool|Int|Float64|Duration)\("([a-z0-9-]+)"`)
+
+// checkCliFlags keeps docs/cli.md complete: every flag cmd/agent
+// registers must be named there (as `-name`), or the reference rots one
+// flag at a time — which is how five flags went undocumented unnoticed.
+// The check reads names, not help text: wording stays a human judgment.
+func checkCliFlags(t *testing.T, r *repo) {
+	src := r.readPath(t, "cmd/agent/main.go")
+	cli := r.readPath(t, "docs/cli.md")
+	for _, m := range flagDecl.FindAllStringSubmatch(src, -1) {
+		if !strings.Contains(cli, "`-"+m[1]+"`") && !strings.Contains(cli, "`-"+m[1]+" ") {
+			t.Errorf("docs/cli.md never names -%s\n%s", m[1], r.rule("cli-flags"))
 		}
 	}
 }

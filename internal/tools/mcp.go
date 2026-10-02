@@ -307,8 +307,15 @@ func (t *MCPTool) Run(ctx context.Context, args json.RawMessage) (string, error)
 		return out, fmt.Errorf("mcp %s/%s reported an error", t.server, t.def.Name)
 	}
 	if len(out) > mcpResultMax {
-		out = agent.TruncateMiddle(out, mcpResultMax) +
-			fmt.Sprintf("\n...(mcp result truncated at %d bytes)", mcpResultMax)
+		// Structured output reduces; prose truncates. A blind middle-cut
+		// through a JSON array leaves half an element to parse, so try
+		// the reducer first and fall back to truncation for non-JSON.
+		if reduced := ReduceJSON([]byte(out), mcpResultMax); reduced != out {
+			out = reduced + "\n(reduced from a larger MCP result — refine the query for detail)"
+		} else {
+			out = agent.TruncateMiddle(out, mcpResultMax) +
+				fmt.Sprintf("\n...(mcp result truncated at %d bytes)", mcpResultMax)
+		}
 	}
 	if out == "" {
 		return "(empty result)", nil

@@ -15,6 +15,18 @@ TARS relies on trustworthy skills, extensions and repositories. Files like
 and this cannot be protected against — only contained with approvals and
 isolation.
 
+## Network probes
+
+`check_url` and `webfetch` are GET-only and send no credentials: no
+`Authorization`, `Cookie`, or `Proxy-Authorization` header leaves the
+process (asserted by `TestHealthProbes_SendNoCredentials`), and the child
+environment is scrubbed before any shell runs. `webfetch` refuses
+non-public URLs before dialing (loopback, intranet names, non-global IPs
+including legacy `inet_aton` spellings); `check_url` permits loopback
+because probing a just-started dev server is its job, and returns only a
+status plus a 512-byte prefix. A health probe must never become a
+credential or intranet oracle: any new network tool keeps these rules.
+
 ## Out of scope
 
 - Local code execution or sandboxing (intentionally no sandbox).

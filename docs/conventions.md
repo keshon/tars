@@ -112,6 +112,10 @@ multi-line concatenation.
 exists in `eval/prompts/`. A probe whose write-up has been renamed or deleted
 is a criterion nobody can check the intent of.
 
+**[enforced: cli-flags]** Every flag `cmd/agent` registers is named in
+`docs/cli.md` (as `` `-name` ``). A reference that rots one flag at a time
+is how five flags went undocumented unnoticed.
+
 **[invariant]** A probe's pass criteria come from its write-up in
 `eval/prompts/`, not from what seems reasonable while writing the JSON. A
 criterion invented at the probe is a number the harness will one day fail on

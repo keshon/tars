@@ -46,7 +46,11 @@ func (CheckURL) Run(ctx context.Context, args json.RawMessage) (string, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, in.URL, nil)
+	clean, err := normalizeLoopbackURL(in.URL)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clean, nil)
 	if err != nil {
 		return "", fmt.Errorf("bad url: %w", err)
 	}

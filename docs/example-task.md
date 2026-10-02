@@ -1,3 +1,12 @@
+# Example task (manual runs)
+
+A sample task for trying the agent by hand, e.g.
+`go run ./cmd/agent "build the landing page in docs/example-task.md"`.
+Not part of the eval suite — it lives here instead of the repo root so
+the root stays free of fixtures.
+
+---
+
 # Test task: mini landing page
 
 Build a minimal static landing page under `./site` with exactly three files.
