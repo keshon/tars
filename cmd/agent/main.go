@@ -80,7 +80,7 @@ func main() {
 	denyFlag := flag.String("deny", "", "comma-separated tool=pattern rules to deny, e.g. \"run_shell=rm *,read_file=.env\" (wins over -allow)")
 	pureFlag := flag.Bool("pure", false, "ignore project config for permissions; use built-in defaults plus -allow/-deny only")
 	streamFlag := flag.Bool("stream", false, "stream response tokens live (openai/llama backends only; koboldcpp falls back to unary)")
-	mcpFlag := flag.String("mcp", "", "MCP servers: \"name=cmd args...;name2=cmd2\" (stdio JSON-RPC, tools appear as mcp__name__tool)")
+	mcpFlag := flag.String("mcp", "", "MCP servers: \"name=cmd args...;name2=https://host/mcp\" (stdio JSON-RPC or Streamable HTTP, tools appear as mcp__name__tool)")
 	forkFlag := flag.String("fork", "", "history file to branch from: loads its transcript but writes to a fresh task id")
 	revertFlag := flag.Bool("revert", false, "restore tracked workspace files to git HEAD and exit (untracked files are kept)")
 	planFlag := flag.Bool("plan", false, "plan mode: read-only tools, propose a plan and change nothing")
@@ -636,16 +636,24 @@ func emitStepEvent(emitter *events.Emitter, label string, step int, msg llm.Mess
 }
 
 // discoverMCP starts each -mcp server and returns its tools and clients.
-// A server that fails to answer risks nothing: it is reported and
-// skipped, and the run continues with the rest. Close every client when
-// the run ends so no server process outlives it.
-func discoverMCP(ctx context.Context, spec string) ([]agent.Tool, []*tools.MCPClient) {
+// A spec entry is either name=command args... (stdio) or name=https://...
+// (Streamable HTTP). A server that fails to answer risks nothing: it is
+// reported and skipped, and the run continues with the rest. Close every
+// client when the run ends so no server process outlives it.
+func discoverMCP(ctx context.Context, spec string) ([]agent.Tool, []MCPCloser) {
 	names, commands, argss := tools.ParseMCPFlag(spec)
 	var out []agent.Tool
-	var clients []*tools.MCPClient
+	var clients []MCPCloser
 	for i, name := range names {
 		dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		mcpTools, mcpClient, err := tools.StartMCP(dctx, name, commands[i], argss[i]...)
+		var mcpTools []agent.Tool
+		var mcpClient MCPCloser
+		var err error
+		if tools.IsMCPURL(commands[i]) {
+			mcpTools, mcpClient, err = tools.StartMCPHTTP(dctx, name, commands[i])
+		} else {
+			mcpTools, mcpClient, err = tools.StartMCP(dctx, name, commands[i], argss[i]...)
+		}
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mcp %s: %v (skipped)\n", name, err)
@@ -656,6 +664,12 @@ func discoverMCP(ctx context.Context, spec string) ([]agent.Tool, []*tools.MCPCl
 		clients = append(clients, mcpClient)
 	}
 	return out, clients
+}
+
+// MCPCloser is either MCP transport: stdio kills its process, HTTP ends
+// its session. Both are best-effort by design.
+type MCPCloser interface {
+	Close()
 }
 
 // loadHistory reads a transcript from state.json, a .jsonl session log,
