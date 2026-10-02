@@ -33,7 +33,8 @@ first and let it fail, then record the baseline.
 ## Package layers
 
 **[enforced: package-layers]** `internal/llm`, `internal/prompts`,
-`internal/workspace` and `internal/permission` import no other internal package.
+`internal/workspace`, `internal/permission` and `internal/events` import no other
+internal package.
 `internal/session` imports only `internal/llm`.
 `internal/agent` imports only `internal/llm`, `internal/prompts`,
 `internal/permission` and `internal/session`. This is what lets `internal/tools`

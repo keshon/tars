@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -57,6 +58,27 @@ type Server struct {
 	// ExtraHeaders are sent on every chat request alongside auth, e.g.
 	// the referrer headers OpenRouter asks for. Empty by default.
 	ExtraHeaders map[string]string
+
+	mu             sync.Mutex
+	totalPrompt  int
+	totalGen     int
+	totalCalls   int
+	totalRetries int
+}
+
+// UsageTotals returns cumulative tokens across all Chat/Stream calls.
+func (c *Server) UsageTotals() (prompt, generated, calls int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalPrompt, c.totalGen, c.totalCalls
+}
+
+func (c *Server) recordUsage(promptTokens, completionTokens int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.totalPrompt += promptTokens
+	c.totalGen += completionTokens
+	c.totalCalls++
 }
 
 // Default sampling. These are sent on every request so that nothing is
@@ -363,13 +385,19 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 		})
 	}
 
+	usage := Usage{
+		PromptTokens:     wresp.Usage.PromptTokens,
+		CompletionTokens: wresp.Usage.CompletionTokens,
+	}
+	c.recordUsage(usage.PromptTokens, usage.CompletionTokens)
+	p, g, n := c.UsageTotals()
+	c.logDebug("[%s] --- usage (this call: %d prompt + %d generated; run totals: %d prompt + %d generated over %d calls) ---\n\n",
+		time.Now().Format(time.RFC3339), usage.PromptTokens, usage.CompletionTokens, p, g, n)
+
 	return ChatResponse{
 		Message:      out,
 		FinishReason: wresp.Choices[0].FinishReason,
-		Usage: Usage{
-			PromptTokens:     wresp.Usage.PromptTokens,
-			CompletionTokens: wresp.Usage.CompletionTokens,
-		},
+		Usage:        usage,
 	}, nil
 }
 

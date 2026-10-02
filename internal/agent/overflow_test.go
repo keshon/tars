@@ -53,3 +53,25 @@ func TestRun_RecoversFromOverflowByCompacting(t *testing.T) {
 		t.Fatalf("calls=%d, want 2 (overflow must not retry)", c.calls)
 	}
 }
+
+// Probe 18 failed live on exactly this shape: the first model call of a
+// fresh run overflowed, history held only system+task (nothing to
+// compact), and the run died instead of continuing with the nudge.
+func TestRun_OverflowOnFirstCallContinues(t *testing.T) {
+	c := &overflowOnce{}
+	a := New(Config{
+		Client:           c,
+		Tools:            NewRegistry(echoToolStub{}),
+		System:           "sys",
+		ContextLimit:     1000,
+		CompactKeepSteps: 2,
+		SkipVerify:       true,
+	})
+	got, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "recovered" {
+		t.Fatalf("got %q, want recovered", got)
+	}
+}

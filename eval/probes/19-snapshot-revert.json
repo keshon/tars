@@ -1,0 +1,22 @@
+{
+  "prompt": "eval/prompts/19-snapshot-revert.md",
+  "task": "create a new file revert-me.txt containing the text eval-snapshot",
+  "tier": "signal",
+  "seed": "eval/fixtures",
+  "max_steps": 8,
+  "snapshot_revert": true,
+  "verify": [
+    {
+      "type": "content_contains",
+      "path": "revert-me.txt",
+      "contains": "eval-snapshot"
+    }
+  ],
+  "trace": [
+    {
+      "tool": "write_file",
+      "mode": "required",
+      "why": "the file must actually be written, not described"
+    }
+  ]
+}

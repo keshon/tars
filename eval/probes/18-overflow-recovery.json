@@ -1,0 +1,27 @@
+{
+  "prompt": "eval/prompts/18-overflow-recovery.md",
+  "task": "read hello.txt and answer with its exact contents",
+  "tier": "signal",
+  "seed": "eval/fixtures",
+  "max_steps": 8,
+  "inject_overflow_once": true,
+  "answer": [
+    {
+      "regex": "Hello from eval fixtures",
+      "mode": "required",
+      "why": "the file's exact contents; the run must survive the injected overflow and still do the trivial task"
+    }
+  ],
+  "trace": [
+    {
+      "tool": "read_file",
+      "mode": "required",
+      "why": "the contents come from the tool, not from the model"
+    },
+    {
+      "tool": "write_file",
+      "mode": "forbidden",
+      "why": "a read-only question changes nothing"
+    }
+  ]
+}

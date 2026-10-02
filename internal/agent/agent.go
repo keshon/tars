@@ -417,14 +417,22 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		if err != nil {
 			// A full context is recoverable: compact aggressively and let
 			// the next step continue with the summary. Anything else is
-			// infrastructure — mission treats it as resumable errInfra.
-			if llm.IsOverflow(err) && len(history) > 2 {
-				keep := a.cfg.CompactKeepSteps
-				if keep <= 0 {
-					keep = 8
+			// infrastructure - mission treats it as resumable errInfra.
+			//
+			// The step-0 case matters: the first call can overflow (a huge
+			// task plus system prompt on a small window), when history holds
+			// nothing compactable. Then there is nothing to drop, but the
+			// run must still continue with the nudge rather than die — probe
+			// 18 failed exactly this way before the guard was split.
+			if llm.IsOverflow(err) {
+				if len(history) > 2 {
+					keep := a.cfg.CompactKeepSteps
+					if keep <= 0 {
+						keep = 8
+					}
+					history = compactHistory(history, keep/2)
+					a.saveState(history)
 				}
-				history = compactHistory(history, keep/2)
-				a.saveState(history)
 				history = append(history, llm.Message{
 					Role:    llm.RoleUser,
 					Content: prompts.OverflowRecovered,

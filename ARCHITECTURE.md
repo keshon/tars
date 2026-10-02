@@ -26,6 +26,7 @@ internal/tools     concrete tools: file, shell, search, process, delegation,
                    webfetch, MCP stdio client
 internal/roles     the four kinds of agent this project builds
 internal/permission allow/ask/deny policy for tool calls (leaf package)
+internal/events    JSONL run/step event output for -mode json
 internal/session   append-only JSONL session log next to state.json
 internal/snapshot  git diff capture and revert around runs
 internal/mission   plan, ledger, workers, checks, replan, review

@@ -38,6 +38,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -49,6 +50,7 @@ import (
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
 	"github.com/keshon/tars/internal/roles"
+	"github.com/keshon/tars/internal/snapshot"
 	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
 )
@@ -107,7 +109,21 @@ type Probe struct {
 	// after twenty steps of thrashing is worth knowing about.
 	MaxSteps int `json:"max_steps"`
 
+	// TimeoutSec bounds one probe run. Zero takes the default.
 	TimeoutSec int `json:"timeout_sec"`
+
+	// InjectOverflowOnce fails the run's first model call with a synthetic
+	// context-overflow error, then passes through to the live backend. It
+	// scores the recovery path in agent.run — compact and continue — which
+	// no live backend produces on demand. Without recovery the run would
+	// die on step 0 with a backend failure.
+	InjectOverflowOnce bool `json:"inject_overflow_once,omitempty"`
+
+	// SnapshotRevert git-initializes the throwaway workspace, captures a
+	// snapshot before the run, and after scoring asserts Revert restores
+	// the pre-run tree exactly. The agent's own verify checks run first
+	// against the modified tree; the revert assertion runs last.
+	SnapshotRevert bool `json:"snapshot_revert,omitempty"`
 }
 
 // TraceCheck asserts that a tool was, or was not, used.
@@ -199,6 +215,126 @@ func (c *countingClient) Chat(ctx context.Context, req llm.ChatRequest) (llm.Cha
 }
 
 func (c *countingClient) reached() bool { return atomic.LoadInt64(&c.calls) > 0 }
+
+// overflowInjector fails its first Chat with a synthetic overflow, then
+// delegates. Probe 18's way of scoring the recovery path: the injected
+// error is indistinguishable from a backend 400-context-exceeded, so the
+// run exercises the real compact-and-continue code in agent.run.
+type overflowInjector struct {
+	inner llm.Client
+	fired int64
+}
+
+func (o *overflowInjector) Chat(ctx context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {
+	if atomic.CompareAndSwapInt64(&o.fired, 0, 1) {
+		return llm.ChatResponse{}, &llm.APIError{
+			Status: 400, StatusText: "bad request",
+			Body:     "exceeds the context window",
+			Overflow: true,
+		}
+	}
+	return o.inner.Chat(ctx, req)
+}
+
+// gitInit turns the throwaway workspace into a committed repo for probe
+// 19. Identity is passed per-command so the probe never depends on the
+// operator's global git config.
+func gitInit(dir string) error {
+	for _, a := range [][]string{
+		{"init"},
+		{"add", "-A"},
+		{"-c", "user.email=tars-eval@localhost", "-c", "user.name=tars-eval", "commit", "-qm", "seed"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, a...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", a[0], err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// treeSnapshot records every file under dir (except .git) for the
+// post-revert comparison.
+func treeSnapshot(dir string) map[string]string {
+	out := map[string]string{}
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return nil
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if parts[0] == ".git" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		out[filepath.ToSlash(rel)] = string(data)
+		return nil
+	})
+	return out
+}
+
+// checkSnapshotRevert captures the pre-run diff, reverts, and asserts the
+// tree matches preRun exactly. Untracked leftovers the agent created must
+// be gone; seed files must be byte-identical.
+func checkSnapshotRevert(dir string, preRun map[string]string, snapPath string) []string {
+	var out []string
+	diff, err := snapshot.Diff(dir)
+	if err != nil {
+		return []string{"snapshot: could not capture pre-run diff: " + err.Error()}
+	}
+	if strings.TrimSpace(diff) == "" {
+		return []string{"snapshot: pre-run diff is empty — the agent changed nothing, so revert proves nothing"}
+	}
+	if err := os.WriteFile(snapPath, []byte(diff), 0o644); err != nil {
+		return []string{"snapshot: write diff: " + err.Error()}
+	}
+	if err := snapshot.Revert(dir); err != nil {
+		return []string{"snapshot: revert failed: " + err.Error()}
+	}
+	// snapshot.Revert deliberately keeps untracked files — in production a
+	// model-created file must never be silently deleted. The eval
+	// workspace is throwaway, so the probe goes further: exact tree
+	// equality needs untracked agent output gone too.
+	cmd := exec.Command("git", "-C", dir, "clean", "-fd")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return []string{"snapshot: clean untracked failed: " + strings.TrimSpace(string(out))}
+	}
+	after := treeSnapshot(dir)
+	var missing, extra, changed []string
+	for rel, before := range preRun {
+		a, ok := after[rel]
+		if !ok {
+			missing = append(missing, rel)
+		} else if a != before {
+			changed = append(changed, rel)
+		}
+	}
+	for rel := range after {
+		if _, ok := preRun[rel]; !ok {
+			extra = append(extra, rel)
+		}
+	}
+	// Deterministic order: a red probe must read the same every time.
+	sort.Strings(missing)
+	sort.Strings(extra)
+	sort.Strings(changed)
+	if len(missing) > 0 {
+		out = append(out, "snapshot: revert lost seed files: "+strings.Join(missing, ", "))
+	}
+	if len(changed) > 0 {
+		out = append(out, "snapshot: seed files differ after revert: "+strings.Join(changed, ", "))
+	}
+	if len(extra) > 0 {
+		out = append(out, "snapshot: agent files survive revert: "+strings.Join(extra, ", "))
+	}
+	return out
+}
 
 type Result struct {
 	Probe   string  `json:"probe"`
@@ -539,6 +675,28 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 
 	counter := &countingClient{inner: client}
 
+	// Probe 18 machinery: one synthetic overflow on the first model call,
+	// then the live backend. Wrapping outside the counter keeps
+	// counter.reached() honest — the backend is still reached.
+	var modelClient llm.Client = counter
+	if p.InjectOverflowOnce {
+		modelClient = &overflowInjector{inner: counter}
+	}
+
+	// Probe 19 machinery: the throwaway workspace becomes a git repo so
+	// snapshot.Track/Revert has something to work on, and the pre-run
+	// tree is recorded for the post-revert comparison.
+	var preRun map[string]string
+	var snapPath string
+	if p.SnapshotRevert {
+		if err := gitInit(work); err != nil {
+			res.RunError = "git init: " + err.Error()
+			return res
+		}
+		preRun = treeSnapshot(work)
+		snapPath = filepath.Join(runDir, fmt.Sprintf("%s-snapshot.diff", p.Name))
+	}
+
 	timeout := time.Duration(p.TimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -565,7 +723,7 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 	var answer string
 	if p.Mission {
 		runner := &mission.Runner{
-			Client:       counter,
+			Client:       modelClient,
 			WS:           ws,
 			Dir:          filepath.Join(work, ".agent", "eval"),
 			Procs:        procs,
@@ -597,7 +755,7 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 		// and inventing an answer would make the probe score the answer.
 		// Whether ask_user was called at all stays visible in the trace,
 		// which is what probe 12 measures.
-		env := evalEnv(counter, ws, procs, contextLimit, maxTokens, record)
+		env := evalEnv(modelClient, ws, procs, contextLimit, maxTokens, record)
 		a := roles.Interactive(env, "", "", func(string) (string, error) {
 			return "This is an automated evaluation run; no human is available. " +
 				"State your assumption and proceed with the smallest reasonable action.", nil
@@ -612,7 +770,12 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 	// The backend was never reached, so the workspace checks below would
 	// only be measuring the seed. Report it as an error rather than
 	// scoring it.
-	if !counter.reached() && res.RunError != "" {
+	//
+	// Probes that inject their own first-call failure are exempt: with
+	// recovery broken, probe 18 dies on step 0 having never reached the
+	// backend, and ERR would misreport a harness regression as "check the
+	// backend". Scored, it fails honestly on its trace and answer checks.
+	if !counter.reached() && res.RunError != "" && !p.InjectOverflowOnce {
 		res.Errored = true
 		return res
 	}
@@ -629,6 +792,15 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 	res.Failures = append(res.Failures, checkWorkspace(runCtx, p, ws)...)
 	res.Failures = append(res.Failures, checkTrace(p, calls)...)
 	res.Failures = append(res.Failures, checkAnswer(p, answer)...)
+
+	// Probe 19 tail: the agent's checks above scored the modified tree.
+	// Now assert the harness can put it back. A snapshot that was never
+	// taken, or a revert that leaves the tree dirty, fails the probe even
+	// when the agent did everything right — this scores the harness, not
+	// the model.
+	if p.SnapshotRevert {
+		res.Failures = append(res.Failures, checkSnapshotRevert(work, preRun, snapPath)...)
+	}
 
 	res.PeakPromptTokens = int(atomic.LoadInt64(&counter.peakPrompt))
 	res.FloorPromptTokens = int(atomic.LoadInt64(&counter.floorPrompt))

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,13 +13,25 @@ import (
 	"github.com/keshon/tars/internal/workspace"
 )
 
+// longRunningCommand is a sleep spelled for the host shell. "sleep" is not
+// a cmd.exe builtin and has no standalone executable on a stock Windows
+// box, so the POSIX spelling exited instantly and the test below failed
+// with "not recognized as an internal or external command" — a platform
+// bug in the fixture, not in the process tracking it was written for.
+var longRunningCommand = func() string {
+	if runtime.GOOS == "windows" {
+		return "ping -n 6 127.0.0.1 > nul"
+	}
+	return "sleep 5"
+}()
+
 func TestBackgroundProcesses_StartCheckStop(t *testing.T) {
 	dir := t.TempDir()
 	ws, _ := workspace.New(dir)
 	procs := NewBackgroundProcesses()
 
 	start := StartBackground{WS: ws, Procs: procs, SettleTime: 100 * time.Millisecond}
-	args, _ := json.Marshal(map[string]string{"command": "sleep 5"})
+	args, _ := json.Marshal(map[string]string{"command": longRunningCommand})
 	out, err := start.Run(context.Background(), args)
 	if err != nil {
 		t.Fatalf("start: %v", err)

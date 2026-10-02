@@ -68,6 +68,7 @@ func checkPackageLayers(t *testing.T, r *repo) {
 		"prompts":    {},
 		"workspace":  {},
 		"permission": {},
+		"events":     {},
 		"session":    {"llm"},
 		"agent":      {"llm", "prompts", "permission", "session"},
 	}

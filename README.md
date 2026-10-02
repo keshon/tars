@@ -47,6 +47,8 @@ Common flags:
 | `-mcp SERVERS` | MCP servers: `"name=cmd args...;name2=cmd2"` (tools appear as `mcp__name__tool`) |
 | `-fork PATH` | Branch from a prior transcript file but write to a fresh task id |
 | `-revert` | Restore tracked workspace files to git HEAD and exit (untracked files kept) |
+| `-plan` | Plan mode: read-only tools, proposes a plan and changes nothing |
+| `-mode MODE` | `print` (human-readable) or `json` (one JSON object per line) |
 
 ## Remote providers
 
@@ -118,7 +120,11 @@ internal/prompts every prompt, as .txt
 
 - Tuned for weak models. Larger tasks fail as bad plans, not bad code.
 - `internal/workspace` bounds the file tools, not the process. `run_shell` executes
-  arbitrary commands. Use a container or a VM if that matters.
+  arbitrary commands. Use a container or a VM if that matters. `SECURITY.md`
+  describes the trust boundary in full.
+- Patches are refused on UTF-16 files. `read_file` decodes them for display,
+  but text matching would fail silently; convert the file first.
+- MCP is stdio only, and a server that fails to start is skipped with a warning.
 - koboldcpp performs its own tool-call decision pass, which this harness does not
   control.
 - Windows-first; the shell tools pick `cmd.exe` or `sh` by OS but see less testing

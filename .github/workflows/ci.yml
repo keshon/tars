@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary target (README), but the shell tool picks
+        # cmd.exe or sh by OS, so a change that only builds on one of them
+        # is a bug the other platform finds later.
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required for the snapshot package's temp-repo tests.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: format
+        # Only meaningful here: this runs on a Linux checkout, so files are
+        # LF as stored. On a Windows working tree every file is CRLF and
+        # gofmt -l lists all of them, which is a checkout artifact rather
+        # than a formatting problem.
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: test
+        run: go test ./...
+
+  eval-dry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # Validates every probe's shape and pass criteria without a model.
+      # A broken probe is a blind instrument: it would score nothing and
+      # report success.
+      - name: eval probes
+        run: go run ./cmd/eval -dry
+
+  conventions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # internal/conventions runs as an ordinary test, so it is already
+      # covered above. This job exists to name the failure clearly: a red
+      # doc-and-checks-agree means the house rules and their enforcement
+      # drifted apart, which is the one failure that is never accidental.
+      - name: conventions
+        run: go test ./internal/conventions/ -run TestConventions -v
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # The dependency list is one module (golang.org/x/sys) by design, and
+      # this is what keeps it an audited fact rather than a belief. Tool
+      # install only — govulncheck never lands in go.mod.
+      - name: vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

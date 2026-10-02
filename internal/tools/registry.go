@@ -6,7 +6,8 @@ import (
 )
 
 // Base returns the standard tool set shared by the main agent and
-// subagents. Pass extra tools (ask_user, delegate_task) for the main agent only.
+// subagents. Pass extra tools (ask_user, delegate_task, todo) for the main
+// agent only.
 func Base(ws *workspace.Workspace, procs *BackgroundProcesses, extra ...agent.Tool) *agent.Registry {
 	tools := []agent.Tool{
 		ReadFile{WS: ws},
@@ -22,6 +23,7 @@ func Base(ws *workspace.Workspace, procs *BackgroundProcesses, extra ...agent.To
 		StopBackground{Procs: procs},
 		CheckURL{},
 		Webfetch{WS: ws},
+		&Todo{},
 	}
 	tools = append(tools, extra...)
 	return agent.NewRegistry(tools...)

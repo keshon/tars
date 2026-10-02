@@ -61,6 +61,9 @@ func (t PatchFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 		if err != nil {
 			return "", err
 		}
+		if err := refuseUTF16("patch_file", in.Path, data); err != nil {
+			return "", err
+		}
 
 		content, ending := normalizeContent(data)
 		oldNorm, _ := normalizeContent([]byte(in.OldContent))

@@ -90,6 +90,12 @@ func IsRetryableTransport(err error) bool {
 		"connection reset", "connection refused", "broken pipe",
 		"timeout", "timed out", "temporary", "try again",
 		"service unavailable", "overloaded", "too many requests", "429",
+		// Found by a live run: the backend dropped the connection mid-step
+		// and the run died on it. Windows words this "forcibly closed by
+		// the remote host", Unix "reset by peer" — both are the same
+		// transient transport failure and both must retry.
+		"forcibly closed", "wsarecv", "reset by peer", "unexpected eof",
+		"eof", "server closed", "connection closed",
 	} {
 		if strings.Contains(s, m) {
 			return true

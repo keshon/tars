@@ -182,6 +182,10 @@ var (
 
 	// OpenAIAddendum tightens schema discipline for hosted models.
 	OpenAIAddendum = read("openai_addendum.txt")
+
+	// PlanMode is the system prompt when -plan is set: read-only tools
+	// only, so "don't edit" is enforced by the tool set, not by asking.
+	PlanMode = read("plan_mode.txt")
 )
 
 // WithRole returns System with RoleAddendum appended for role, or System

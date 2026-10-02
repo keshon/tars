@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Stream sends req with stream:true and calls onDelta for each content
@@ -183,6 +184,10 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 			Arguments: repairArguments(normalizeArguments(json.RawMessage(dc.Function.Arguments))),
 		})
 	}
+	c.recordUsage(promptTokens, completionTokens)
+	p, g, n := c.UsageTotals()
+	c.logDebug("[%s] --- usage (stream: %d prompt + %d generated; run totals: %d prompt + %d generated over %d calls) ---\n\n",
+		time.Now().Format(time.RFC3339), promptTokens, completionTokens, p, g, n)
 	return ChatResponse{Message: msg, FinishReason: finish, Usage: Usage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,

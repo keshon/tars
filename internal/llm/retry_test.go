@@ -85,3 +85,35 @@ func TestIsOverflowText(t *testing.T) {
 		t.Error("500 is not overflow")
 	}
 }
+
+// A live kobold run died on this exact string; a dropped connection must
+// retry, not end the mission.
+func TestIsRetryableTransport_DroppedConnection(t *testing.T) {
+	for _, msg := range []string{
+		`Post "http://127.0.0.1:5001/v1/chat/completions": read tcp 127.0.0.1:51279->127.0.0.1:5001: wsarecv: An existing connection was forcibly closed by the remote host.`,
+		"read: connection reset by peer",
+		"unexpected EOF",
+	} {
+		if !IsRetryableTransport(fmt.Errorf("%s", msg)) {
+			t.Errorf("want retry: %s", msg)
+		}
+	}
+	if IsRetryableTransport(fmt.Errorf("decode response: invalid character")) {
+		t.Error("decode errors must not retry")
+	}
+	if IsRetryableTransport(context.Canceled) {
+		t.Error("cancel must not retry")
+	}
+}
+
+func TestServer_UsageTotalsAccumulate(t *testing.T) {
+	s := &Server{}
+	if p, g, n := s.UsageTotals(); p != 0 || g != 0 || n != 0 {
+		t.Fatalf("fresh totals = %d/%d/%d, want 0/0/0", p, g, n)
+	}
+	s.recordUsage(100, 20)
+	s.recordUsage(50, 5)
+	if p, g, n := s.UsageTotals(); p != 150 || g != 25 || n != 2 {
+		t.Fatalf("totals = %d/%d/%d, want 150/25/2", p, g, n)
+	}
+}

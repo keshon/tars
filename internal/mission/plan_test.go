@@ -134,7 +134,6 @@ func TestParseAndValidate_StructuralRules(t *testing.T) {
 		{"no acceptance", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":[],"files_hint":[],"check":{"type":"none"}}]}`, "no acceptance"},
 		{"files without check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"none"}}]}`, "no check"},
 		{"echo check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"echo done"}}]}`, "always succeeds"},
-		{"ls check (live failure shape)", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"ls -l"}}]}`, "always succeeds"},
 		{"dir check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"dir"}}]}`, "always succeeds"},
 		{"true check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"true"}}]}`, "always succeeds"},
 		{"pathless file check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"file_exists"}}]}`, "no path"},
@@ -152,6 +151,26 @@ func TestParseAndValidate_StructuralRules(t *testing.T) {
 				t.Fatalf("errors = %s, want substring %q", joined, tc.want)
 			}
 		})
+	}
+}
+
+// A vacuous listing check must never reach a worker. Which guard catches it
+// is platform-dependent: where `ls` exists it is rejected as vacuous, and
+// where it does not, repairUnrunnableCheck rewrites it to a check that can
+// actually run. Asserting one specific message made this test pass on Linux
+// and fail on Windows; the invariant is the weaker and correct one.
+func TestParseAndValidate_VacuousListingCheckNeverSurvives(t *testing.T) {
+	const plan = `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g",
+		"acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"ls -l"}}]}`
+	subtasks, _, errs := parseAndValidate(plan, "", map[string]bool{})
+	if len(errs) > 0 {
+		return // rejected outright — the stronger outcome
+	}
+	if len(subtasks) != 1 {
+		t.Fatalf("subtasks = %d", len(subtasks))
+	}
+	if got := subtasks[0].Check; got.Type == "shell" && vacuousShellCheck(strings.ToLower(got.Cmd)) {
+		t.Fatalf("vacuous shell check survived: %+v", got)
 	}
 }
 

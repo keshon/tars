@@ -108,6 +108,24 @@ func interactiveSystem(backendKind string) string {
 	return prompts.SystemForBackend(backendKind)
 }
 
+// Planner is the read-only agent behind -plan: it investigates and
+// proposes without the ability to change anything. Capability is removed by
+// the tool set (ReadOnly), never by asking the model to hold back.
+func Planner(e Env, label, stateFile string) *agent.Agent {
+	return agent.New(agent.Config{
+		Client:         e.Client,
+		Tools:          tools.ReadOnly(e.WS, e.Procs),
+		System:         prompts.PlanMode,
+		MaxTokens:      e.MaxTokens,
+		ContextLimit:   e.ContextLimit,
+		StateFile:      e.statePath(stateFile),
+		SkipVerify:     true,
+		OnStep:         e.onStep(label),
+		Policy:         e.policy(),
+		BeforeToolCall: e.gate(),
+	})
+}
+
 func (e Env) statePath(name string) string {
 	switch {
 	case name == "":

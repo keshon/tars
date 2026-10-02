@@ -170,15 +170,20 @@ func looksBinaryBytes(data []byte) bool {
 
 // decodeText converts data for display: UTF-16LE/BE with BOM decodes to
 // UTF-8, anything else passes through. Returns text, encoding label (""
-// for plain UTF-8/bytes), and whether the raw bytes look binary.
+// for plain UTF-8/bytes), and whether the raw bytes look binary. CRLF is
+// normalized to LF so displayed text matches what patches will match.
 func decodeText(data []byte) (text string, encoding string, binary bool) {
 	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE {
-		return decodeUTF16(data[2:], true), "utf-16le", false
+		return normalizeNewlines(decodeUTF16(data[2:], true)), "utf-16le", false
 	}
 	if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
-		return decodeUTF16(data[2:], false), "utf-16be", false
+		return normalizeNewlines(decodeUTF16(data[2:], false)), "utf-16be", false
 	}
 	return string(data), "", looksBinaryBytes(data)
+}
+
+func normalizeNewlines(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
 // decodeUTF16 decodes units with the given byte order, dropping a
@@ -201,9 +206,29 @@ func decodeUTF16(data []byte, littleEndian bool) string {
 // isUTF16 reports a BOM-prefixed UTF-16 file, which text patches refuse:
 // byte-matching UTF-8 old_content against UTF-16 bytes never hits, and a
 // silent re-encode would corrupt the file for its real consumer.
+//
+// Without this guard the model sees "old_content not found" forever and
+// has no way to learn why: a live run circled for seven steps re-reading
+// the same file, because every re-read came back as mojibake it could not
+// match against the plain text it had just been shown.
 func isUTF16(data []byte) bool {
 	return len(data) >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) ||
 		(data[0] == 0xFE && data[1] == 0xFF))
+}
+
+// refuseUTF16 is the patch-side guard: name the encoding and the fix
+// instead of letting the caller fail a match that can never succeed.
+func refuseUTF16(tool, path string, data []byte) error {
+	if !isUTF16(data) {
+		return nil
+	}
+	enc := "utf-16le"
+	if data[0] == 0xFE {
+		enc = "utf-16be"
+	}
+	return fmt.Errorf("%s: %s is %s (BOM-prefixed, not UTF-8) — old_content can never match its bytes. "+
+		"Convert it first (e.g. run_shell: python -c \"open('%s','rb').read().decode('utf-16').encode('utf-8')\" "+
+		"written to the same path), then patch it", tool, path, enc, path)
 }
 
 type WriteFile struct{ WS *workspace.Workspace }

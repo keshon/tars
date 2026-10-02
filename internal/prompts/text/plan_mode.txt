@@ -1,0 +1,1 @@
+Plan mode: investigate and propose, change nothing. Read files and search freely, then present a concrete step-by-step plan for the task. Do not write, patch, move, or delete any file, and do not run commands that modify the workspace — that is the operator's job after they approve the plan. Finish by stating the plan.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
 	"github.com/keshon/tars/internal/permission"
@@ -81,6 +83,8 @@ func main() {
 	mcpFlag := flag.String("mcp", "", "MCP servers: \"name=cmd args...;name2=cmd2\" (stdio JSON-RPC, tools appear as mcp__name__tool)")
 	forkFlag := flag.String("fork", "", "history file to branch from: loads its transcript but writes to a fresh task id")
 	revertFlag := flag.Bool("revert", false, "restore tracked workspace files to git HEAD and exit (untracked files are kept)")
+	planFlag := flag.Bool("plan", false, "plan mode: read-only tools, propose a plan and change nothing")
+	modeFlag := flag.String("mode", "print", "output mode: print (human-readable) or json (one JSON object per line)")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
@@ -88,11 +92,34 @@ func main() {
 		log.Fatal(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
 	}
 
+	// noteW is where human-readable chatter goes. In -mode json it is
+	// stderr, so stdout carries nothing but JSONL and a caller can pipe
+	// it straight into a parser; in print mode it is stdout as before.
+	noteW := io.Writer(os.Stdout)
+	if *modeFlag == "json" {
+		noteW = os.Stderr
+	}
+	note := func(format string, args ...any) {
+		fmt.Fprintf(noteW, format+"\n", args...)
+	}
+
+	// The event emitter must exist before either mode branches: mission
+	// output below needs it, and run_end must fire for both modes.
+	var emitter *events.Emitter
+	if *modeFlag == "json" {
+		emitter = events.New(os.Stdout)
+		emitter.Emit("run_start", map[string]any{
+			"task": task, "backend": *backendKind, "model": *model,
+			"context_limit": *contextLimitFlag, "workspace": *root,
+		})
+		defer emitter.Emit("run_end", nil)
+	}
+
 	// Auto-mission for multi-file tasks — the cheap alternative to hoping
 	// the reactive loop (or spontaneous delegate_task) holds a plan.
 	if !*missionMode && !*direct && task != "" && mission.SuggestMission(task) {
 		*missionMode = true
-		fmt.Println("auto-mission: task names multiple deliverable files (use -direct to skip)")
+		note("auto-mission: task names multiple deliverable files (use -direct to skip)")
 	}
 
 	// A -resume target whose directory holds mission.json is a mission
@@ -127,13 +154,13 @@ func main() {
 			if err != nil {
 				log.Fatalf("fork: %v", err)
 			}
-			fmt.Printf("forked from %s (%d messages)\n", *forkFlag, len(forkHistory))
+			note("forked from %s (%d messages)", *forkFlag, len(forkHistory))
 		}
 		if *missionMode {
 			missionDir = taskDir
-			fmt.Printf("mission id: %s (resume with -resume %s)\n", taskID, taskDir)
+			note("mission id: %s (resume with -resume %s)", taskID, taskDir)
 		} else {
-			fmt.Printf("task id: %s (resume with -resume %s)\n", taskID, stateFile)
+			note("task id: %s (resume with -resume %s)", taskID, stateFile)
 		}
 	}
 
@@ -146,7 +173,7 @@ func main() {
 		if err := snapshot.Revert(ws.Root()); err != nil {
 			log.Fatalf("revert: %v", err)
 		}
-		fmt.Println("workspace reverted to HEAD (untracked files kept)")
+		note("workspace reverted to HEAD (untracked files kept)")
 		return
 	}
 
@@ -172,7 +199,7 @@ func main() {
 		}
 		defer f.Close()
 		client.Debug = f
-		fmt.Println("debug: logging raw request/response JSON to agent-debug.log")
+		note("debug: logging raw request/response JSON to agent-debug.log")
 	}
 
 	// Ask the backend for its real context window instead of guessing.
@@ -189,7 +216,7 @@ func main() {
 		} else {
 			contextLimit = llm.OpenAIContextLimit(*model)
 		}
-		fmt.Printf("context window: %d tokens (estimated for %s; override with -context-limit)\n",
+		note("context window: %d tokens (estimated for %s; override with -context-limit)",
 			contextLimit, *model)
 		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
 			log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
@@ -218,9 +245,10 @@ func main() {
 		// without budget tracking rather than failing the whole run.
 		contextLimit = 0
 	} else {
-		fmt.Printf("context window: %d tokens\n", contextLimit)
+		note("context window: %d tokens", contextLimit)
 	}
 	}
+	emitter.Emit("context", map[string]any{"context_limit": contextLimit})
 
 	// Reuses mission.RunShellCommand for the same OS-aware shell choice as
 	// tools.RunShell and mission shell checks — one exec shape everywhere.
@@ -281,6 +309,8 @@ func main() {
 			logMax:       *logMax,
 			verifyCmd:    *verifyCmd,
 			autoApprove:  *yes,
+			noteW:        noteW,
+			emitter:      emitter,
 		})
 		return
 	}
@@ -310,7 +340,7 @@ func main() {
 
 	// Git snapshot before any work, so the run is reviewable/revertible.
 	if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
-		fmt.Printf("snapshot: %s\n", snap.Path)
+		note("snapshot: %s", snap.Path)
 	}
 
 	mcpTools, mcpClients := discoverMCP(ctx, *mcpFlag)
@@ -329,25 +359,28 @@ func main() {
 		Policy:       buildPolicy(*pureFlag, *allowFlag, *denyFlag),
 		Gate:         permissionGate(*yes),
 		BackendKind:  *backendKind,
-		Stream:       *streamFlag,
+		Stream:       *streamFlag && *modeFlag != "json",
 		MCPTools:     mcpTools,
 		OnDelta:      func(chunk string) { fmt.Print(chunk) },
-		OnStep:       func(l string, s int, m llm.Message) { printStep(l, s, m, *logMax) },
+		OnStep:       stepPrinter(*modeFlag, emitter, *logMax),
+	}
+	if *planFlag {
+		emitter.Emit("plan_mode", map[string]any{"read_only": true})
 	}
 	if *streamFlag && *backendKind == "kobold" {
-		fmt.Println("note: -stream is unsupported on koboldcpp, using unary requests")
-	}
-
-	// Git snapshot before any work, so the run is reviewable/revertible.
-	if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
-		fmt.Printf("snapshot: %s\n", snap.Path)
+		note("note: -stream is unsupported on koboldcpp, using unary requests")
 	}
 
 	// The subagent this spawns previously also carried Verify. That was
 	// dead configuration: a subagent sets SkipVerify with no
 	// VerifyOnZeroWrites, so verifyWanted is never true and the hook could
 	// not fire. Dropping it changes nothing at runtime.
-	a := roles.Interactive(env, "", stateFile, askFn, verify)
+	var a *agent.Agent
+	if *planFlag {
+		a = roles.Planner(env, "plan", stateFile)
+	} else {
+		a = roles.Interactive(env, "", stateFile, askFn, verify)
+	}
 
 	var result string
 	if *resume != "" {
@@ -355,7 +388,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("resume: %v", err)
 		}
-		fmt.Printf("resuming from %s (%d messages)\n", *resume, len(history))
+		note("resuming from %s (%d messages)", *resume, len(history))
 
 		if callID, question, paused := agent.PausedOnQuestion(history); paused {
 			ans := *answer
@@ -395,8 +428,8 @@ func main() {
 	// run was for, and middle-truncating it to 300 characters cut the
 	// deliverable out of its own report. Mission mode already printed its
 	// report in full, so this also makes the two modes agree.
-	fmt.Println("\n=== result ===")
-	fmt.Println(result)
+	note("\n=== result ===")
+	fmt.Fprintln(noteW, result)
 }
 
 type missionParams struct {
@@ -411,6 +444,10 @@ type missionParams struct {
 	logMax       int
 	verifyCmd    string
 	autoApprove  bool
+	// noteW carries human-readable output (stderr in -mode json, so
+	// stdout stays pure JSONL). emitter is nil unless -mode json.
+	noteW   io.Writer
+	emitter *events.Emitter
 }
 
 // runMission is the -mission entry point: harness-owned plan → execute →
@@ -429,7 +466,7 @@ func runMission(ctx context.Context, p missionParams) {
 		if len(m.Subtasks) > 0 {
 			progress = fmt.Sprintf(", subtask %d/%d", m.Cursor+1, len(m.Subtasks))
 		}
-		fmt.Printf("resuming mission %s (phase: %s%s)\n", m.ID, m.Phase, progress)
+		fmt.Fprintf(p.noteW, "resuming mission %s (phase: %s%s)\n", m.ID, m.Phase, progress)
 	} else {
 		m = &mission.Mission{ID: filepath.Base(p.dir), Task: p.task, Phase: mission.PhaseExplore}
 		if err := m.Save(p.dir); err != nil {
@@ -443,9 +480,9 @@ func runMission(ctx context.Context, p missionParams) {
 	if !p.autoApprove {
 		reader := bufio.NewReader(os.Stdin)
 		approve = func(rendered string) (bool, string) {
-			fmt.Println("\n=== proposed plan ===")
-			fmt.Println(rendered)
-			fmt.Print("\napprove? [y]es / [n]o / or type a revision note\n> ")
+			fmt.Fprintln(p.noteW, "\n=== proposed plan ===")
+			fmt.Fprintln(p.noteW, rendered)
+			fmt.Fprint(p.noteW, "\napprove? [y]es / [n]o / or type a revision note\n> ")
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				return false, ""
@@ -472,22 +509,29 @@ func runMission(ctx context.Context, p missionParams) {
 		ApprovePlan:  approve,
 		VerifyCmd:    p.verifyCmd,
 		OnStep: func(subID string, step int, msg llm.Message) {
+			emitStepEvent(p.emitter, subID, step, msg)
 			if msg.Content != "" {
-				fmt.Printf("[%s step %d] %s\n", subID, step, agent.TruncateMiddle(msg.Content, p.logMax))
+				fmt.Fprintf(p.noteW, "[%s step %d] %s\n", subID, step, agent.TruncateMiddle(msg.Content, p.logMax))
 			}
 			for _, tc := range msg.ToolCalls {
-				fmt.Printf("[%s step %d] -> %s(%s)\n", subID, step, tc.Name,
+				fmt.Fprintf(p.noteW, "[%s step %d] -> %s(%s)\n", subID, step, tc.Name,
 					agent.TruncateMiddle(string(tc.Arguments), p.logMax))
 			}
 		},
 		OnEvent: func(format string, args ...any) {
-			fmt.Printf("[mission] "+format+"\n", args...)
+			if p.emitter != nil {
+				p.emitter.Emit("mission", map[string]any{"text": fmt.Sprintf(format, args...)})
+			}
+			fmt.Fprintf(p.noteW, "[mission] "+format+"\n", args...)
 		},
 	}
 
 	report, err := runner.Run(ctx, m)
-	fmt.Println("\n=== mission report ===")
-	fmt.Println(report)
+	if p.emitter != nil {
+		p.emitter.Emit("result", map[string]any{"report": events.Message(report)})
+	}
+	fmt.Fprintln(p.noteW, "\n=== mission report ===")
+	fmt.Fprintln(p.noteW, report)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -554,6 +598,41 @@ func permissionGate(autoDeny bool) func(tool, resource string, args json.RawMess
 			return permission.Deny, fmt.Errorf("blocked by operator (%s on %s)", tool, resource)
 		}
 	}
+}
+
+// stepPrinter returns the OnStep callback for the chosen output mode:
+// human-readable lines, or JSONL events. logMax caps each text field so a
+// long generation does not become one enormous line.
+func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, int, llm.Message) {
+	if mode == "json" && emitter != nil {
+		return func(label string, step int, msg llm.Message) {
+			emitStepEvent(emitter, label, step, msg)
+		}
+	}
+	return func(label string, step int, msg llm.Message) { printStep(label, step, msg, logMax) }
+}
+
+// emitStepEvent writes one step as a JSONL event. Shared by the direct
+// loop and mission workers so both modes speak the same schema.
+// events.Message caps each text field, so logMax does not apply here.
+func emitStepEvent(emitter *events.Emitter, label string, step int, msg llm.Message) {
+	if emitter == nil {
+		return
+	}
+	ev := map[string]any{"step": step, "label": label}
+	if msg.Content != "" {
+		ev["text"] = events.Message(msg.Content)
+	}
+	calls := make([]any, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		calls = append(calls, map[string]any{
+			"name": tc.Name, "args": events.Message(string(tc.Arguments)),
+		})
+	}
+	if len(calls) > 0 {
+		ev["tool_calls"] = calls
+	}
+	emitter.Emit("step", ev)
 }
 
 // discoverMCP starts each -mcp server and returns its tools and clients.

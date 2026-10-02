@@ -61,6 +61,9 @@ func (t PatchLines) Run(_ context.Context, args json.RawMessage) (string, error)
 		if err != nil {
 			return "", err
 		}
+		if err := refuseUTF16("patch_lines", in.Path, data); err != nil {
+			return "", err
+		}
 
 		content, ending := normalizeContent(data)
 		lines := strings.Split(content, "\n")
