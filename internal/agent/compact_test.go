@@ -30,8 +30,11 @@ func TestCompactHistory_KeepsPrefixAndRecentGroups(t *testing.T) {
 	if got[0].Content != "sys" || got[1].Content != "task" {
 		t.Fatal("prefix lost")
 	}
-	if got[2].Content != prompts.CompactNotice {
+	if got[2].Content != prompts.CompactNotice && len(got[2].Content) <= len(prompts.CompactNotice) {
 		t.Fatalf("expected compact notice at [2], got %q", got[2].Content)
+	}
+	if len(got[2].Content) < len(prompts.CompactNotice) || got[2].Content[:len(prompts.CompactNotice)] != prompts.CompactNotice {
+		t.Fatalf("expected compact notice prefix at [2], got %q", got[2].Content)
 	}
 }
 

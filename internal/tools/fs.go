@@ -114,13 +114,17 @@ func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 // maxBodyBytes: 0 = header only; otherwise cap body at min(maxBodyBytes, readMaxBytes).
 func formatReadFileResult(path string, data []byte, maxBodyBytes int) string {
 	totalSize := len(data)
-	truncated := totalSize > readMaxBytes
-	binary := looksBinaryBytes(data)
+	text, encoding, binary := decodeText(data)
+	body := []byte(text)
+	truncated := len(body) > readMaxBytes
 
 	var b strings.Builder
 	b.WriteString("FILE\n")
 	fmt.Fprintf(&b, "path: %s\n", path)
 	fmt.Fprintf(&b, "size: %d\n", totalSize)
+	if encoding != "" {
+		fmt.Fprintf(&b, "encoding: %s (decoded for display; patches are refused — convert to UTF-8 first)\n", encoding)
+	}
 	if truncated {
 		b.WriteString("truncated: true\n")
 	} else {
@@ -138,15 +142,15 @@ func formatReadFileResult(path string, data []byte, maxBodyBytes int) string {
 	}
 	b.WriteString("----\n")
 	if truncated {
-		b.Write(data[:limit])
-		if limit < totalSize {
+		b.Write(body[:limit])
+		if limit < len(body) {
 			fmt.Fprintf(&b, "\n...(content truncated at %d bytes — use grep_files, metadata_only, or read a smaller section)", limit)
 		}
-	} else if limit < totalSize {
-		b.Write(data[:limit])
+	} else if limit < len(body) {
+		b.Write(body[:limit])
 		fmt.Fprintf(&b, "\n...(content truncated at %d bytes)", limit)
 	} else {
-		b.Write(data)
+		b.Write(body)
 	}
 	return b.String()
 }
@@ -162,6 +166,44 @@ func looksBinaryBytes(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// decodeText converts data for display: UTF-16LE/BE with BOM decodes to
+// UTF-8, anything else passes through. Returns text, encoding label (""
+// for plain UTF-8/bytes), and whether the raw bytes look binary.
+func decodeText(data []byte) (text string, encoding string, binary bool) {
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE {
+		return decodeUTF16(data[2:], true), "utf-16le", false
+	}
+	if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+		return decodeUTF16(data[2:], false), "utf-16be", false
+	}
+	return string(data), "", looksBinaryBytes(data)
+}
+
+// decodeUTF16 decodes units with the given byte order, dropping a
+// trailing odd byte. No surrogate handling beyond the BMP — enough for a
+// model to read the file; editing stays refused (see patch guards).
+func decodeUTF16(data []byte, littleEndian bool) string {
+	var out strings.Builder
+	for i := 0; i+1 < len(data); i += 2 {
+		var r rune
+		if littleEndian {
+			r = rune(data[i]) | rune(data[i+1])<<8
+		} else {
+			r = rune(data[i])<<8 | rune(data[i+1])
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// isUTF16 reports a BOM-prefixed UTF-16 file, which text patches refuse:
+// byte-matching UTF-8 old_content against UTF-16 bytes never hits, and a
+// silent re-encode would corrupt the file for its real consumer.
+func isUTF16(data []byte) bool {
+	return len(data) >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) ||
+		(data[0] == 0xFE && data[1] == 0xFF))
 }
 
 type WriteFile struct{ WS *workspace.Workspace }
@@ -190,6 +232,9 @@ func (t WriteFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("bad arguments: %w", err)
 	}
+	if err := rejectUnknownFields(args, "path", "content"); err != nil {
+		return "", err
+	}
 	full, err := t.WS.Resolve(in.Path)
 	if err != nil {
 		return "", err
@@ -200,10 +245,19 @@ func (t WriteFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(full, []byte(in.Content), 0o644); err != nil {
+	res, err := withPathLock(in.Path, func() (string, error) {
+		if err := os.WriteFile(full, []byte(in.Content), 0o644); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("wrote %s (%d bytes)", in.Path, len(in.Content)), nil
+	})
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("wrote %s (%d bytes)", in.Path, len(in.Content)), nil
+	if note := gofmtNote(full); note != "" {
+		res += "\n" + note
+	}
+	return res, nil
 }
 
 type ListFiles struct{ WS *workspace.Workspace }

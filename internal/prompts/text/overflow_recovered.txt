@@ -1,0 +1,1 @@
+The backend reported the context window was exceeded. Earlier history was compacted to a summary — re-read files you need and continue the task from the summary, keeping the next steps minimal.

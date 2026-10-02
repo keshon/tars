@@ -12,7 +12,9 @@ import (
 	"sync"
 
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/permission"
 	"github.com/keshon/tars/internal/prompts"
+	"github.com/keshon/tars/internal/session"
 )
 
 // Config wires together everything an Agent needs. There is exactly one
@@ -126,6 +128,27 @@ type Config struct {
 	// is why it is configuration with a documented default rather than a
 	// constant chosen once and hidden.
 	CompactAtPercent int
+
+	// Policy gates tool calls before they run. Nil means allow-all.
+	Policy permission.Policy
+	// BeforeToolCall, if set, decides whether a call runs. It returns the
+	// policy effect plus the resource string used for matching (command,
+	// path, URL). Ask means prompt the operator; the hook itself performs
+	// the prompt and returns an error to block. Nil means no prompting:
+	// Ask degrades to Deny.
+	BeforeToolCall func(ctx context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error)
+
+	// AfterToolCall, if set, observes every completed call.
+	AfterToolCall func(tool, resource, result string, err error)
+
+	// Stream, when true, uses SSE streaming (llm.Server.Stream) with
+	// OnDelta per content chunk instead of one blocking Chat. Only
+	// effective on backends with SSE support (openai/llama); koboldcpp
+	// refuses and the loop falls back to ChatWithRetry.
+	Stream bool
+
+	// OnDelta receives streamed content chunks for live display.
+	OnDelta func(chunk string)
 }
 
 type Agent struct {
@@ -283,7 +306,8 @@ func LoadState(path string) ([]llm.Message, error) {
 }
 
 // saveState is best-effort: a failed snapshot write should never abort a
-// run that's otherwise working fine.
+// run that's otherwise working fine. Writes are atomic (tmp+rename) so a
+// crash mid-write never leaves corrupt JSON behind.
 func (a *Agent) saveState(history []llm.Message) {
 	if a.cfg.StateFile == "" {
 		return
@@ -295,7 +319,46 @@ func (a *Agent) saveState(history []llm.Message) {
 	if dir := filepath.Dir(a.cfg.StateFile); dir != "." {
 		_ = os.MkdirAll(dir, 0o755)
 	}
-	_ = os.WriteFile(a.cfg.StateFile, data, 0o644)
+	tmp := a.cfg.StateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, a.cfg.StateFile)
+	session.Append(a.cfg.StateFile, len(history), history)
+}
+
+// toolResource extracts the policy-matched resource from a call's args:
+// command for shell/background, path for file tools, url for check_url.
+func toolResource(name string, args json.RawMessage) string {
+	var fields struct {
+		Command string `json:"command"`
+		Path    string `json:"path"`
+		From    string `json:"from"`
+		To      string `json:"to"`
+		URL     string `json:"url"`
+		ID      string `json:"id"`
+	}
+	if json.Unmarshal(args, &fields) != nil {
+		return ""
+	}
+	switch name {
+	case "run_shell", "start_background":
+		return fields.Command
+	case "read_file", "write_file", "patch_file", "patch_lines":
+		return fields.Path
+	case "move_file":
+		return fields.From + "->" + fields.To
+	case "check_url":
+		return fields.URL
+	default:
+		if fields.Path != "" {
+			return fields.Path
+		}
+		if fields.Command != "" {
+			return fields.Command
+		}
+		return string(args)
+	}
 }
 
 type runState struct {
@@ -346,12 +409,28 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 	a.report = RunReport{}
 
 	for step := 0; step < a.cfg.MaxSteps; step++ {
-		resp, err := a.cfg.Client.Chat(ctx, llm.ChatRequest{
+		resp, err := a.chat(ctx, llm.ChatRequest{
 			Messages:  history,
 			Tools:     a.cfg.Tools.Defs(),
 			MaxTokens: a.effectiveMaxTokens(st.lastPromptTokens),
 		})
 		if err != nil {
+			// A full context is recoverable: compact aggressively and let
+			// the next step continue with the summary. Anything else is
+			// infrastructure — mission treats it as resumable errInfra.
+			if llm.IsOverflow(err) && len(history) > 2 {
+				keep := a.cfg.CompactKeepSteps
+				if keep <= 0 {
+					keep = 8
+				}
+				history = compactHistory(history, keep/2)
+				a.saveState(history)
+				history = append(history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: prompts.OverflowRecovered,
+				})
+				continue
+			}
 			return "", fmt.Errorf("step %d: chat: %w", step, err)
 		}
 		if a.cfg.OnStep != nil {
@@ -586,8 +665,34 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 
 		runOne := func(i int) {
 			call := resp.Message.ToolCalls[i]
+			resource := toolResource(call.Name, call.Arguments)
+			if a.cfg.BeforeToolCall != nil {
+				eff := a.cfg.Policy.Evaluate(call.Name, resource)
+				if eff == permission.Ask || eff == permission.Deny {
+					hookEff, hookErr := a.cfg.BeforeToolCall(ctx, call.Name, resource, call.Arguments)
+					if hookErr != nil {
+						results[i] = callResult{err: hookErr}
+						if a.cfg.AfterToolCall != nil {
+							a.cfg.AfterToolCall(call.Name, resource, "", hookErr)
+						}
+						return
+					}
+					eff = hookEff
+				}
+				if eff == permission.Deny {
+					denied := fmt.Errorf("blocked by policy (%s on %s)", call.Name, resource)
+					results[i] = callResult{err: denied}
+					if a.cfg.AfterToolCall != nil {
+						a.cfg.AfterToolCall(call.Name, resource, "", denied)
+					}
+					return
+				}
+			}
 			content, err := a.cfg.Tools.Run(ctx, call.Name, call.Arguments)
 			results[i] = callResult{content: content, err: err}
+			if a.cfg.AfterToolCall != nil {
+				a.cfg.AfterToolCall(call.Name, resource, content, err)
+			}
 		}
 
 		if len(concurrentIdx) > 0 {
@@ -712,6 +817,26 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 	return "", fmt.Errorf("%w (%d) without finishing", ErrMaxSteps, a.cfg.MaxSteps)
 }
 
+// chat runs one model turn: streaming when configured and supported,
+// otherwise ChatWithRetry. Streaming gets a single attempt (a partial
+// stream cannot resume mid-turn); the unary path retries.
+func (a *Agent) chat(ctx context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {
+	if a.cfg.Stream {
+		if s, ok := a.cfg.Client.(interface {
+			Stream(context.Context, llm.ChatRequest, func(string)) (llm.ChatResponse, error)
+		}); ok {
+			resp, err := s.Stream(ctx, req, a.cfg.OnDelta)
+			if err == nil {
+				return resp, nil
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "streaming unsupported") {
+				return resp, err
+			}
+		}
+	}
+	return llm.ChatWithRetry(ctx, a.cfg.Client, req, llm.DefaultRetryPolicy())
+}
+
 // ErrMaxSteps marks a run that did real work but ran out of step budget —
 // as opposed to infrastructure failures (a dead backend, a network error)
 // where no work happened at all. Callers that retry on failure (the
@@ -792,6 +917,11 @@ func (a *Agent) maybeCompact(history *[]llm.Message, usage llm.Usage, st *runSta
 		return false
 	}
 	if usage.PromptTokens*100/a.cfg.ContextLimit < a.cfg.CompactAtPercent {
+		return false
+	}
+	// Small windows compact on percent alone; large windows also require
+	// enough absolute tokens to be worth the churn.
+	if a.cfg.ContextLimit >= 32000 && usage.PromptTokens < pruneMinimumTokens {
 		return false
 	}
 	compacted := compactHistory(*history, a.cfg.CompactKeepSteps)

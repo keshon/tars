@@ -14,8 +14,9 @@ budgets — not from trusting the model's report of its own work.
 ## Requirements
 
 - Go 1.22+
-- A local server with an OpenAI-compatible `/v1/chat/completions` endpoint,
-  listening on `http://localhost:5001` by default.
+- A model backend: either a local server with an OpenAI-compatible
+  `/v1/chat/completions` endpoint, listening on `http://localhost:5001` by
+  default, or a remote OpenAI-compatible API (see Remote providers below).
 
 ## Usage
 
@@ -34,6 +35,41 @@ Common flags:
 | `-resume PATH` | Continue an interrupted run from its saved state |
 | `-debug` | Write raw request/response JSON to `agent-debug.log` |
 | `-backend URL` | Backend base URL |
+| `-backend-kind KIND` | `kobold`, `llama`, or `openai` (any hosted OpenAI-compatible API) |
+| `-model NAME` | Model name; required for remote providers |
+| `-api-key KEY` | Bearer token for a remote provider (prefer env vars, see below) |
+| `-api-key-env NAME` | Env var holding the bearer token, e.g. `OPENROUTER_API_KEY` |
+| `-context-limit N` | Context window override; remote backends default to a per-model estimate |
+| `-allow RULES` | Comma-separated `tool=pattern` rules to allow, e.g. `"run_shell=go *,read_file=*.go"` |
+| `-deny RULES` | Comma-separated `tool=pattern` rules to deny, e.g. `"run_shell=rm *,read_file=.env"` |
+| `-pure` | Ignore project config for permissions; defaults plus `-allow`/`-deny` only |
+| `-stream` | Stream response tokens live (openai/llama only; koboldcpp falls back to unary) |
+| `-mcp SERVERS` | MCP servers: `"name=cmd args...;name2=cmd2"` (tools appear as `mcp__name__tool`) |
+| `-fork PATH` | Branch from a prior transcript file but write to a fresh task id |
+| `-revert` | Restore tracked workspace files to git HEAD and exit (untracked files kept) |
+
+## Remote providers
+
+Any provider speaking the OpenAI chat format works through `-backend-kind openai`.
+The key is resolved as `-api-key`, then `-api-key-env`, then the first token found
+under `TARS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
+`GROQ_API_KEY` or `TOGETHER_API_KEY`.
+
+```bash
+export OPENAI_API_KEY=sk-...
+go run ./cmd/agent -backend-kind openai -backend https://api.openai.com/v1 -model gpt-4o-mini "add a Version constant to config.go"
+
+export OPENROUTER_API_KEY=sk-or-...
+go run ./cmd/agent -backend-kind openai -backend https://openrouter.ai/api/v1 -model anthropic/claude-sonnet-4 "add a Version constant to config.go"
+```
+
+Remote backends report no context window, so the budget falls back to a per-model
+estimate unless `-context-limit` says otherwise. Structured calls (mission plans,
+verdicts) use `response_format` instead of GBNF grammar on this path; everything
+else — tools, repeat guards, budgets — behaves the same.
+
+A `run-remote.cmd` launcher (gitignored, lives only on this machine) holds the
+OpenRouter key and these settings, so a run is just `run-remote.cmd "task"`.
 
 ## Modes
 

@@ -56,6 +56,9 @@ func (t MoveFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 	if _, err := os.Stat(src); err != nil {
 		return "", fmt.Errorf("source not found: %w", err)
 	}
+	if _, err := os.Stat(dst); err == nil {
+		return "", fmt.Errorf("destination %s already exists — move would overwrite it", in.To)
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", err
 	}

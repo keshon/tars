@@ -11,3 +11,5 @@ plan.md
 eval/results/
 eval/log/
 tmp/
+# Local launchers holding live API keys are never committed.
+run-remote.cmd

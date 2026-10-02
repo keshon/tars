@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/keshon/tars/internal/agent"
@@ -61,13 +63,20 @@ func (t RunShell) Run(ctx context.Context, args json.RawMessage) (string, error)
 
 	cmd := shellCommand(ctx, in.Command)
 	cmd.Dir = t.WS.Root()
+	cmd.Env = scrubEnv(os.Environ())
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
 	err := cmd.Run()
-	result := capShellOutput(out.String())
+	full := out.String()
+	result := capShellOutput(full)
+	if len(full) > shellMaxBytes {
+		if p := Spill(t.WS.Root(), "run_shell", full); p != "" {
+			result += fmt.Sprintf("\n(full output: %s)", p)
+		}
+	}
 	if err != nil {
 		return result, fmt.Errorf("command failed: %w", err)
 	}
@@ -98,6 +107,25 @@ func capShellOutput(s string) string {
 		fmt.Sprintf("\n\n(output truncated: %d bytes total. Re-run narrowed — a pipe through "+
 			"findstr/grep, a smaller path, or head/tail — rather than asking for all of it again.)",
 			len(s))
+}
+
+// scrubEnv removes bearer tokens from the child environment so a model
+// that prints env or exfils it via curl gets nothing useful.
+func scrubEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k := kv
+		if i := strings.Index(kv, "="); i >= 0 {
+			k = kv[:i]
+		}
+		upper := strings.ToUpper(k)
+		if strings.Contains(upper, "API_KEY") || strings.Contains(upper, "APIKEY") ||
+			strings.Contains(upper, "AUTH_TOKEN") || strings.Contains(upper, "SECRET") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // shellCommand picks a shell that actually understands the commands a

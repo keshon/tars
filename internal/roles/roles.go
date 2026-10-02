@@ -20,10 +20,12 @@ package roles
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/permission"
 	"github.com/keshon/tars/internal/prompts"
 	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
@@ -49,6 +51,20 @@ type Env struct {
 	Procs        *tools.BackgroundProcesses
 	MaxTokens    int
 	ContextLimit int
+	Policy       permission.Policy
+	BackendKind  string
+	Stream       bool
+
+	// MCPTools are discovered MCP tools appended to the full tool set
+	// (Interactive, Subagent, Worker — never the read-only Inspector).
+	MCPTools []agent.Tool
+
+	// OnDelta receives streamed content chunks for live display.
+	OnDelta func(chunk string)
+
+	// Gate, if set, prompts the operator for Ask-gated calls. Nil means
+	// Ask degrades to Deny.
+	Gate func(tool, resource string, args json.RawMessage) (permission.Effect, error)
 
 	// OnStep, if set, receives every step of every agent built from this
 	// Env, tagged with that agent's label ("explore", "review", a subtask
@@ -69,6 +85,29 @@ func (e Env) onStep(label string) func(int, llm.Message) {
 	return func(step int, msg llm.Message) { e.OnStep(label, step, msg) }
 }
 
+func (e Env) gate() func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
+	if e.Gate == nil {
+		return nil
+	}
+	return func(_ context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error) {
+		return e.Gate(tool, resource, args)
+	}
+}
+
+func (e Env) policy() permission.Policy {
+	if len(e.Policy.Rules) == 0 {
+		return permission.Default()
+	}
+	return e.Policy
+}
+
+func interactiveSystem(backendKind string) string {
+	if backendKind == "" {
+		return prompts.System
+	}
+	return prompts.SystemForBackend(backendKind)
+}
+
 func (e Env) statePath(name string) string {
 	switch {
 	case name == "":
@@ -86,15 +125,17 @@ func (e Env) statePath(name string) string {
 // tools away beats asking a weak model not to reach for them.
 func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 	return agent.New(agent.Config{
-		Client:       e.Client,
-		Tools:        tools.ReadOnly(e.WS, e.Procs),
-		System:       system,
-		MaxSteps:     inspectorSteps,
-		MaxTokens:    e.MaxTokens,
-		ContextLimit: e.ContextLimit,
-		SkipVerify:   true,
-		StateFile:    e.statePath(stateFile),
-		OnStep:       e.onStep(label),
+		Client:         e.Client,
+		Tools:          tools.ReadOnly(e.WS, e.Procs),
+		System:         system,
+		MaxSteps:       inspectorSteps,
+		MaxTokens:      e.MaxTokens,
+		ContextLimit:   e.ContextLimit,
+		SkipVerify:     true,
+		StateFile:      e.statePath(stateFile),
+		OnStep:         e.onStep(label),
+		Policy:         e.policy(),
+		BeforeToolCall: e.gate(),
 	})
 }
 
@@ -103,13 +144,15 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 // can block the process waiting on a human who is watching the parent.
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
-		Client:       e.Client,
-		Tools:        tools.Base(e.WS, e.Procs),
-		System:       prompts.WithRole(role),
-		MaxSteps:     subagentSteps,
-		MaxTokens:    e.MaxTokens,
-		ContextLimit: e.ContextLimit,
-		SkipVerify:   true,
+		Client:         e.Client,
+		Tools:          tools.Base(e.WS, e.Procs, e.MCPTools...),
+		System:         prompts.WithRole(role),
+		MaxSteps:       subagentSteps,
+		MaxTokens:      e.MaxTokens,
+		ContextLimit:   e.ContextLimit,
+		SkipVerify:     true,
+		Policy:         e.policy(),
+		BeforeToolCall: e.gate(),
 	})
 }
 
@@ -123,7 +166,7 @@ func Subagent(e Env, role string) *agent.Agent {
 func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites bool) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:             e.Client,
-		Tools:              tools.Base(e.WS, e.Procs),
+		Tools:              tools.Base(e.WS, e.Procs, e.MCPTools...),
 		System:             system,
 		MaxSteps:           maxSteps,
 		MaxTokens:          e.MaxTokens,
@@ -132,6 +175,8 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 		VerifyOnZeroWrites: expectsWrites,
 		StateFile:          e.statePath(stateFile),
 		OnStep:             e.onStep(label),
+		Policy:             e.policy(),
+		BeforeToolCall:     e.gate(),
 	})
 }
 
@@ -154,18 +199,23 @@ func Interactive(e Env, label, stateFile string,
 	extra := []agent.Tool{&tools.Delegate{Spawn: func(role string) *agent.Agent {
 		return Subagent(e, role)
 	}}}
+	extra = append(extra, e.MCPTools...)
 	if ask != nil {
 		extra = append(extra, tools.AskUser{AskFn: ask})
 	}
 
 	return agent.New(agent.Config{
-		Client:       e.Client,
-		Tools:        tools.Base(e.WS, e.Procs, extra...),
-		System:       prompts.System,
-		MaxTokens:    e.MaxTokens,
-		ContextLimit: e.ContextLimit,
-		StateFile:    e.statePath(stateFile),
-		Verify:       verify,
-		OnStep:       e.onStep(label),
+		Client:         e.Client,
+		Tools:          tools.Base(e.WS, e.Procs, extra...),
+		System:         interactiveSystem(e.BackendKind),
+		MaxTokens:      e.MaxTokens,
+		ContextLimit:   e.ContextLimit,
+		StateFile:      e.statePath(stateFile),
+		Verify:         verify,
+		OnStep:         e.onStep(label),
+		Policy:         e.policy(),
+		BeforeToolCall: e.gate(),
+		Stream:         e.Stream,
+		OnDelta:        e.OnDelta,
 	})
 }

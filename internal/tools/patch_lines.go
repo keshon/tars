@@ -56,27 +56,41 @@ func (t PatchLines) Run(_ context.Context, args json.RawMessage) (string, error)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return "", err
-	}
+	return withPathLock(in.Path, func() (string, error) {
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return "", err
+		}
 
-	lines := strings.Split(string(data), "\n")
-	if in.StartLine > len(lines) {
-		return "", fmt.Errorf("start_line %d is beyond end of file (%d lines)", in.StartLine, len(lines))
-	}
-	end := in.EndLine
-	if end > len(lines) {
-		end = len(lines)
-	}
+		content, ending := normalizeContent(data)
+		lines := strings.Split(content, "\n")
+		if in.StartLine > len(lines) {
+			return "", fmt.Errorf("start_line %d is beyond end of file (%d lines)", in.StartLine, len(lines))
+		}
+		end := in.EndLine
+		if end > len(lines) {
+			end = len(lines)
+		}
 
-	replacement := strings.Split(in.NewContent, "\n")
-	result := append([]string{}, lines[:in.StartLine-1]...)
-	result = append(result, replacement...)
-	result = append(result, lines[end:]...)
+		replacement, _ := normalizeContent([]byte(in.NewContent))
+		// CRLF files: split on \n after normalization, compare fairly.
+		newSeg := strings.Split(replacement, "\n")
+		oldSeg := lines[in.StartLine-1 : end]
+		if strings.Join(oldSeg, "\n") == strings.Join(newSeg, "\n") {
+			return "", fmt.Errorf("patch_lines: replacement is identical to lines %d-%d — nothing would change", in.StartLine, end)
+		}
 
-	if err := os.WriteFile(full, []byte(strings.Join(result, "\n")), 0o644); err != nil {
-		return "", err
-	}
-	return "ok", nil
+		result := append([]string{}, lines[:in.StartLine-1]...)
+		result = append(result, newSeg...)
+		result = append(result, lines[end:]...)
+
+		if err := os.WriteFile(full, []byte(denormalize(strings.Join(result, "\n"), ending)), 0o644); err != nil {
+			return "", err
+		}
+		out := "ok\n" + unifiedDiff(in.Path, lines, in.StartLine-1, end, newSeg)
+		if note := gofmtNote(full); note != "" {
+			out += "\n" + note
+		}
+		return out, nil
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -22,15 +23,21 @@ import (
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
+	"github.com/keshon/tars/internal/permission"
 	"github.com/keshon/tars/internal/prompts"
 	"github.com/keshon/tars/internal/roles"
+	"github.com/keshon/tars/internal/session"
+	"github.com/keshon/tars/internal/snapshot"
 	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
 )
 
 func main() {
-	backend := flag.String("backend", "http://localhost:5001", "koboldcpp/llama.cpp base URL")
-	model := flag.String("model", "local", "model name (often ignored by local servers)")
+	backend := flag.String("backend", "http://localhost:5001", "backend base URL: bare origin for a local server ("+
+		"http://localhost:5001) or API root for a hosted OpenAI-compatible provider "+
+		"(https://api.openai.com/v1, https://openrouter.ai/api/v1)")
+	model := flag.String("model", "local", "model name: ignored by most local servers (they serve "+
+		"whatever weights they started with), required for remote providers")
 	root := flag.String("workspace", ".", "workspace root the agent may read/write")
 	debug := flag.Bool("debug", false, "log raw request/response JSON to agent-debug.log")
 	grammar := flag.Bool("grammar", true, "apply the backend's own content grammar. On koboldcpp "+
@@ -54,14 +61,30 @@ func main() {
 		"without it. Also auto-enabled when the task names ≥2 deliverable files (see -direct)")
 	direct := flag.Bool("direct", false, "force the reactive agent loop even when the task looks multi-file")
 	yes := flag.Bool("yes", false, "skip the mission plan approval gate and run the plan as generated")
-	backendKind := flag.String("backend-kind", "kobold", "which local server: "+
-		strings.Join(llm.Kinds(), " or ")+". A wrong value is caught at startup rather "+
+	backendKind := flag.String("backend-kind", "kobold", "which server: "+
+		strings.Join(llm.Kinds(), ", ")+". kobold/llama are local; openai is any hosted "+
+		"OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI). "+
+		"A wrong value is caught at startup rather "+
 		"than run: the dialects disagree about grammar, sampler fields and structured "+
 		"output, so a mismatched run completes and measures nothing")
+	apiKey := flag.String("api-key", "", "bearer token for a remote provider; prefer the "+
+		"TARS_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY env vars so the secret never lands in shell history")
+	apiKeyEnv := flag.String("api-key-env", "", "name of the env var holding the bearer token, "+
+		"e.g. OPENROUTER_API_KEY — overrides the built-in lookup order")
+	contextLimitFlag := flag.Int("context-limit", 0, "context window in tokens, overriding the backend probe. "+
+		"Required knowledge for -backend-kind openai, which has no probe endpoint: defaults to a "+
+		"per-model estimate when 0")
+	allowFlag := flag.String("allow", "", "comma-separated tool=pattern rules to allow, e.g. \"run_shell=go *,read_file=*.go\" (wins over defaults)")
+	denyFlag := flag.String("deny", "", "comma-separated tool=pattern rules to deny, e.g. \"run_shell=rm *,read_file=.env\" (wins over -allow)")
+	pureFlag := flag.Bool("pure", false, "ignore project config for permissions; use built-in defaults plus -allow/-deny only")
+	streamFlag := flag.Bool("stream", false, "stream response tokens live (openai/llama backends only; koboldcpp falls back to unary)")
+	mcpFlag := flag.String("mcp", "", "MCP servers: \"name=cmd args...;name2=cmd2\" (stdio JSON-RPC, tools appear as mcp__name__tool)")
+	forkFlag := flag.String("fork", "", "history file to branch from: loads its transcript but writes to a fresh task id")
+	revertFlag := flag.Bool("revert", false, "restore tracked workspace files to git HEAD and exit (untracked files are kept)")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
-	if task == "" && *resume == "" {
+	if task == "" && *resume == "" && *forkFlag == "" {
 		log.Fatal(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
 	}
 
@@ -87,8 +110,10 @@ func main() {
 	}
 
 	// Every run snapshots its history to disk after each step, so a crash
-	// or hitting MaxSteps doesn't lose everything — see -resume.
+	// or hitting MaxSteps doesn't lose everything — see -resume. -fork
+	// loads a prior transcript but writes to a fresh id (a branch).
 	var stateFile string
+	var forkHistory []llm.Message
 	if *resume != "" {
 		stateFile = *resume // keep appending to the same snapshot we resumed from
 	} else {
@@ -96,6 +121,14 @@ func main() {
 		taskID := hex.EncodeToString(sum[:])[:8]
 		taskDir := filepath.Join(".agent", "tasks", taskID)
 		stateFile = filepath.Join(taskDir, "state.json")
+		if *forkFlag != "" {
+			var err error
+			forkHistory, err = loadHistory(*forkFlag)
+			if err != nil {
+				log.Fatalf("fork: %v", err)
+			}
+			fmt.Printf("forked from %s (%d messages)\n", *forkFlag, len(forkHistory))
+		}
 		if *missionMode {
 			missionDir = taskDir
 			fmt.Printf("mission id: %s (resume with -resume %s)\n", taskID, taskDir)
@@ -109,9 +142,27 @@ func main() {
 		log.Fatalf("workspace: %v", wsErr)
 	}
 
+	if *revertFlag {
+		if err := snapshot.Revert(ws.Root()); err != nil {
+			log.Fatalf("revert: %v", err)
+		}
+		fmt.Println("workspace reverted to HEAD (untracked files kept)")
+		return
+	}
+
 	client, err := llm.ClientFor(*backendKind, *backend, *model)
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+	resolveAPIKey(*apiKey, *apiKeyEnv, client)
+	if hdrs := extraHeadersFromEnv(); len(hdrs) > 0 {
+		if client.ExtraHeaders == nil {
+			client.ExtraHeaders = hdrs
+		} else {
+			for k, v := range hdrs {
+				client.ExtraHeaders[k] = v
+			}
+		}
 	}
 	client.NoGrammar = !*grammar
 	if *debug {
@@ -128,7 +179,27 @@ func main() {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 
-	contextLimit, err := client.MaxContextLength(ctx)
+	var contextLimit int
+	if *backendKind == "openai" {
+		// Hosted gateways expose no probe endpoint, so the window comes
+		// from the flag or the per-model estimate. A local server answering
+		// here still means the kind is wrong, so keep that tripwire.
+		if *contextLimitFlag > 0 {
+			contextLimit = *contextLimitFlag
+		} else {
+			contextLimit = llm.OpenAIContextLimit(*model)
+		}
+		fmt.Printf("context window: %d tokens (estimated for %s; override with -context-limit)\n",
+			contextLimit, *model)
+		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
+			log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
+				"Re-run with -backend-kind %s. Continuing would send %s's grammar and\n"+
+				"sampler fields to a server that ignores both, and the run would look fine.",
+				*backendKind, actual, *backend, actual, *backendKind)
+		}
+	} else {
+		var err error
+		contextLimit, err = client.MaxContextLength(ctx)
 	if err != nil {
 		// The probe failing is evidence, not noise: each dialect asks a
 		// different endpoint, so if the OTHER one answers, -backend-kind
@@ -148,6 +219,7 @@ func main() {
 		contextLimit = 0
 	} else {
 		fmt.Printf("context window: %d tokens\n", contextLimit)
+	}
 	}
 
 	// Reuses mission.RunShellCommand for the same OS-aware shell choice as
@@ -236,13 +308,39 @@ func main() {
 		return strings.TrimSpace(line), nil
 	}
 
+	// Git snapshot before any work, so the run is reviewable/revertible.
+	if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
+		fmt.Printf("snapshot: %s\n", snap.Path)
+	}
+
+	mcpTools, mcpClients := discoverMCP(ctx, *mcpFlag)
+	defer func() {
+		for _, c := range mcpClients {
+			c.Close()
+		}
+	}()
+
 	env := roles.Env{
 		Client:       client,
 		WS:           ws,
 		Procs:        bgProcs,
 		MaxTokens:    *maxTokens,
 		ContextLimit: contextLimit,
+		Policy:       buildPolicy(*pureFlag, *allowFlag, *denyFlag),
+		Gate:         permissionGate(*yes),
+		BackendKind:  *backendKind,
+		Stream:       *streamFlag,
+		MCPTools:     mcpTools,
+		OnDelta:      func(chunk string) { fmt.Print(chunk) },
 		OnStep:       func(l string, s int, m llm.Message) { printStep(l, s, m, *logMax) },
+	}
+	if *streamFlag && *backendKind == "kobold" {
+		fmt.Println("note: -stream is unsupported on koboldcpp, using unary requests")
+	}
+
+	// Git snapshot before any work, so the run is reviewable/revertible.
+	if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
+		fmt.Printf("snapshot: %s\n", snap.Path)
 	}
 
 	// The subagent this spawns previously also carried Verify. That was
@@ -253,7 +351,7 @@ func main() {
 
 	var result string
 	if *resume != "" {
-		history, err := agent.LoadState(*resume)
+		history, err := loadHistory(*resume)
 		if err != nil {
 			log.Fatalf("resume: %v", err)
 		}
@@ -276,6 +374,12 @@ func main() {
 		} else {
 			result, err = a.Resume(ctx, history, prompts.Resume)
 		}
+		if err != nil {
+			log.Fatalf("agent failed: %v", err)
+		}
+	} else if len(forkHistory) > 0 {
+		var err error
+		result, err = a.Resume(ctx, forkHistory, prompts.Resume)
 		if err != nil {
 			log.Fatalf("agent failed: %v", err)
 		}
@@ -389,12 +493,150 @@ func runMission(ctx context.Context, p missionParams) {
 	}
 }
 
+// buildPolicy combines built-in defaults with -allow/-deny overrides.
+// -pure skips project config (no .agent/permissions.json loaded yet, so
+// today it just means defaults only); extra rules always win by append order.
+func buildPolicy(pure bool, allow, deny string) permission.Policy {
+	_ = pure
+	p := permission.Default()
+	var extra []permission.Rule
+	for _, spec := range parseRuleSpecs(allow, permission.Allow) {
+		extra = append(extra, spec)
+	}
+	for _, spec := range parseRuleSpecs(deny, permission.Deny) {
+		extra = append(extra, spec)
+	}
+	return p.WithExtra(extra)
+}
+
+func parseRuleSpecs(spec string, eff permission.Effect) []permission.Rule {
+	var out []permission.Rule
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tool, pattern := "*", part
+		if i := strings.Index(part, "="); i >= 0 {
+			tool = strings.TrimSpace(part[:i])
+			pattern = strings.TrimSpace(part[i+1:])
+			if tool == "" {
+				tool = "*"
+			}
+			if pattern == "" {
+				pattern = "*"
+			}
+		}
+		out = append(out, permission.Rule{Tool: tool, Pattern: pattern, Effect: eff})
+	}
+	return out
+}
+
+// permissionGate prompts for Ask-gated calls on stdin. -yes auto-denies
+// asks (fail-closed for unattended runs) instead of prompting.
+func permissionGate(autoDeny bool) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+	return func(tool, resource string, _ json.RawMessage) (permission.Effect, error) {
+		if autoDeny {
+			return permission.Deny, nil
+		}
+		fmt.Printf("\n[permission] %s on %q — allow? [y]es once / [a]lways / [n]o\n> ", tool, resource)
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return permission.Deny, fmt.Errorf("blocked: no answer")
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return permission.Allow, nil
+		case "a", "always":
+			return permission.Allow, nil
+		default:
+			return permission.Deny, fmt.Errorf("blocked by operator (%s on %s)", tool, resource)
+		}
+	}
+}
+
+// discoverMCP starts each -mcp server and returns its tools and clients.
+// A server that fails to answer risks nothing: it is reported and
+// skipped, and the run continues with the rest. Close every client when
+// the run ends so no server process outlives it.
+func discoverMCP(ctx context.Context, spec string) ([]agent.Tool, []*tools.MCPClient) {
+	names, commands, argss := tools.ParseMCPFlag(spec)
+	var out []agent.Tool
+	var clients []*tools.MCPClient
+	for i, name := range names {
+		dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		mcpTools, mcpClient, err := tools.StartMCP(dctx, name, commands[i], argss[i]...)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcp %s: %v (skipped)\n", name, err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "mcp %s: %d tools\n", name, len(mcpTools))
+		out = append(out, mcpTools...)
+		clients = append(clients, mcpClient)
+	}
+	return out, clients
+}
+
+// loadHistory reads a transcript from state.json, a .jsonl session log,
+// or a directory holding either. The log is the fallback when the snapshot
+// is missing or corrupt.
+func loadHistory(path string) ([]llm.Message, error) {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		if h, err := agent.LoadState(filepath.Join(path, "state.json")); err == nil {
+			return h, nil
+		}
+		return session.Load(session.LogPath(filepath.Join(path, "state.json")))
+	}
+	if strings.HasSuffix(path, ".jsonl") {
+		return session.Load(path)
+	}
+	if h, err := agent.LoadState(path); err == nil {
+		return h, nil
+	}
+	return session.Load(session.LogPath(path))
+}
+
+// resolveAPIKey attaches the bearer token to a remote client. Precedence
+// is the flag, then the named env var, then the built-in lookup order.
+// Local backends need no key and are left alone.
+func resolveAPIKey(flagVal, envName string, client *llm.Server) {
+	if strings.TrimSpace(flagVal) != "" {
+		client.WithAPIKey(strings.TrimSpace(flagVal))
+		return
+	}
+	if strings.TrimSpace(envName) != "" {
+		if v := strings.TrimSpace(os.Getenv(strings.TrimSpace(envName))); v != "" {
+			client.WithAPIKey(v)
+			return
+		}
+	}
+	if v := llm.APIKeyFromEnv(); v != "" {
+		client.WithAPIKey(v)
+	}
+}
+
+// extraHeadersFromEnv supplies gateway-specific headers without new flags:
+// OpenRouter recommends identifying the app on every request.
+func extraHeadersFromEnv() map[string]string {
+	out := map[string]string{}
+	if v := strings.TrimSpace(os.Getenv("OPENROUTER_REFERER")); v != "" {
+		out["HTTP-Referer"] = v
+	} else if v := strings.TrimSpace(os.Getenv("TARS_SITE_URL")); v != "" {
+		out["HTTP-Referer"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TARS_SITE_TITLE")); v != "" {
+		out["X-Title"] = v
+	}
+	return out
+}
+
 // printStep renders one model step to the console. label is a subtask id
 // or worker name in mission mode and empty for the top-level agent, which
 // is the only difference between what the two modes used to print from
 // two separate copies of this loop.
-func printStep(label string, step int, msg llm.Message, logMax int) {
-	prefix := fmt.Sprintf("[step %d]", step)
+func printStep(label string, step int, msg llm.Message, logMax int) {	prefix := fmt.Sprintf("[step %d]", step)
 	if label != "" {
 		prefix = fmt.Sprintf("[%s step %d]", label, step)
 	}

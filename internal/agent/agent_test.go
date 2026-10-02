@@ -751,7 +751,7 @@ func TestAgent_CompactHistoryAt90Percent(t *testing.T) {
 
 	found := false
 	for _, m := range client.lastHistory {
-		if m.Content == prompts.CompactNotice {
+		if len(m.Content) >= len(prompts.CompactNotice) && m.Content[:len(prompts.CompactNotice)] == prompts.CompactNotice {
 			found = true
 		}
 	}

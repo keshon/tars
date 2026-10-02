@@ -64,10 +64,12 @@ func TestDocumentAndChecksAgree(t *testing.T) {
 // than by noticing a cycle once the compiler refuses to build.
 func checkPackageLayers(t *testing.T, r *repo) {
 	allowed := map[string][]string{
-		"llm":       {},
-		"prompts":   {},
-		"workspace": {},
-		"agent":     {"llm", "prompts"},
+		"llm":        {},
+		"prompts":    {},
+		"workspace":  {},
+		"permission": {},
+		"session":    {"llm"},
+		"agent":      {"llm", "prompts", "permission", "session"},
 	}
 	for pkg, permitted := range allowed {
 		for _, f := range r.goFiles {

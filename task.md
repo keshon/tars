@@ -1,0 +1,32 @@
+# Test task: mini landing page
+
+Build a minimal static landing page under `./site` with exactly three files.
+Each file has a short spec below. Work is done when every item under
+"Acceptance" holds.
+
+## site/index.html
+
+- A valid HTML5 document with `<title>Acme Counter</title>`.
+- Links `styles.css` and loads `app.js` (defer is fine).
+- Body contains exactly:
+  `<h1 id="title">Acme Counter</h1>`,
+  `<p>Count: <span id="count">0</span></p>`,
+  `<button id="btn">Click me</button>`.
+
+## site/styles.css
+
+- `body` has a non-white `background` (any color).
+- `#title` has a `color` rule different from the body text color.
+
+## site/app.js
+
+- On `DOMContentLoaded` (or placed after the elements), attaches a click
+  handler to `#btn` that increments the number inside `#count` by one.
+- No external dependencies, no network calls.
+
+## Acceptance
+
+1. `site/index.html`, `site/styles.css` and `site/app.js` all exist.
+2. `index.html` references both `styles.css` and `app.js`.
+3. `styles.css` sets a body background and a `#title` color.
+4. `app.js` wires `#btn` clicks to increment `#count`.

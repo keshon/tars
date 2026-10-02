@@ -21,6 +21,7 @@ func Base(ws *workspace.Workspace, procs *BackgroundProcesses, extra ...agent.To
 		CheckBackground{Procs: procs},
 		StopBackground{Procs: procs},
 		CheckURL{},
+		Webfetch{WS: ws},
 	}
 	tools = append(tools, extra...)
 	return agent.NewRegistry(tools...)
@@ -38,5 +39,6 @@ func ReadOnly(ws *workspace.Workspace, procs *BackgroundProcesses) *agent.Regist
 		GrepFiles{WS: ws},
 		CheckBackground{Procs: procs},
 		CheckURL{},
+		Webfetch{WS: ws},
 	)
 }

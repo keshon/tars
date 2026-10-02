@@ -22,8 +22,12 @@ internal/agent     the loop. Tool interface, Registry, repeat detection,
                    koboldcpp or the filesystem.
 internal/llm       Client interface, one backend, the GBNF grammar.
                    Every backend quirk lives here.
-internal/tools     concrete tools: file, shell, search, process, delegation
+internal/tools     concrete tools: file, shell, search, process, delegation,
+                   webfetch, MCP stdio client
 internal/roles     the four kinds of agent this project builds
+internal/permission allow/ask/deny policy for tool calls (leaf package)
+internal/session   append-only JSONL session log next to state.json
+internal/snapshot  git diff capture and revert around runs
 internal/mission   plan, ledger, workers, checks, replan, review
 internal/prompts   every prompt, as .txt, embedded at build time
 internal/workspace path resolution for the file tools
@@ -139,7 +143,7 @@ failure, and more attempts will not fix a plan.
 
 ## The backend boundary
 
-`internal/llm` owns every backend quirk. Two are worth knowing about:
+`internal/llm` owns every backend quirk. Three are worth knowing about:
 
 **Grammar.** Requests carry a GBNF grammar that blocks a model from emitting
 its native tool-call template as plain text. It constrains the first character
@@ -149,6 +153,11 @@ only; it is a patch for two observed shapes, not a response envelope.
 to choose whether to emit a tool call and which one. That decision is not
 visible to this harness and cannot be constrained by the grammar above. Owning
 it means moving to `/api/v1/generate` and taking on per-model chat templating.
+
+**Remote providers take the OpenAI path.** The `openai` backend kind speaks
+plain OpenAI chat completions: bearer auth, no grammar field, no local sampler
+spellings, structured output via `response_format`. There is no context-window
+probe, so the window comes from configuration rather than measurement.
 
 ## Evals
 

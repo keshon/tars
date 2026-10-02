@@ -239,8 +239,9 @@ type Result struct {
 const defaultTimeout = 15 * time.Minute
 
 func main() {
-	backend := flag.String("backend", "http://localhost:5001", "koboldcpp/llama.cpp base URL")
-	model := flag.String("model", "local", "model name (often ignored by local servers)")
+	backend := flag.String("backend", "http://localhost:5001", "backend base URL: bare origin for a local "+
+		"server or API root for a hosted OpenAI-compatible provider")
+	model := flag.String("model", "local", "model name: ignored by most local servers, required for remote providers")
 	dir := flag.String("probes", "eval/probes", "directory of probe .json files")
 	only := flag.String("only", "", "run only probes whose name contains this substring")
 	jobsN := flag.Int("jobs", 1, "how many probes to run at once. Both backends batch concurrent "+
@@ -262,8 +263,11 @@ func main() {
 	requireModel := flag.String("require-model", "", "refuse to run unless the model the backend "+
 		"reports contains this substring — a local server loads whatever it was last started "+
 		"with, and comparing a score against one from different weights is worse than having no score")
-	backendKind := flag.String("backend-kind", "kobold", "which local server: kobold or llama "+
-		"(llama-server, worth running with --jinja for per-model tool-call formats)")
+	backendKind := flag.String("backend-kind", "kobold", "which server: kobold, llama or openai "+
+		"(any hosted OpenAI-compatible API)")
+	apiKey := flag.String("api-key", "", "bearer token for a remote provider")
+	apiKeyEnv := flag.String("api-key-env", "", "env var holding the bearer token")
+	contextLimitFlag := flag.Int("context-limit", 0, "context window override; remote backends default to a per-model estimate")
 	flag.Parse()
 
 	if *dry {
@@ -314,11 +318,27 @@ func main() {
 	// A pass rate without the model that produced it is worse than no
 	// number — comparing today's score against one from a different
 	// quantization is the exact mistake this tool exists to prevent.
-	probe := newBackend(*backendKind, *backend, *model)
+	probe := newBackend(*backendKind, *backend, *model, *apiKey, *apiKeyEnv)
 	ctx := context.Background()
-	contextLimit, ctxErr := probe.MaxContextLength(ctx)
-	backendModel, err := probe.ModelName(ctx)
-	if err != nil {
+	var contextLimit int
+	var ctxErr error
+	var backendModel string
+	var modelErr error
+	if *backendKind == "openai" {
+		if *contextLimitFlag > 0 {
+			contextLimit = *contextLimitFlag
+		} else {
+			contextLimit = llm.OpenAIContextLimit(*model)
+		}
+		backendModel = *model
+		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
+			log.Fatalf("-backend-kind is %q but %s is answering at %s - re-run with "+
+				"-backend-kind %s", *backendKind, actual, *backend, actual)
+		}
+	} else {
+		contextLimit, ctxErr = probe.MaxContextLength(ctx)
+		backendModel, modelErr = probe.ModelName(ctx)
+	if modelErr != nil {
 		backendModel = "(unknown)"
 	}
 	// Both probes above are dialect-specific endpoints, so both failing
@@ -327,11 +347,12 @@ func main() {
 	// "(unknown)", and -require-model then blamed the model for what was
 	// a flag mistake. Every score in that run would be a measurement of
 	// a client talking the wrong protocol.
-	if ctxErr != nil && err != nil {
+	if ctxErr != nil && modelErr != nil {
 		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
 			log.Fatalf("-backend-kind is %q but %s is answering at %s - re-run with "+
 				"-backend-kind %s", *backendKind, actual, *backend, actual)
 		}
+	}
 	}
 	// Live on 2026-09-05: koboldcpp was restarted and came back holding
 	// different weights, so a 4/8 looked like a refactor regression next
@@ -405,7 +426,7 @@ func main() {
 		fmt.Printf("  ....  %-22s run %d  started\n", j.probe.Name, j.run)
 		mu.Unlock()
 		record(runOnce(ctx, j.probe, j.run, runDir, *backendKind, *backend, *model,
-			contextLimit, *maxTokens, *dry_))
+			contextLimit, *maxTokens, *dry_, *apiKey, *apiKeyEnv))
 	}
 
 	// Exclusive probes first and alone: one that binds a fixed port
@@ -445,10 +466,19 @@ func main() {
 // newBackend picks a dialect. Unknown names fail loudly rather than
 // silently defaulting: a run against the wrong backend is the same class
 // of wasted measurement as a run against the wrong model.
-func newBackend(kind, baseURL, model string) *llm.Server {
+func newBackend(kind, baseURL, model, apiKey, apiKeyEnv string) *llm.Server {
 	c, err := llm.ClientFor(kind, baseURL, model)
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		c.WithAPIKey(strings.TrimSpace(apiKey))
+	} else if strings.TrimSpace(apiKeyEnv) != "" {
+		if v := strings.TrimSpace(os.Getenv(strings.TrimSpace(apiKeyEnv))); v != "" {
+			c.WithAPIKey(v)
+		}
+	} else if v := llm.APIKeyFromEnv(); v != "" {
+		c.WithAPIKey(v)
 	}
 	return c
 }
@@ -467,7 +497,7 @@ func keepTier(probes []Probe, tier string) []Probe {
 }
 
 func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend, model string,
-	contextLimit, maxTokens int, drySampler bool) (res Result) {
+	contextLimit, maxTokens int, drySampler bool, apiKey, apiKeyEnv string) (res Result) {
 
 	res = Result{Probe: p.Name, Run: run}
 	started := time.Now()
@@ -493,7 +523,7 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 		return res
 	}
 
-	kobold := newBackend(backendKind, backend, model)
+	kobold := newBackend(backendKind, backend, model, apiKey, apiKeyEnv)
 	kobold.DRY = drySampler
 	client := kobold
 

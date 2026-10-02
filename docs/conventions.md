@@ -32,9 +32,11 @@ first and let it fail, then record the baseline.
 
 ## Package layers
 
-**[enforced: package-layers]** `internal/llm`, `internal/prompts` and
-`internal/workspace` import no other internal package. `internal/agent` imports
-only `internal/llm` and `internal/prompts`. This is what lets `internal/tools`
+**[enforced: package-layers]** `internal/llm`, `internal/prompts`,
+`internal/workspace` and `internal/permission` import no other internal package.
+`internal/session` imports only `internal/llm`.
+`internal/agent` imports only `internal/llm`, `internal/prompts`,
+`internal/permission` and `internal/session`. This is what lets `internal/tools`
 implement `agent.Tool` without an import cycle, and what keeps the loop
 testable against a stub client with no filesystem in sight.
 

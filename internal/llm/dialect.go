@@ -77,6 +77,7 @@ var kinds = []struct {
 }{
 	{"kobold", koboldDialect{}},
 	{"llama", llamaDialect{}},
+	{"openai", openaiDialect{}},
 }
 
 // Kinds lists the accepted -backend-kind values, for flag help and error

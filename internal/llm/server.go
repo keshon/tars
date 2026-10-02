@@ -48,6 +48,15 @@ type Server struct {
 	// own native tool-call template tokens (e.g. "<|tool_call>...") can
 	// leak into what should be a normal answer. See DefaultGrammar.
 	Grammar string
+
+	// APIKey, when set, is sent as a bearer token on every request. Local
+	// servers ignore it; hosted OpenAI-compatible APIs require it. Prefer
+	// WithAPIKey or APIKeyFromEnv over embedding a secret in a flag.
+	APIKey string
+
+	// ExtraHeaders are sent on every chat request alongside auth, e.g.
+	// the referrer headers OpenRouter asks for. Empty by default.
+	ExtraHeaders map[string]string
 }
 
 // Default sampling. These are sent on every request so that nothing is
@@ -99,6 +108,31 @@ func newServer(baseURL, model string, d dialect) *Server {
 
 // Backend names the server this client talks to, for recorded results.
 func (c *Server) Backend() string { return c.dialect.name() }
+
+// WithAPIKey attaches a bearer token to every chat request and returns
+// the same client for chaining.
+func (c *Server) WithAPIKey(key string) *Server {
+	c.APIKey = key
+	return c
+}
+
+// chatURL joins the configured base with the completions path. Local
+// servers are configured as a bare origin ("http://localhost:5001") while
+// hosted APIs hand out a root that already ends in /v1, so accept both
+// plus a fully qualified path for gateways with deeper prefixes.
+func (c *Server) chatURL() string {
+	base := c.baseURL
+	for len(base) > 0 && base[len(base)-1] == '/' {
+		base = base[:len(base)-1]
+	}
+	if len(base) >= len("/chat/completions") && base[len(base)-len("/chat/completions"):] == "/chat/completions" {
+		return base
+	}
+	if len(base) >= 3 && base[len(base)-3:] == "/v1" {
+		return base + "/chat/completions"
+	}
+	return base + "/v1/chat/completions"
+}
 
 // --- wire format for the OpenAI-compatible endpoint ---
 
@@ -153,10 +187,20 @@ type wireRequest struct {
 	DRYAllowed    int     `json:"dry_allowed_length,omitempty"`
 }
 
-// responseFormat is the OpenAI-style structured-output request that
-// llama-server accepts on the chat endpoint.
+// responseFormat is the structured-output request carried on the chat
+// endpoint. llama-server takes the schema inline; OpenAI takes the
+// strict json_schema form. Each dialect fills only its own shape.
 type responseFormat struct {
-	Type   string          `json:"type"`
+	Type       string          `json:"type"`
+	Schema     json.RawMessage `json:"schema,omitempty"`
+	JSONSchema *jsonSchemaDef  `json:"json_schema,omitempty"`
+}
+
+// jsonSchemaDef is OpenAI's named-schema wrapper for strict structured
+// output.
+type jsonSchemaDef struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict,omitempty"`
 	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
@@ -247,11 +291,19 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	c.logDebug("[%s] --- request ---\n%s\n\n", time.Now().Format(time.RFC3339), body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+		c.chatURL(), bytes.NewReader(body))
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	for k, v := range c.ExtraHeaders {
+		if k != "" && v != "" {
+			httpReq.Header.Set(k, v)
+		}
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -260,7 +312,24 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return ChatResponse{}, fmt.Errorf("backend returned %s", resp.Status)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		snippet := string(raw)
+		if len(snippet) > 500 {
+			snippet = snippet[:500] + "...(truncated)"
+		}
+		api := &APIError{Status: resp.StatusCode, StatusText: resp.Status, Body: snippet}
+		if v := resp.Header.Get("Retry-After"); v != "" {
+			api.RetryAfter = parseRetryAfter(v)
+		}
+		if v := resp.Header.Get("retry-after-ms"); v != "" {
+			if d := parseRetryAfterMs(v); d > 0 {
+				api.RetryAfter = d
+			}
+		}
+		if resp.StatusCode == http.StatusBadRequest && isOverflowText(fmt.Errorf("%s", snippet)) {
+			api.Overflow = true
+		}
+		return ChatResponse{}, api
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -322,7 +391,15 @@ func (c *Server) MaxContextLength(ctx context.Context) (int, error) {
 // any measurement — a pass rate compared against one from a different
 // model, or the same model at a different quantization, is worse than no
 // number at all.
+//
+// A hosted gateway serves the model named in each request, so the
+// configured name is the answer and no probe is needed.
 func (c *Server) ModelName(ctx context.Context) (string, error) {
+	if _, ok := c.dialect.(openaiDialect); ok {
+		if c.model != "" {
+			return c.model, nil
+		}
+	}
 	return c.dialect.modelName(ctx, c.http, c.baseURL)
 }
 

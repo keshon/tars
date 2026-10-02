@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/keshon/tars/internal/agent"
@@ -60,6 +61,7 @@ func (t StartBackground) Run(_ context.Context, args json.RawMessage) (string, e
 	// process must outlive the call that started it.
 	cmd := shellCommand(context.Background(), in.Command)
 	cmd.Dir = t.WS.Root()
+	cmd.Env = scrubEnv(os.Environ())
 	id, _ := t.Procs.start(cmd)
 
 	settle := t.SettleTime

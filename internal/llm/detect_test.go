@@ -75,9 +75,19 @@ func TestClientFor(t *testing.T) {
 }
 
 // The probe DetectKind uses must be the one the client uses, or the
-// diagnosis names a backend the client cannot then talk to.
+// diagnosis names a backend the client cannot then talk to. Remote
+// OpenAI-compatible gateways expose no probe endpoint, so openai is
+// undetectable by design and skipped here rather than stubbed.
 func TestDetectKindAgreesWithTheClientItRecommends(t *testing.T) {
 	for _, kind := range Kinds() {
+		if kind == "openai" {
+			srv := backendStub(t, "neither")
+			defer srv.Close()
+			if got := DetectKind(context.Background(), srv.URL); got != "" {
+				t.Errorf("openai stub detected as %q, want undetectable", got)
+			}
+			continue
+		}
 		srv := backendStub(t, kind)
 		detected := DetectKind(context.Background(), srv.URL)
 		if detected != kind {

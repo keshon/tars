@@ -88,6 +88,10 @@ var (
 	// placeholders: tokens used, limit, percent.
 	BudgetNotice = read("budget_notice.txt")
 
+	// OverflowRecovered fires when a chat call failed with a
+	// context-window-exceeded error and history was compacted to recover.
+	OverflowRecovered = read("overflow_recovered.txt")
+
 	// SearchFatigue fires once when many consecutive steps pass without
 	// any mutating tool call succeeding — the model is exploring/
 	// searching but not converging. Nudges it to broaden its approach or
@@ -172,6 +176,12 @@ var (
 	// ok/gaps decision (sent with the decision grammar). One %s: the
 	// report.
 	MissionVerdict = read("mission_verdict.txt")
+
+	// KoboldAddendum tightens tool-call discipline for small local models.
+	KoboldAddendum = read("kobold_addendum.txt")
+
+	// OpenAIAddendum tightens schema discipline for hosted models.
+	OpenAIAddendum = read("openai_addendum.txt")
 )
 
 // WithRole returns System with RoleAddendum appended for role, or System
@@ -181,4 +191,17 @@ func WithRole(role string) string {
 		return System
 	}
 	return System + "\n\n" + fmt.Sprintf(RoleAddendum, role)
+}
+
+// SystemForBackend returns System with the backend-specific addendum for
+// kind ("kobold", "llama", "openai"). Unknown kinds return System unchanged.
+func SystemForBackend(kind string) string {
+	switch kind {
+	case "kobold":
+		return System + "\n\n" + KoboldAddendum
+	case "openai":
+		return System + "\n\n" + OpenAIAddendum
+	default:
+		return System
+	}
 }
