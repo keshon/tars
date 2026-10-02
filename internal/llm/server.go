@@ -184,6 +184,10 @@ type wireMessage struct {
 	Content    string         `json:"content"`
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	// Inbound only: llama.cpp reports a thinking model's deliberation
+	// here instead of inline <think> tags. Decoded into Message but
+	// never encoded back (see Message.Reasoning).
+	Reasoning string `json:"reasoning_content,omitempty"`
 }
 
 type wireTool struct {
@@ -388,8 +392,9 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 
 	wm := wresp.Choices[0].Message
 	out := Message{
-		Role:    Role(wm.Role),
-		Content: wm.Content,
+		Role:      Role(wm.Role),
+		Content:   wm.Content,
+		Reasoning: wm.Reasoning,
 	}
 	for _, tc := range wm.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{

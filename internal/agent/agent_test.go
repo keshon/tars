@@ -648,6 +648,37 @@ func TestAgent_ThinkOverBudgetWrapsUp(t *testing.T) {
 	}
 }
 
+func TestAgent_ReasoningFieldWrapsUp(t *testing.T) {
+	// llama.cpp reports deliberation out-of-band in reasoning_content,
+	// with no <think> tags in content. Measured live: Qwen deliberates
+	// ~100-500 chars on trivial tasks, so 8000 chars here is firmly
+	// over any sane budget.
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant,
+			Content:   "working on it",
+			Reasoning: strings.Repeat("deliberating. ", 500)}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "decided"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "decided" {
+		t.Fatalf("result = %q, want decided", out)
+	}
+	wraps := 0
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "Reasoning budget exceeded") {
+			wraps++
+		}
+	}
+	if wraps != 1 {
+		t.Fatalf("wrap-ups = %d, want 1", wraps)
+	}
+}
+
 func TestAgent_ThinkWrapsBounded(t *testing.T) {
 	ramble := "<think>" + strings.Repeat("still thinking. ", 400) + "</think>more deliberation"
 	responses := make([]llm.ChatResponse, 0, 5)

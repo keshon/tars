@@ -59,6 +59,15 @@ func inRegions(p int, regions [][2]int) bool {
 	return false
 }
 
+// DeliberationChars measures everything the model spent reasoning on
+// this turn, both channels: inline <think> blocks (koboldcpp) and the
+// separate reasoning field (llama.cpp). Double counting when a backend
+// reports both is accepted: it only makes wrap-ups more eager, and
+// MaxThinkWraps bounds the consequence.
+func DeliberationChars(m Message) int {
+	return ThinkChars(m.Content) + utf8.RuneCountInString(m.Reasoning)
+}
+
 // stripRegions returns content with the given byte ranges removed.
 func stripRegions(content string, regions [][2]int) string {
 	if len(regions) == 0 {

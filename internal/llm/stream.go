@@ -93,6 +93,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	var finish string
 	type deltaCall struct {
 		Index    int    `json:"index"`
@@ -124,6 +125,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 				Delta struct {
 					Role      string      `json:"role"`
 					Content   string      `json:"content"`
+					Reasoning string      `json:"reasoning_content"`
 					ToolCalls []deltaCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
@@ -150,6 +152,11 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 					onDelta(ch.Delta.Content)
 				}
 			}
+			// Reasoning deltas accumulate silently: deliberation is
+			// measured by the budget, not displayed live.
+			if ch.Delta.Reasoning != "" {
+				reasoning.WriteString(ch.Delta.Reasoning)
+			}
 			for _, dc := range ch.Delta.ToolCalls {
 				a := acc[dc.Index]
 				if a == nil {
@@ -172,7 +179,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 		return ChatResponse{}, fmt.Errorf("read stream: %w", err)
 	}
 
-	msg := Message{Role: RoleAssistant, Content: content.String()}
+	msg := Message{Role: RoleAssistant, Content: content.String(), Reasoning: reasoning.String()}
 	for i := 0; i < len(acc); i++ {
 		dc, ok := acc[i]
 		if !ok {

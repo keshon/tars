@@ -33,6 +33,14 @@ type Message struct {
 	Content    string
 	ToolCalls  []ToolCall
 	ToolCallID string
+
+	// Reasoning carries a thinking model's deliberation when the backend
+	// reports it out-of-band (llama.cpp's reasoning_content field) rather
+	// than inline <think> tags (koboldcpp). It is measured by the
+	// reasoning budget and kept in history, but never sent back: only
+	// some templates accept it, and an unknown field on a backend that
+	// passes extras through is a behavior change, not a replay.
+	Reasoning string
 }
 
 // ToolDef is what we tell the model a tool looks like.

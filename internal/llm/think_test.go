@@ -52,6 +52,16 @@ func TestThinkChars_Unicode(t *testing.T) {
 	}
 }
 
+func TestDeliberationChars_BothChannels(t *testing.T) {
+	m := Message{Role: RoleAssistant, Content: "<think>ab</think>ok", Reasoning: "cde"}
+	if got := DeliberationChars(m); got != 5 {
+		t.Fatalf("chars=%d, want 2 think + 3 reasoning", got)
+	}
+	if got := DeliberationChars(Message{Content: "plain"}); got != 0 {
+		t.Fatalf("chars=%d, want 0", got)
+	}
+}
+
 func TestStripRegions(t *testing.T) {
 	got := stripRegions("a <think>b</think> c", [][2]int{{2, 18}})
 	if got != "a  c" {

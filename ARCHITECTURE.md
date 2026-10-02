@@ -23,8 +23,9 @@ internal/agent     the loop. Tool interface, Registry, repeat detection,
 internal/llm       Client interface, one backend, the GBNF grammar.
                    Every backend quirk lives here.
 internal/tools     concrete tools: file, shell, search, process, delegation,
-                   webfetch, MCP stdio client
-internal/roles     the four kinds of agent this project builds
+                   webfetch (SSRF-validated), MCP stdio + HTTP clients,
+                   edit hardening, command probes, JSON reducers
+internal/roles     the five kinds of agent this project builds
 internal/permission allow/ask/deny policy for tool calls (leaf package)
 internal/events    JSONL run/step event output for -mode json
 internal/session   append-only JSONL session log next to state.json
@@ -34,9 +35,13 @@ internal/prompts   every prompt, as .txt, embedded at build time
 internal/workspace path resolution for the file tools
 ```
 
-`llm`, `prompts` and `workspace` import no other internal package. `agent`
-imports only `llm` and `prompts`, which is why `tools` can implement
-`agent.Tool` without a cycle. `roles` sits above both because it needs each.
+`llm`, `prompts`, `workspace`, `permission` and `events` import no
+other internal package. `session` imports only `llm`. `agent` imports
+only `llm`, `prompts`, `permission` and `session`, which is why `tools`
+can implement `agent.Tool` without a cycle. `roles` sits above both
+because it needs each. The full rule with its enforcement lives in
+[docs/conventions.md](docs/conventions.md) under `package-layers` —
+this paragraph is a copy, and the test is the original.
 
 ## The loop
 
@@ -45,8 +50,9 @@ those are different paths.
 
 ```mermaid
 flowchart TB
-  Call["model call"] --> HasCalls{"tool calls?"}
-  HasCalls -- no --> Finish["finish checks:<br/>truncation, leaked call,<br/>verify round, zero writes"]
+  Call["model call"] --> Recover["recover leaked calls<br/>into real ones"]
+  Recover --> HasCalls{"tool calls?"}
+  HasCalls -- no --> Finish["finish checks:<br/>truncation, think budget,<br/>leaked-text nudge, verify round,<br/>zero writes"]
   Finish -- "not done" --> Call
   Finish -- done --> Return["return answer"]
   HasCalls -- yes --> Guards["repeat guards:<br/>idempotentSeen, wrotePaths"]
@@ -83,20 +89,31 @@ a weak model rarely spells one the same way twice.
 
 A turn with no tool calls is not automatically an answer. Before one is
 accepted the loop rules out: generation truncated by the token budget, a
-tool call written as plain text instead of a structured call, a pending verify
+finish attempted on more reasoning than the think budget allows (wrapped
+up with a demand for commitment, at most twice per run), a tool call
+written as plain text instead of a structured call, a pending verify
 round, and — when the run was supposed to write files — a finish with nothing
 written. That last case is refused up to `MaxZeroWriteRefusals` times, quoting
 the model's own closing sentence back at it.
+
+Well-formed leaked calls never reach these checks: the parser recovers
+them into real calls before the branch, so they execute through the
+normal tool path. Only the unparseable remainder earns the nudge, and
+deliberation inside `<think>` blocks is excluded from both — a sketch is
+not a decision. (On llama.cpp backends deliberation arrives out-of-band
+in `reasoning_content`; it is measured by the think budget and kept in
+history, but likewise never executes.)
 
 ### Budgets
 
 Every bound has a default in `agent.New` or the `Runner` methods: 25 steps per
 run, 15 per mission worker, 12 per subagent, 8 per inspector, 8192 generation
-tokens, 2 stuck steps before a nudge, 2 fix attempts and 1 replan per mission.
-Total worker runs per mission are bounded by construction:
-`subtasks × (1 + fixes) × (1 + replans)`.
+tokens, 6000 characters of `<think>` deliberation per response before a
+wrap-up round (at most 2 per run), 2 stuck steps before a nudge, 2 fix attempts
+and 1 replan per mission. Total worker runs per mission are bounded by
+construction: `subtasks × (1 + fixes) × (1 + replans)`.
 
-## The four roles
+## The five roles
 
 `internal/roles` is the only place that constructs an agent, so "what is a
 subagent allowed to do" has one answer rather than one per call site.
@@ -107,10 +124,12 @@ subagent allowed to do" has one answer rather than one per call site.
 | `Subagent` | full set, no delegation or ask_user | 12 steps |
 | `Worker` | full set, no delegation | mission's worker budget |
 | `Interactive` | full set plus ask_user and delegate_task | run budget |
+| `Planner` | read-only, plan-mode prompt | run budget |
 
 An inspector gets a registry without the mutating tools rather than a prompt
 asking it not to mutate. A subagent cannot delegate, so delegation cannot
-recurse.
+recurse. A planner is an inspector with a different job: investigate and
+propose, change nothing — enforced by the same tool-set removal.
 
 ## Mission mode
 
@@ -125,8 +144,8 @@ grep output does not poison the plan.
 
 ### Checks
 
-A subtask declares how it will be verified: `file_exists`, `content_contains`,
-`shell`, `http` or `none`. The plan is rejected before a human sees it if two
+A subtask declares how it will be verified: `file_exists`, `file_absent`,
+`content_contains`, `shell`, `http` or `none`. The plan is rejected before a human sees it if two
 subtasks share a check, if a subtask reads without producing anything, or if a
 shell check cannot fail.
 
@@ -160,12 +179,26 @@ plain OpenAI chat completions: bearer auth, no grammar field, no local sampler
 spellings, structured output via `response_format`. There is no context-window
 probe, so the window comes from configuration rather than measurement.
 
+**Streaming is per-backend.** The `openai` and `llama` dialects stream
+server-sent events with per-chunk callbacks; koboldcpp refuses and the
+loop falls back to unary requests. Streaming changes observability, not
+semantics: the assembled response goes through the same finish checks.
+
+**Failures retry; overflows compact.** 429/5xx and dropped connections
+retry with backoff (honoring `Retry-After`); aborts surface immediately.
+A context-window error never retries — the loop compacts aggressively
+and continues, because another attempt at a full context fails the same
+way.
+
 ## Evals
 
 `eval/probes/*.json` are scenarios with frozen pass criteria, scored three
 ways: what the workspace contains, which tools were used, and what the run
-reported. Each runs in a throwaway copy of its seed, so fixtures cannot be
-mutated by a run. See [eval/README.md](eval/README.md).
+reported — plus harness-tail assertions where the probe declares them
+(overflow injection, snapshot revert). Each runs in a throwaway copy of
+its seed, so fixtures cannot be mutated by a run. Probes that only make
+sense on one OS declare `oses` and report SKIP elsewhere rather than
+scoring the host. See [eval/README.md](eval/README.md).
 
 The criteria are frozen by hand rather than derived from the mission's own
 checks, for the reason given under Checks above.
@@ -188,6 +221,11 @@ contains the announcement of the call that got cut off.
 row is four `write_file` calls and is also the normal shape of scaffolding
 work. Repeat detection compares arguments, not names.
 
+**Nudging a leaked call instead of running it.** A well-formed leak names
+a real tool with parseable arguments — unambiguous intent. Refusing it
+cost a round-trip the model usually failed again; recovering it into a
+real call costs nothing. Only the unparseable remainder earns the nudge.
+
 ## Known limitations
 
 - `internal/workspace` bounds the file tools. `run_shell` sets a working
@@ -196,5 +234,6 @@ work. Repeat detection compares arguments, not names.
 - Plan quality is the ceiling. Most mission failures are a bad plan executed
   faithfully, not a subtask executed badly.
 - Mission checks are chosen by the model. See Checks.
-- Windows-first. The shell tools pick `cmd.exe` or `sh` by OS, but see less
-  testing elsewhere.
+- Windows-first, but CI runs both Windows and Ubuntu, and OS-bound probes
+  declare `oses` and report SKIP elsewhere. The shell tools pick `cmd.exe`
+  or `sh` by OS.

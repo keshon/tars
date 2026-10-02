@@ -251,10 +251,11 @@ func New(cfg Config) *Agent {
 	return &Agent{cfg: cfg}
 }
 
-// defaultReasoningBudget caps <think> deliberation per response. Roughly
-// 1500 tokens at chars/4 — a deliberate fraction of the 8192 default
-// generation budget, and provisional: it wants one live measurement of
-// Qwen think sizes before it hardens. Negative disables wrapping.
+// defaultReasoningBudget caps deliberation per response. Roughly 1500
+// tokens at chars/4 against the 8192 default generation budget.
+// Calibrated live: Qwen 3.8 deliberated 119-502 chars on trivial tasks,
+// so 6000 gives ~12x headroom - a genuine ramble trips it clearly while
+// normal deliberation never comes close. Negative disables wrapping.
 const defaultReasoningBudget = 6000
 
 // defaultMaxThinkWraps bounds wrap-up rounds per run.
@@ -548,7 +549,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// ramble counts as unproductive like any other, and past
 			// MaxThinkWraps the run degrades to finishing as-is.
 			if a.cfg.ReasoningBudget > 0 && st.thinkWraps < a.cfg.MaxThinkWraps {
-				if thought := llm.ThinkChars(resp.Message.Content); thought > a.cfg.ReasoningBudget {
+				if thought := llm.DeliberationChars(resp.Message); thought > a.cfg.ReasoningBudget {
 					st.thinkWraps++
 					st.stuckSteps++
 					history = append(history, llm.Message{
