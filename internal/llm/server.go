@@ -59,7 +59,7 @@ type Server struct {
 	// the referrer headers OpenRouter asks for. Empty by default.
 	ExtraHeaders map[string]string
 
-	mu             sync.Mutex
+	mu           sync.Mutex
 	totalPrompt  int
 	totalGen     int
 	totalCalls   int

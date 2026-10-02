@@ -227,26 +227,26 @@ func main() {
 	} else {
 		var err error
 		contextLimit, err = client.MaxContextLength(ctx)
-	if err != nil {
-		// The probe failing is evidence, not noise: each dialect asks a
-		// different endpoint, so if the OTHER one answers, -backend-kind
-		// is wrong. Continuing is worse than stopping, because the
-		// dialects disagree about the grammar field, the sampler field
-		// names and the structured-output mechanism: the run completes
-		// having measured nothing. Nine mission runs did exactly that
-		// before this check existed.
-		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
-			log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
-				"Re-run with -backend-kind %s. Continuing would send %s's grammar and\n"+
-				"sampler fields to a server that ignores both, and the run would look fine.",
-				*backendKind, actual, *backend, actual, *backendKind)
+		if err != nil {
+			// The probe failing is evidence, not noise: each dialect asks a
+			// different endpoint, so if the OTHER one answers, -backend-kind
+			// is wrong. Continuing is worse than stopping, because the
+			// dialects disagree about the grammar field, the sampler field
+			// names and the structured-output mechanism: the run completes
+			// having measured nothing. Nine mission runs did exactly that
+			// before this check existed.
+			if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
+				log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
+					"Re-run with -backend-kind %s. Continuing would send %s's grammar and\n"+
+					"sampler fields to a server that ignores both, and the run would look fine.",
+					*backendKind, actual, *backend, actual, *backendKind)
+			}
+			// Otherwise the backend is simply not reporting: keep going
+			// without budget tracking rather than failing the whole run.
+			contextLimit = 0
+		} else {
+			note("context window: %d tokens", contextLimit)
 		}
-		// Otherwise the backend is simply not reporting: keep going
-		// without budget tracking rather than failing the whole run.
-		contextLimit = 0
-	} else {
-		note("context window: %d tokens", contextLimit)
-	}
 	}
 	emitter.Emit("context", map[string]any{"context_limit": contextLimit})
 
@@ -729,7 +729,8 @@ func extraHeadersFromEnv() map[string]string {
 // or worker name in mission mode and empty for the top-level agent, which
 // is the only difference between what the two modes used to print from
 // two separate copies of this loop.
-func printStep(label string, step int, msg llm.Message, logMax int) {	prefix := fmt.Sprintf("[step %d]", step)
+func printStep(label string, step int, msg llm.Message, logMax int) {
+	prefix := fmt.Sprintf("[step %d]", step)
 	if label != "" {
 		prefix = fmt.Sprintf("[%s step %d]", label, step)
 	}

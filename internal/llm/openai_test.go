@@ -140,11 +140,11 @@ func TestOpenAIChat_ErrorBodySurfaced(t *testing.T) {
 
 func TestOpenAIChatURL_Joining(t *testing.T) {
 	for base, want := range map[string]string{
-		"https://api.openai.com/v1":        "https://api.openai.com/v1/chat/completions",
-		"https://api.openai.com/v1/":       "https://api.openai.com/v1/chat/completions",
-		"https://openrouter.ai/api/v1":     "https://openrouter.ai/api/v1/chat/completions",
-		"http://localhost:5001":            "http://localhost:5001/v1/chat/completions",
-		"http://localhost:5001/":           "http://localhost:5001/v1/chat/completions",
+		"https://api.openai.com/v1":          "https://api.openai.com/v1/chat/completions",
+		"https://api.openai.com/v1/":         "https://api.openai.com/v1/chat/completions",
+		"https://openrouter.ai/api/v1":       "https://openrouter.ai/api/v1/chat/completions",
+		"http://localhost:5001":              "http://localhost:5001/v1/chat/completions",
+		"http://localhost:5001/":             "http://localhost:5001/v1/chat/completions",
 		"https://gateway/x/chat/completions": "https://gateway/x/chat/completions",
 	} {
 		c := NewOpenAIClient(base, "m")

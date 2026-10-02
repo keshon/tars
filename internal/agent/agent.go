@@ -509,8 +509,8 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// A model can write text that *looks* like a tool call
 			// ("<|tool_call>call:write_file{...}") instead of making a
 			// real structured one. Recoverable calls were extracted above;
-		// this branch sees only the unparseable remainder. Nothing here
-		// executes, but the model often
+			// this branch sees only the unparseable remainder. Nothing here
+			// executes, but the model often
 			// then believes — and later claims — that it did. Catch this
 			// before it's mistaken for a genuine finish.
 			if leakedText {

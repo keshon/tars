@@ -474,21 +474,21 @@ func main() {
 	} else {
 		contextLimit, ctxErr = probe.MaxContextLength(ctx)
 		backendModel, modelErr = probe.ModelName(ctx)
-	if modelErr != nil {
-		backendModel = "(unknown)"
-	}
-	// Both probes above are dialect-specific endpoints, so both failing
-	// usually means -backend-kind is wrong rather than the server being
-	// down. Without this the run continued at context 0 against model
-	// "(unknown)", and -require-model then blamed the model for what was
-	// a flag mistake. Every score in that run would be a measurement of
-	// a client talking the wrong protocol.
-	if ctxErr != nil && modelErr != nil {
-		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
-			log.Fatalf("-backend-kind is %q but %s is answering at %s - re-run with "+
-				"-backend-kind %s", *backendKind, actual, *backend, actual)
+		if modelErr != nil {
+			backendModel = "(unknown)"
 		}
-	}
+		// Both probes above are dialect-specific endpoints, so both failing
+		// usually means -backend-kind is wrong rather than the server being
+		// down. Without this the run continued at context 0 against model
+		// "(unknown)", and -require-model then blamed the model for what was
+		// a flag mistake. Every score in that run would be a measurement of
+		// a client talking the wrong protocol.
+		if ctxErr != nil && modelErr != nil {
+			if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
+				log.Fatalf("-backend-kind is %q but %s is answering at %s - re-run with "+
+					"-backend-kind %s", *backendKind, actual, *backend, actual)
+			}
+		}
 	}
 	// Live on 2026-09-05: koboldcpp was restarted and came back holding
 	// different weights, so a 4/8 looked like a refactor regression next

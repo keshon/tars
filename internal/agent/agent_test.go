@@ -340,8 +340,12 @@ func TestAgent_ParallelToolCalls_PreserveOrderRegardlessOfFinishTime(t *testing.
 	// Two calls in one step; the FIRST one issued sleeps longer than the
 	// second. If execution were sequential, the whole step would take at
 	// least the sum of both delays; if parallel, roughly the max of them.
-	slow := slowToolStub{name: "slow_a", delay: 40 * time.Millisecond}
-	fast := slowToolStub{name: "slow_b", delay: 5 * time.Millisecond}
+	// Delays are large enough (hundreds of ms) that runner scheduling
+	// noise stays far below the 50ms gap between parallel (~400ms) and
+	// sequential (~450ms): a 45ms total once failed on a loaded Windows
+	// runner with 52ms of pure scheduling overhead and no signal at all.
+	slow := slowToolStub{name: "slow_a", delay: 400 * time.Millisecond}
+	fast := slowToolStub{name: "slow_b", delay: 50 * time.Millisecond}
 
 	client := &twoCallClient{
 		callA:        llm.ToolCall{ID: "call_a", Name: "slow_a", Arguments: json.RawMessage(`{}`)},

@@ -66,7 +66,7 @@ func TestChatWithRetry_AbortSurfaces(t *testing.T) {
 }
 
 func TestAPIError_Retryable(t *testing.T) {
-	if !( &APIError{Status: 429}).Retryable() {
+	if !(&APIError{Status: 429}).Retryable() {
 		t.Error("429 must retry")
 	}
 	if (&APIError{Status: 400}).Retryable() {

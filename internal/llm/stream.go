@@ -95,7 +95,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	var content strings.Builder
 	var finish string
 	type deltaCall struct {
-		Index    int `json:"index"`
+		Index    int    `json:"index"`
 		ID       string `json:"id"`
 		Function struct {
 			Name      string `json:"name"`
