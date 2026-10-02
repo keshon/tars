@@ -89,6 +89,15 @@ type ChatRequest struct {
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
+
+	// CachedTokens is how many of PromptTokens the backend served from
+	// prefix cache (llama.cpp reports it as
+	// usage.prompt_tokens_details.cached_tokens; koboldcpp reports
+	// nothing — verified on the wire — and leaves it zero). Cached
+	// tokens still occupy the context window, so budgets and compaction
+	// use the full PromptTokens; this split exists for accounting only
+	// (cached tokens are cheaper on metered providers).
+	CachedTokens int
 }
 
 type ChatResponse struct {

@@ -43,12 +43,13 @@ const (
 // the harness, after the worker finishes. It's an enum of shapes rather
 // than a free-form shell string on purpose: narrowing what the planner
 // can ask for is the same decision-narrowing lever the plan grammar
-// applies to everything else. file_exists / content_contains / http run
-// natively in Go; shell reuses the same OS-aware exec as -verify-cmd.
+// applies to everything else. file_exists / file_absent /
+// content_contains / http run natively in Go; shell reuses the same
+// OS-aware exec as -verify-cmd.
 type Check struct {
-	Type     string `json:"type"`               // "shell" | "file_exists" | "content_contains" | "http" | "none"
+	Type     string `json:"type"`               // "shell" | "file_exists" | "file_absent" | "content_contains" | "http" | "none"
 	Cmd      string `json:"cmd,omitempty"`      // shell: the command line
-	Path     string `json:"path,omitempty"`     // file_exists / content_contains
+	Path     string `json:"path,omitempty"`     // file_exists / file_absent / content_contains
 	Contains string `json:"contains,omitempty"` // content_contains: substring that must appear
 	URL      string `json:"url,omitempty"`      // http: expect a 200 response
 }
@@ -60,6 +61,8 @@ func (c Check) Render() string {
 		return fmt.Sprintf("shell command must succeed: %s", c.Cmd)
 	case "file_exists":
 		return fmt.Sprintf("file must exist: %s", c.Path)
+	case "file_absent":
+		return fmt.Sprintf("file must be absent: %s", c.Path)
 	case "content_contains":
 		return fmt.Sprintf("file %s must contain %q", c.Path, c.Contains)
 	case "http":

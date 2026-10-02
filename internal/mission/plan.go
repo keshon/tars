@@ -229,7 +229,7 @@ func checkStrength(c Check) float64 {
 		return 2
 	case "content_contains":
 		return 2
-	case "file_exists", "http":
+	case "file_exists", "file_absent", "http":
 		return 1
 	default:
 		return 0
@@ -379,7 +379,7 @@ func validateCheck(s *Subtask, existing map[string]bool) (errs []string) {
 	switch c.Type {
 	case "none":
 		if len(s.FilesHint) > 0 && !allHintsExist(s.FilesHint, existing) {
-			errs = append(errs, fmt.Sprintf("%s: touches files (%s) but has no check — pick file_exists, content_contains, or shell",
+			errs = append(errs, fmt.Sprintf("%s: touches files (%s) but has no check — pick file_exists, file_absent, content_contains, or shell",
 				s.ID, strings.Join(s.FilesHint, ", ")))
 		}
 	case "file_exists":
@@ -401,6 +401,19 @@ func validateCheck(s *Subtask, existing map[string]bool) (errs []string) {
 			// loop burned three workers trying to satisfy it.
 			errs = append(errs, fmt.Sprintf("%s: file_exists check path %q is a directory — "+
 				"the check can never pass. Name a specific file", s.ID, c.Path))
+		}
+	case "file_absent":
+		path := normalizePlanPath(c.Path)
+		switch {
+		case strings.TrimSpace(path) == "":
+			errs = append(errs, fmt.Sprintf("%s: file_absent check has no path", s.ID))
+		case !existing[path]:
+			// Mirror of the file_exists vacuity rule: absence of a file
+			// that was never there proves nothing. Name a file the
+			// workspace listing shows, which this subtask removes.
+			errs = append(errs, fmt.Sprintf("%s: file_absent check on %q verifies nothing — the file "+
+				"does not exist yet. Point it at a file this subtask DELETES, or use content_contains "+
+				"for what remains", s.ID, c.Path))
 		}
 	case "content_contains":
 		path := normalizePlanPath(c.Path)

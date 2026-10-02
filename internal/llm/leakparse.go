@@ -41,33 +41,61 @@ type LeakedCall struct {
 // chunk completing it, so keeping it only feeds the model its own stump
 // to imitate.
 func ExtractLeakedCalls(content string, known map[string]bool) (calls []LeakedCall, cleaned string, leak bool) {
-	cleaned = content
-	// Whole-content and fenced envelopes first: they own the message, so
-	// surrounding-prose handling below must not re-scan their insides.
-	if cs, rest, ok := extractEnvelope(content, known); ok {
-		calls = append(calls, cs...)
-		cleaned = rest
-		leak = true
+	// Split into think and non-think segments. Think segments pass
+	// through untouched: deliberation is never scanned, so a sketch can
+	// neither execute nor nudge. Non-think segments run the full
+	// pipeline each, which keeps every span local to its segment.
+	type segment struct {
+		text  string
+		think bool
 	}
-	if cs, rest, ok := extractFenced(cleaned, known); ok {
-		calls = append(calls, cs...)
-		cleaned = rest
-		leak = true
-	}
-	// Tagged and narrative shapes, left to right.
-	scan := cleaned
-	for {
-		call, span, ok := nextTaggedOrNarrative(scan, known)
-		if !ok {
-			break
+	var segs []segment
+	prev := 0
+	for _, r := range ThinkRegions(content) {
+		if r[0] > prev {
+			segs = append(segs, segment{content[prev:r[0]], false})
 		}
-		calls = append(calls, call)
-		scan = scan[:span[0]] + scan[span[1]:]
-		leak = true
+		segs = append(segs, segment{content[r[0]:r[1]], true})
+		prev = r[1]
 	}
-	cleaned = scan
-	if frag, stripped := holdBackPartial(cleaned); frag {
-		cleaned = stripped
+	if prev < len(content) {
+		segs = append(segs, segment{content[prev:], false})
+	}
+	var b strings.Builder
+	for _, s := range segs {
+		if s.think {
+			b.WriteString(s.text)
+			continue
+		}
+		t := s.text
+		if cs, rest, ok := extractEnvelope(t, known); ok {
+			calls = append(calls, cs...)
+			t = rest
+			leak = true
+		}
+		if cs, rest, ok := extractFenced(t, known); ok {
+			calls = append(calls, cs...)
+			t = rest
+			leak = true
+		}
+		for {
+			call, span, ok := nextTaggedOrNarrative(t, known, ThinkRegions(t))
+			if !ok {
+				break
+			}
+			calls = append(calls, call)
+			t = t[:span[0]] + t[span[1]:]
+			leak = true
+		}
+		b.WriteString(t)
+	}
+	cleaned = b.String()
+	// Hold back a trailing partial fragment — unless it sits inside a
+	// trailing unclosed think block, where it is deliberation in
+	// progress rather than a call stump.
+	if loc := partialTail.FindStringIndex(cleaned); loc != nil &&
+		!inRegions(loc[0], ThinkRegions(cleaned)) {
+		cleaned = strings.TrimSpace(cleaned[:loc[0]])
 		leak = true
 	}
 	cleaned = strings.TrimSpace(cleaned)
@@ -157,6 +185,10 @@ func extractFenced(content string, known map[string]bool) ([]LeakedCall, string,
 			break
 		}
 		start := pos + rel
+		if inRegions(start, ThinkRegions(content)) {
+			pos = start + 3
+			continue
+		}
 		after := content[start+3:]
 		nl := strings.Index(after, "\n")
 		if nl < 0 {
@@ -191,8 +223,8 @@ func extractFenced(content string, known map[string]bool) ([]LeakedCall, string,
 var tagOpen = regexp.MustCompile(`<\|?tool_call>?`)
 
 // nextTaggedOrNarrative finds the first recoverable tagged or narrative
-// call in s. Returns the call and its byte span.
-func nextTaggedOrNarrative(s string, known map[string]bool) (LeakedCall, span, bool) {
+// call in s outside think regions. Returns the call and its byte span.
+func nextTaggedOrNarrative(s string, known map[string]bool, regions [][2]int) (LeakedCall, span, bool) {
 	best := span{-1, -1}
 	var bestCall LeakedCall
 	found := false
@@ -202,8 +234,12 @@ func nextTaggedOrNarrative(s string, known map[string]bool) (LeakedCall, span, b
 		}
 	}
 	// Tagged regions: <tool_call>...</tool_call>, <|tool_call|>...,
-	// or an unclosed tag running to end of message.
+	// or an unclosed tag running to end of message. Regions inside
+	// think blocks are deliberation sketches, never decisions.
 	for _, loc := range tagOpen.FindAllStringIndex(s, -1) {
+		if inRegions(loc[0], regions) {
+			continue
+		}
 		inner := s[loc[1]:]
 		end := len(s)
 		if i := strings.Index(inner, "</tool_call>"); i >= 0 {
@@ -218,7 +254,7 @@ func nextTaggedOrNarrative(s string, known map[string]bool) (LeakedCall, span, b
 		}
 	}
 	// Narrative: "made a function call <id> to <name> with arguments=<json>".
-	if loc := narrativeRe.FindStringSubmatchIndex(s); loc != nil {
+	if loc := narrativeRe.FindStringSubmatchIndex(s); loc != nil && !inRegions(loc[0], regions) {
 		name := s[loc[2]:loc[3]]
 		if known[name] {
 			if raw, end := balancedJSON(s, loc[1]); raw != "" {
@@ -323,8 +359,10 @@ func holdBackPartial(content string) (bool, string) {
 
 // hasLeakMarkers is the old blocklist, kept only for the unparseable
 // remainder: tagged text naming an unknown tool, or JSON too broken to
-// balance, still deserves the nudge rather than a silent accept.
+// balance, still deserves the nudge rather than a silent accept. Think
+// regions are stripped first: deliberation markers are not leaks.
 func hasLeakMarkers(content string) bool {
+	content = stripRegions(content, ThinkRegions(content))
 	lower := strings.ToLower(content)
 	if strings.Contains(lower, "<tool_call") || strings.Contains(lower, "<|tool_call") {
 		return true

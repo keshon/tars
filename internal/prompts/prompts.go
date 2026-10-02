@@ -186,6 +186,11 @@ var (
 	// PlanMode is the system prompt when -plan is set: read-only tools
 	// only, so "don't edit" is enforced by the tool set, not by asking.
 	PlanMode = read("plan_mode.txt")
+
+	// ThinkWrapUp fires when a finish attempt carries more reasoning than
+	// ReasoningBudget allows. Two %d: characters of thinking measured,
+	// the budget. It demands commitment, not more deliberation.
+	ThinkWrapUp = read("think_wrapup.txt")
 )
 
 // WithRole returns System with RoleAddendum appended for role, or System

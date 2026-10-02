@@ -36,21 +36,25 @@ func TestProbeCommand_UnknownFlagStillOk(t *testing.T) {
 }
 
 func TestProbeCommand_BrokenShim(t *testing.T) {
-	// A name LookPath resolves but the OS cannot start. Unix: a script
-	// with no execute bit (the stale-shim shape). Windows: LookPath only
-	// resolves PATHEXT extensions, so the fixture carries one — with
-	// garbage contents the loader refuses it.
+	// A name LookPath resolves but the OS cannot start.
+	// Unix: an executable script with a dead shebang — the stale-shim
+	// shape itself (wrappers pointing at deleted interpreters). A bare
+	// non-executable file does NOT work as a fixture: Unix LookPath
+	// checks the exec bit and reports "missing", which is the correct
+	// verdict for it, not the broken path under test.
 	dir := t.TempDir()
 	name := "deadshim"
-	content := "#!/bin/sh\nexit 0\n"
+	content := "#!/nonexistent-interpreter-tars-probe\nexit 0\n"
+	mode := os.FileMode(0o700)
 	if runtime.GOOS == "windows" {
 		// cmd.exe interprets any .cmd text (even garbage exits 0), so a
 		// batch fixture cannot be broken. A garbage .exe makes the
 		// loader itself refuse: "not a valid Win32 application".
 		name = "deadshim.exe"
 		content = "\x00\x01\x02 not executable content"
+		mode = 0o600
 	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), mode); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

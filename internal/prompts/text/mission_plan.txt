@@ -12,6 +12,7 @@ Rules:
 - check is how the harness verifies the subtask mechanically after the work is done. Pick exactly one:
   {"type":"content_contains","path":"FILE","contains":"SYMBOL"} — FILE contains the literal SYMBOL (a function/export/tag unique to this subtask). Preferred for new or edited code files — proves real content, not an empty stub.
   {"type":"file_exists","path":"FILE"} — FILE must be a NEW non-empty file this subtask creates. Weaker than content_contains; use only for trivial scaffolding with no distinctive symbol.
+{"type":"file_absent","path":"FILE"} — FILE must be gone after this subtask (a delete or rename). Name a file the listing shows; absence of a file that was never there proves nothing.
   {"type":"shell","cmd":"COMMAND"} — COMMAND must exit 0 only if the work is correct. Required when proving a build/test, or when modifying existing files with no stable marker string. Never use echo, ls, dir, or another command that always succeeds.
   {"type":"http","url":"URL"} — URL must return HTTP 200. Only for subtasks that leave a server running.
   {"type":"none"} — only for subtasks that change no files.

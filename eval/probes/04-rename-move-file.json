@@ -11,8 +11,8 @@
       "contains": "Hello from eval fixtures"
     },
     {
-      "type": "shell",
-      "cmd": "if exist hello.txt exit 1"
+      "type": "file_absent",
+      "path": "hello.txt"
     }
   ],
   "trace": [

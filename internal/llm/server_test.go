@@ -77,6 +77,38 @@ func TestChat_StringEncodedArguments(t *testing.T) {
 // TestNormalizeArguments_AcceptsObjectForm covers backends that send the
 // arguments object directly instead of string-encoding it — both shapes
 // must work, since not every local server follows the spec the same way.
+// TestChat_CachedTokensParsed covers the llama.cpp usage shape
+// (prompt_tokens_details.cached_tokens), which koboldcpp omits —
+// verified absent on the wire. A backend that does not report it must
+// decode to zero, not to an error.
+func TestChat_CachedTokensParsed(t *testing.T) {
+	serve := func(usage string) ChatResponse {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices": [{"message": {"role": "assistant", "content": "hi"}}],
+				"usage": {` + usage + `}}`))
+		}))
+		defer srv.Close()
+		c := NewKoboldClient(srv.URL, "local")
+		resp, err := c.Chat(context.Background(), ChatRequest{
+			Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+		return resp
+	}
+	resp := serve(`"prompt_tokens": 44, "completion_tokens": 48,
+		"prompt_tokens_details": {"cached_tokens": 40}`)
+	if resp.Usage.CachedTokens != 40 {
+		t.Fatalf("cached = %d, want 40", resp.Usage.CachedTokens)
+	}
+	resp = serve(`"prompt_tokens": 15, "completion_tokens": 10`)
+	if resp.Usage.CachedTokens != 0 {
+		t.Fatalf("absent details must decode to zero, got %d", resp.Usage.CachedTokens)
+	}
+}
+
 func TestRepairArguments_PassesThroughWithoutInputWrapper(t *testing.T) {
 	raw := json.RawMessage(`not-json-at-all`)
 	got := repairArguments(raw)

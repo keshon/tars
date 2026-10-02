@@ -37,7 +37,7 @@ package mission
 const PlanGrammar = `root ::= "{" ws "\"subtasks\"" ws ":" ws "[" ws subtask (ws "," ws subtask){0,7} ws "]" ws "}"
 subtask ::= "{" ws "\"id\"" ws ":" ws str "," ws "\"milestone\"" ws ":" ws str "," ws "\"title\"" ws ":" ws str "," ws "\"goal\"" ws ":" ws str "," ws "\"acceptance\"" ws ":" ws accarr "," ws "\"files_hint\"" ws ":" ws strarr "," ws "\"check\"" ws ":" ws check ws "}"
 check ::= "{" ws "\"type\"" ws ":" ws checktype (ws "," ws checkfields)? ws "}"
-checktype ::= "\"shell\"" | "\"file_exists\"" | "\"content_contains\"" | "\"http\"" | "\"none\""
+checktype ::= "\"shell\"" | "\"file_exists\"" | "\"file_absent\"" | "\"content_contains\"" | "\"http\"" | "\"none\""
 checkfields ::= pathcont | onearg
 pathcont ::= "\"path\"" ws ":" ws str ws "," ws "\"contains\"" ws ":" ws str
 onearg ::= ("\"cmd\"" | "\"path\"" | "\"url\"") ws ":" ws str
@@ -93,7 +93,7 @@ const PlanSchema = `{
             "type": "object",
             "required": ["type"],
             "properties": {
-              "type":     {"enum": ["shell","file_exists","content_contains","http","none"]},
+              "type":     {"enum": ["shell","file_exists","file_absent","content_contains","http","none"]},
               "cmd":      {"type": "string", "maxLength": 300},
               "path":     {"type": "string", "maxLength": 300},
               "contains": {"type": "string", "maxLength": 300},

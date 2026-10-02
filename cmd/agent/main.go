@@ -48,6 +48,8 @@ func main() {
 		"grammar the server builds from the tool schemas")
 	maxTokens := flag.Int("max-tokens", 8192, "generation budget per response — too low truncates "+
 		"large outputs (e.g. a full HTML+CSS+JS file) mid-JSON")
+	thinkBudget := flag.Int("reasoning-budget", 0, "characters of <think> deliberation allowed per response "+
+		"before a wrap-up round demands commitment; 0 takes the agent default (6000), negative disables wrapping")
 	resume := flag.String("resume", "", "path to a .agent/tasks/.../state.json snapshot to resume "+
 		"an interrupted run from, instead of starting a new task")
 	answer := flag.String("answer", "", "answer to supply when resuming a run paused on ask_user "+
@@ -351,18 +353,19 @@ func main() {
 	}()
 
 	env := roles.Env{
-		Client:       client,
-		WS:           ws,
-		Procs:        bgProcs,
-		MaxTokens:    *maxTokens,
-		ContextLimit: contextLimit,
-		Policy:       buildPolicy(*pureFlag, *allowFlag, *denyFlag),
-		Gate:         permissionGate(*yes),
-		BackendKind:  *backendKind,
-		Stream:       *streamFlag && *modeFlag != "json",
-		MCPTools:     mcpTools,
-		OnDelta:      func(chunk string) { fmt.Print(chunk) },
-		OnStep:       stepPrinter(*modeFlag, emitter, *logMax),
+		Client:          client,
+		WS:              ws,
+		Procs:           bgProcs,
+		MaxTokens:       *maxTokens,
+		ContextLimit:    contextLimit,
+		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
+		Gate:            permissionGate(*yes),
+		BackendKind:     *backendKind,
+		Stream:          *streamFlag && *modeFlag != "json",
+		MCPTools:        mcpTools,
+		ReasoningBudget: *thinkBudget,
+		OnDelta:         func(chunk string) { fmt.Print(chunk) },
+		OnStep:          stepPrinter(*modeFlag, emitter, *logMax),
 	}
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})

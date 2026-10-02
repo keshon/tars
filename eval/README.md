@@ -65,7 +65,39 @@ direct loop.
 
 ## Coverage
 
-Probes exist for 03-11 and 13-17. Three write-ups are not yet mechanized:
+Probes exist for 03-11 and 13-19. Three write-ups are not yet mechanized:
 
 - `01`, `02` — need a dedicated git seed fixture
 - `12` — its pass condition is an OR across check kinds
+
+## Vacuity audit
+
+Every probe must be able to fail — a probe that passes on an empty run
+measures nothing. Rules are enforced two ways: `loadProbes` rejects a
+probe with nothing asserted, and the table below records why each probe
+cannot pass vacuously (reviewed 2026-10-03, P7 item 3).
+
+| Probe | Why it cannot pass on an empty run |
+|---|---|
+| 03 | `list_files` required — no calls, no pass |
+| 04 | `goodbye.txt` content + `hello.txt` absence both require action; `move_file` required |
+| 05 | `v2` symbol must appear; `Greet()` presence pins the rest of the file |
+| 06 | `REPLACED` must appear; `read_file` required |
+| 07 | `notes.txt` is a new file; `write_file` required |
+| 08 | `read_file` required; mutating tools forbidden |
+| 09 | `return "hi"` must appear; `grep_files` required |
+| 10 | answer regex on the real size; `read_file` required |
+| 11 | `Bye()` symbols must appear; `delegate_task` forbidden |
+| 13 | `start_background` + `check_url` required |
+| 14 | three new files with contents; `write_file` required |
+| 15, 17 | new files with distinctive symbols |
+| 16 | shell runs the script and matches `42`; `oses: [windows]` (see below) |
+| 18 | answer + `read_file` required after surviving the injected overflow |
+| 19 | file must be written, then the revert tail asserts byte-exact restore; empty diff fails by design |
+
+Platform-bound probes declare `"oses"` (`windows`/`linux`/`darwin`) and
+report SKIP elsewhere — a skip is excluded from the rate like ERR. Today
+that is 16 (`findstr` pipeline). Probe 04 used to shell out to
+`if exist hello.txt`; it now uses the portable `file_absent` check type
+instead. Prefer portable checks over `oses`: a skip is honest, but every
+skip is a configuration the suite never exercises.

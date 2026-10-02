@@ -129,6 +129,20 @@ type Config struct {
 	// constant chosen once and hidden.
 	CompactAtPercent int
 
+	// ReasoningBudget caps <think> deliberation per response in
+	// characters (chars/4 approximates tokens — no backend on the wire
+	// reports reasoning tokens separately, verified on koboldcpp).
+	// A finish attempt carrying more thinking than this gets one
+	// wrap-up round demanding commitment instead of more deliberation.
+	// Zero means the default; negative disables wrapping entirely.
+	ReasoningBudget int
+
+	// MaxThinkWraps bounds wrap-up rounds per run. A model that ignores
+	// the wrap-up and rambles again degrades to the status quo after
+	// this many: the step budget, not another nudge, ends the run.
+	// Zero means the default.
+	MaxThinkWraps int
+
 	// Policy gates tool calls before they run. Nil means allow-all.
 	Policy permission.Policy
 	// BeforeToolCall, if set, decides whether a call runs. It returns the
@@ -228,8 +242,23 @@ func New(cfg Config) *Agent {
 	if cfg.CompactAtPercent == 0 {
 		cfg.CompactAtPercent = defaultCompactAtPercent
 	}
+	if cfg.ReasoningBudget == 0 {
+		cfg.ReasoningBudget = defaultReasoningBudget
+	}
+	if cfg.MaxThinkWraps == 0 {
+		cfg.MaxThinkWraps = defaultMaxThinkWraps
+	}
 	return &Agent{cfg: cfg}
 }
+
+// defaultReasoningBudget caps <think> deliberation per response. Roughly
+// 1500 tokens at chars/4 — a deliberate fraction of the 8192 default
+// generation budget, and provisional: it wants one live measurement of
+// Qwen think sizes before it hardens. Negative disables wrapping.
+const defaultReasoningBudget = 6000
+
+// defaultMaxThinkWraps bounds wrap-up rounds per run.
+const defaultMaxThinkWraps = 2
 
 // Run executes the agent loop on a single task and returns the model's
 // final answer once it stops requesting tools.
@@ -374,6 +403,11 @@ type runState struct {
 	// run was supposed to write. See MaxZeroWriteRefusals.
 	zeroWriteFinishes int
 
+	// thinkWraps counts wrap-up rounds this run: finishes attempted with
+	// more reasoning than ReasoningBudget allows. Bounded by
+	// MaxThinkWraps; past it the run degrades to finishing as-is.
+	thinkWraps int
+
 	// pendingBudget holds a context-usage notice that lost its slot to a
 	// more urgent nudge, to be delivered on the next step that has one
 	// free. See interject.
@@ -504,6 +538,26 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 					st.stuckSteps = 0
 				}
 				continue
+			}
+
+			// A finish attempt carrying more reasoning than the budget is a
+			// model about to end the run on deliberation rather than a
+			// decision: wrap it up and demand commitment instead. Acting
+			// (tool calls above) is progress by definition, so only
+			// finishes are wrapped; a wrap-up round that yields another
+			// ramble counts as unproductive like any other, and past
+			// MaxThinkWraps the run degrades to finishing as-is.
+			if a.cfg.ReasoningBudget > 0 && st.thinkWraps < a.cfg.MaxThinkWraps {
+				if thought := llm.ThinkChars(resp.Message.Content); thought > a.cfg.ReasoningBudget {
+					st.thinkWraps++
+					st.stuckSteps++
+					history = append(history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: fmt.Sprintf(prompts.ThinkWrapUp, thought, a.cfg.ReasoningBudget),
+					})
+					a.saveState(history)
+					continue
+				}
 			}
 
 			// A model can write text that *looks* like a tool call

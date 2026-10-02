@@ -622,6 +622,129 @@ func TestAgent_LeakedCallRecoversAndExecutes(t *testing.T) {
 	t.Fatal("expected the recovered call to execute and record a tool result")
 }
 
+func TestAgent_ThinkOverBudgetWrapsUp(t *testing.T) {
+	ramble := "<think>" + strings.Repeat("considering options. ", 400) + "</think>stuck deliberating"
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: ramble}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "decided"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "decided" {
+		t.Fatalf("result = %q, want decided", out)
+	}
+	wraps := 0
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "Reasoning budget exceeded") {
+			wraps++
+		}
+	}
+	if wraps != 1 {
+		t.Fatalf("wrap-ups = %d, want 1", wraps)
+	}
+}
+
+func TestAgent_ThinkWrapsBounded(t *testing.T) {
+	ramble := "<think>" + strings.Repeat("still thinking. ", 400) + "</think>more deliberation"
+	responses := make([]llm.ChatResponse, 0, 5)
+	for i := 0; i < 5; i++ {
+		responses = append(responses, llm.ChatResponse{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: ramble},
+		})
+	}
+	client := &stubClient{responses: responses}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true,
+		MaxThinkWraps: 2, MaxSteps: 10})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out == "" {
+		t.Fatal("run must degrade to finishing, not error")
+	}
+	wraps := 0
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "Reasoning budget exceeded") {
+			wraps++
+		}
+	}
+	if wraps != 2 {
+		t.Fatalf("wrap-ups = %d, want exactly MaxThinkWraps (2)", wraps)
+	}
+}
+
+func TestAgent_ThinkUnderBudgetFinishes(t *testing.T) {
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "<think>brief</think>done"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "<think>brief</think>done" {
+		t.Fatalf("result = %q", out)
+	}
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "Reasoning budget exceeded") {
+			t.Fatal("no wrap-up should fire under budget")
+		}
+	}
+}
+
+func TestAgent_ThinkBudgetDisabled(t *testing.T) {
+	ramble := "<think>" + strings.Repeat("x. ", 4000) + "</think>done anyway"
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: ramble}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys",
+		SkipVerify: true, ReasoningBudget: -1})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != ramble {
+		t.Fatalf("disabled budget must finish as-is")
+	}
+}
+
+func TestAgent_ThinkWithToolCallsNotWrapped(t *testing.T) {
+	// Acting is progress: a thinking model that also calls tools is
+	// converging, not rambling. Only finishes wrap.
+	ramble := "<think>" + strings.Repeat("thinking hard. ", 400) + "</think>acting"
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: ramble,
+			ToolCalls: []llm.ToolCall{
+				{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)},
+			},
+		}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(echoToolStub{}), System: "sys", SkipVerify: true})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("result = %q, want done", out)
+	}
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.Contains(m.Content, "Reasoning budget exceeded") {
+			t.Fatal("acting steps must not wrap")
+		}
+	}
+}
+
 func TestAgent_VerifyMessage_StatesZeroWritesAsFact(t *testing.T) {
 	client := &stubClient{responses: []llm.ChatResponse{
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "I created the file."}},

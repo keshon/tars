@@ -31,6 +31,29 @@ func TestRunCheck_None(t *testing.T) {
 	}
 }
 
+func TestRunCheck_FileAbsent(t *testing.T) {
+	ws := testWS(t)
+	ctx := context.Background()
+
+	if out, ok := RunCheck(ctx, Check{Type: "file_absent", Path: "gone.txt"}, ws); !ok {
+		t.Fatalf("absent file should pass, got: %s", out)
+	}
+	if out, ok := RunCheck(ctx, Check{Type: "file_absent"}, ws); ok {
+		t.Fatalf("empty path should fail, got: %s", out)
+	}
+
+	full := filepath.Join(ws.Root(), "gone.txt")
+	if err := os.WriteFile(full, []byte("still here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, ok := RunCheck(ctx, Check{Type: "file_absent", Path: "gone.txt"}, ws); ok {
+		t.Fatalf("existing file should fail, got: %s", out)
+	}
+	if got := (Check{Type: "file_absent", Path: "gone.txt"}).Render(); !strings.Contains(got, "absent") {
+		t.Fatalf("render = %q", got)
+	}
+}
+
 func TestRunCheck_FileExists(t *testing.T) {
 	ws := testWS(t)
 	ctx := context.Background()

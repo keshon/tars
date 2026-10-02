@@ -48,6 +48,19 @@ func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output str
 		}
 		return fmt.Sprintf("file %s exists (%d bytes)", c.Path, info.Size()), true
 
+	case "file_absent":
+		// The mirror of file_exists for deletions and renames: proves the
+		// old path is gone rather than shelling out to `if exist` (cmd)
+		// or `[ ! -f ]` (sh), neither of which is portable.
+		full, err := ws.Resolve(c.Path)
+		if err != nil {
+			return fmt.Sprintf("check path rejected: %v", err), false
+		}
+		if _, err := os.Stat(full); err == nil {
+			return fmt.Sprintf("file %s still exists", c.Path), false
+		}
+		return fmt.Sprintf("file %s is absent", c.Path), true
+
 	case "content_contains":
 		// Stronger than file_exists: proves a distinctive symbol from the
 		// acceptance criteria actually landed. Caps the read so a huge

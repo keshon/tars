@@ -4,6 +4,7 @@
   "mission": true,
   "tier": "mission",
   "timeout_sec": 1200,
+  "oses": ["windows"],
   "verify": [
     {
       "type": "shell",

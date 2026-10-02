@@ -63,6 +63,7 @@ type Server struct {
 	totalPrompt  int
 	totalGen     int
 	totalCalls   int
+	totalCached  int
 	totalRetries int
 }
 
@@ -73,12 +74,21 @@ func (c *Server) UsageTotals() (prompt, generated, calls int) {
 	return c.totalPrompt, c.totalGen, c.totalCalls
 }
 
-func (c *Server) recordUsage(promptTokens, completionTokens int) {
+// CachedTotal returns cumulative prefix-cached prompt tokens. Zero on
+// backends that do not report them.
+func (c *Server) CachedTotal() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totalCached
+}
+
+func (c *Server) recordUsage(promptTokens, completionTokens, cachedTokens int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.totalPrompt += promptTokens
 	c.totalGen += completionTokens
 	c.totalCalls++
+	c.totalCached += cachedTokens
 }
 
 // Default sampling. These are sent on every request so that nothing is
@@ -234,6 +244,10 @@ type wireResponse struct {
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
+		// llama.cpp reports prefix-cache hits here; koboldcpp omits it.
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -388,11 +402,12 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	usage := Usage{
 		PromptTokens:     wresp.Usage.PromptTokens,
 		CompletionTokens: wresp.Usage.CompletionTokens,
+		CachedTokens:     wresp.Usage.PromptTokensDetails.CachedTokens,
 	}
-	c.recordUsage(usage.PromptTokens, usage.CompletionTokens)
+	c.recordUsage(usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens)
 	p, g, n := c.UsageTotals()
-	c.logDebug("[%s] --- usage (this call: %d prompt + %d generated; run totals: %d prompt + %d generated over %d calls) ---\n\n",
-		time.Now().Format(time.RFC3339), usage.PromptTokens, usage.CompletionTokens, p, g, n)
+	c.logDebug("[%s] --- usage (this call: %d prompt (%d cached) + %d generated; run totals: %d prompt + %d generated over %d calls) ---\n\n",
+		time.Now().Format(time.RFC3339), usage.PromptTokens, usage.CachedTokens, usage.CompletionTokens, p, g, n)
 
 	return ChatResponse{
 		Message:      out,

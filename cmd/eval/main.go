@@ -41,6 +41,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -111,6 +113,14 @@ type Probe struct {
 
 	// TimeoutSec bounds one probe run. Zero takes the default.
 	TimeoutSec int `json:"timeout_sec"`
+
+	// Oses constrains the probe to host operating systems ("windows",
+	// "linux", "darwin" as runtime.GOOS spells them). Empty means anywhere.
+	// A probe whose checks only run on one OS (a findstr pipeline, a
+	// cmd.exe builtin) reports SKIP elsewhere: scoring it would measure
+	// the host, not the agent - the same reason a run that never reached
+	// the model reports ERR instead of a rate.
+	Oses []string `json:"oses,omitempty"`
 
 	// InjectOverflowOnce fails the run's first model call with a synthetic
 	// context-overflow error, then passes through to the live backend. It
@@ -352,6 +362,11 @@ type Result struct {
 	// its own work.
 	Errored bool `json:"errored,omitempty"`
 
+	// Skipped means the probe does not run on this host OS (see Probe.Oses)
+	// and was never attempted. Like Errored it is excluded from the rate:
+	// a skip is the instrument declining to measure, not a verdict.
+	Skipped bool `json:"skipped,omitempty"`
+
 	// PeakPromptTokens is the largest prompt sent during the run, and
 	// PeakContextPct that as a share of the window. A probe that failed at
 	// 90% is a context story; the same failure at 5% is not.
@@ -539,6 +554,8 @@ func main() {
 
 		status := "PASS"
 		switch {
+		case r.Skipped:
+			status = "SKIP"
 		case r.Errored:
 			status = "ERR "
 		case !r.Passed:
@@ -632,12 +649,29 @@ func keepTier(probes []Probe, tier string) []Probe {
 	return kept
 }
 
+// osSkipReason reports whether a probe with Oses declines this host, and
+// why. Pure so the gate is unit-testable without a backend.
+func osSkipReason(oses []string) (bool, string) {
+	if len(oses) > 0 && !slices.Contains(oses, runtime.GOOS) {
+		return true, fmt.Sprintf("probe needs %s, host is %s", strings.Join(oses, "/"), runtime.GOOS)
+	}
+	return false, ""
+}
+
 func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend, model string,
 	contextLimit, maxTokens int, drySampler bool, apiKey, apiKeyEnv string) (res Result) {
 
 	res = Result{Probe: p.Name, Run: run}
 	started := time.Now()
 	defer func() { res.Seconds = time.Since(started).Seconds() }()
+
+	// OS-gated probes decline before touching anything: no temp dir, no
+	// backend call, no trace file. A skip is recorded, not scored.
+	if skip, reason := osSkipReason(p.Oses); skip {
+		res.Skipped = true
+		res.RunError = reason
+		return res
+	}
 
 	// A fresh copy per run. Without it the second run starts from the
 	// first run's output and measures nothing.
@@ -941,12 +975,18 @@ func summarize(all []Result) string {
 	overall := tally{}
 
 	errored := 0
+	skipped := 0
 	for _, r := range all {
 		// A run that never reached the model is not evidence either way.
 		// Counting it as a failure would mean a stopped backend silently
 		// reports the agent as broken.
 		if r.Errored {
 			errored++
+			continue
+		}
+		// A skipped OS-gated probe was never attempted: same exclusion.
+		if r.Skipped {
+			skipped++
 			continue
 		}
 		t, seen := byProbe[r.Probe]
@@ -982,6 +1022,10 @@ func summarize(all []Result) string {
 	if errored > 0 {
 		fmt.Fprintf(&b, "\n\n  %d run(s) never reached the model and are excluded — "+
 			"this rate covers %d of %d attempted.", errored, overall.total, overall.total+errored)
+	}
+	if skipped > 0 {
+		fmt.Fprintf(&b, "\n\n  %d run(s) skipped (host OS outside the probe's oses) and are excluded.",
+			skipped)
 	}
 	return b.String()
 }
@@ -1040,6 +1084,13 @@ func loadProbes(dir, only string) ([]Probe, error) {
 		case "smoke", "signal", "mission":
 		default:
 			return nil, fmt.Errorf("%s: tier is %q, want smoke, signal or mission", path, p.Tier)
+		}
+		for _, goos := range p.Oses {
+			switch goos {
+			case "windows", "linux", "darwin":
+			default:
+				return nil, fmt.Errorf("%s: oses has %q, want windows, linux or darwin (runtime.GOOS)", path, goos)
+			}
 		}
 		p.Name = name
 		out = append(out, p)

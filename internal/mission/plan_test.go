@@ -137,6 +137,7 @@ func TestParseAndValidate_StructuralRules(t *testing.T) {
 		{"dir check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"dir"}}]}`, "always succeeds"},
 		{"true check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"shell","cmd":"true"}}]}`, "always succeeds"},
 		{"pathless file check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"file_exists"}}]}`, "no path"},
+		{"pathless absent check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"file_absent"}}]}`, "no path"},
 		{"bad http url", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"http","url":"localhost:3000"}}]}`, "http(s) URL"},
 		{"unknown check", `{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"g","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"vibes"}}]}`, "unknown check type"},
 	}
@@ -151,6 +152,35 @@ func TestParseAndValidate_StructuralRules(t *testing.T) {
 				t.Fatalf("errors = %s, want substring %q", joined, tc.want)
 			}
 		})
+	}
+}
+
+// file_absent on a file the listing shows is a valid deletion check;
+// on a file that was never there it proves nothing and is rejected,
+// mirroring the file_exists vacuity rule in the other direction.
+func TestParseAndValidate_FileAbsent(t *testing.T) {
+	// Written out rather than Sprintf-built: %s substitution would break
+	// the JSON quoting.
+	ok, _, errs := parseAndValidate(
+		`{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"delete it","acceptance":["x"],"files_hint":["old.txt"],"check":{"type":"file_absent","path":"old.txt"}}]}`,
+		"", map[string]bool{"old.txt": true})
+	if len(errs) != 0 {
+		t.Fatalf("valid absent check rejected: %v", errs)
+	}
+	if len(ok) != 1 {
+		t.Fatalf("subtasks = %d", len(ok))
+	}
+	_, _, errs = parseAndValidate(
+		`{"subtasks":[{"id":"a","milestone":"m","title":"t","goal":"delete it","acceptance":["x"],"files_hint":["a.txt"],"check":{"type":"file_absent","path":"never-there.txt"}}]}`,
+		"", map[string]bool{})
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "verifies nothing") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("vacuous absent check accepted, errs = %v", errs)
 	}
 }
 

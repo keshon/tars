@@ -55,6 +55,11 @@ type Env struct {
 	BackendKind  string
 	Stream       bool
 
+	// ReasoningBudget caps <think> deliberation per response in
+	// characters. Zero means the agent default; negative disables
+	// wrap-ups. Passed straight into agent.Config, which documents it.
+	ReasoningBudget int
+
 	// MCPTools are discovered MCP tools appended to the full tool set
 	// (Interactive, Subagent, Worker — never the read-only Inspector).
 	MCPTools []agent.Tool
@@ -113,16 +118,17 @@ func interactiveSystem(backendKind string) string {
 // the tool set (ReadOnly), never by asking the model to hold back.
 func Planner(e Env, label, stateFile string) *agent.Agent {
 	return agent.New(agent.Config{
-		Client:         e.Client,
-		Tools:          tools.ReadOnly(e.WS, e.Procs),
-		System:         prompts.PlanMode,
-		MaxTokens:      e.MaxTokens,
-		ContextLimit:   e.ContextLimit,
-		StateFile:      e.statePath(stateFile),
-		SkipVerify:     true,
-		OnStep:         e.onStep(label),
-		Policy:         e.policy(),
-		BeforeToolCall: e.gate(),
+		Client:          e.Client,
+		Tools:           tools.ReadOnly(e.WS, e.Procs),
+		System:          prompts.PlanMode,
+		MaxTokens:       e.MaxTokens,
+		ContextLimit:    e.ContextLimit,
+		ReasoningBudget: e.ReasoningBudget,
+		StateFile:       e.statePath(stateFile),
+		SkipVerify:      true,
+		OnStep:          e.onStep(label),
+		Policy:          e.policy(),
+		BeforeToolCall:  e.gate(),
 	})
 }
 
@@ -143,17 +149,18 @@ func (e Env) statePath(name string) string {
 // tools away beats asking a weak model not to reach for them.
 func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 	return agent.New(agent.Config{
-		Client:         e.Client,
-		Tools:          tools.ReadOnly(e.WS, e.Procs),
-		System:         system,
-		MaxSteps:       inspectorSteps,
-		MaxTokens:      e.MaxTokens,
-		ContextLimit:   e.ContextLimit,
-		SkipVerify:     true,
-		StateFile:      e.statePath(stateFile),
-		OnStep:         e.onStep(label),
-		Policy:         e.policy(),
-		BeforeToolCall: e.gate(),
+		Client:          e.Client,
+		Tools:           tools.ReadOnly(e.WS, e.Procs),
+		System:          system,
+		MaxSteps:        inspectorSteps,
+		MaxTokens:       e.MaxTokens,
+		ContextLimit:    e.ContextLimit,
+		ReasoningBudget: e.ReasoningBudget,
+		SkipVerify:      true,
+		StateFile:       e.statePath(stateFile),
+		OnStep:          e.onStep(label),
+		Policy:          e.policy(),
+		BeforeToolCall:  e.gate(),
 	})
 }
 
@@ -162,15 +169,16 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 // can block the process waiting on a human who is watching the parent.
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
-		Client:         e.Client,
-		Tools:          tools.Base(e.WS, e.Procs, e.MCPTools...),
-		System:         prompts.WithRole(role),
-		MaxSteps:       subagentSteps,
-		MaxTokens:      e.MaxTokens,
-		ContextLimit:   e.ContextLimit,
-		SkipVerify:     true,
-		Policy:         e.policy(),
-		BeforeToolCall: e.gate(),
+		Client:          e.Client,
+		Tools:           tools.Base(e.WS, e.Procs, e.MCPTools...),
+		System:          prompts.WithRole(role),
+		MaxSteps:        subagentSteps,
+		MaxTokens:       e.MaxTokens,
+		ContextLimit:    e.ContextLimit,
+		ReasoningBudget: e.ReasoningBudget,
+		SkipVerify:      true,
+		Policy:          e.policy(),
+		BeforeToolCall:  e.gate(),
 	})
 }
 
@@ -189,6 +197,7 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 		MaxSteps:           maxSteps,
 		MaxTokens:          e.MaxTokens,
 		ContextLimit:       e.ContextLimit,
+		ReasoningBudget:    e.ReasoningBudget,
 		SkipVerify:         true,
 		VerifyOnZeroWrites: expectsWrites,
 		StateFile:          e.statePath(stateFile),
@@ -223,17 +232,18 @@ func Interactive(e Env, label, stateFile string,
 	}
 
 	return agent.New(agent.Config{
-		Client:         e.Client,
-		Tools:          tools.Base(e.WS, e.Procs, extra...),
-		System:         interactiveSystem(e.BackendKind),
-		MaxTokens:      e.MaxTokens,
-		ContextLimit:   e.ContextLimit,
-		StateFile:      e.statePath(stateFile),
-		Verify:         verify,
-		OnStep:         e.onStep(label),
-		Policy:         e.policy(),
-		BeforeToolCall: e.gate(),
-		Stream:         e.Stream,
-		OnDelta:        e.OnDelta,
+		Client:          e.Client,
+		Tools:           tools.Base(e.WS, e.Procs, extra...),
+		System:          interactiveSystem(e.BackendKind),
+		MaxTokens:       e.MaxTokens,
+		ContextLimit:    e.ContextLimit,
+		ReasoningBudget: e.ReasoningBudget,
+		StateFile:       e.statePath(stateFile),
+		Verify:          verify,
+		OnStep:          e.onStep(label),
+		Policy:          e.policy(),
+		BeforeToolCall:  e.gate(),
+		Stream:          e.Stream,
+		OnDelta:         e.OnDelta,
 	})
 }

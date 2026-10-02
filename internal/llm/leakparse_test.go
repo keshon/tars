@@ -142,3 +142,47 @@ func TestLeakCallID_Stable(t *testing.T) {
 		t.Fatal("ids must be unique per step and index")
 	}
 }
+
+func TestExtract_ThinkSketchIgnored(t *testing.T) {
+	// Deliberation is not decision: a call sketched inside think tags,
+	// then decided in prose, must neither execute nor nudge.
+	content := `<think>I should call read_file on a.txt. <tool_call>call:read_file{"path": "a.txt"}</tool_call> On second thought, no need.</think> I already know the answer.`
+	calls, cleaned, leak := ExtractLeakedCalls(content, testKnown)
+	if len(calls) != 0 || leak {
+		t.Fatalf("think sketch: calls=%v leak=%v", calls, leak)
+	}
+	if !strings.Contains(cleaned, "I already know") {
+		t.Fatalf("prose lost: %q", cleaned)
+	}
+}
+
+func TestExtract_ThinkBlockMessageIgnored(t *testing.T) {
+	// A message that opens with a think block wrapping JSON is
+	// deliberation, not a call envelope — even valid JSON inside.
+	content := "<think>{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.txt\"}}</think>"
+	calls, _, leak := ExtractLeakedCalls(content, testKnown)
+	if len(calls) != 0 || leak {
+		t.Fatalf("think envelope: calls=%v leak=%v", calls, leak)
+	}
+}
+
+func TestExtract_FencedInsideThinkIgnored(t *testing.T) {
+	content := "<think>options:\n```json\n{\"name\": \"read_file\", \"arguments\": {}}\n```\nno</think> yes."
+	calls, _, _ := ExtractLeakedCalls(content, testKnown)
+	if len(calls) != 0 {
+		t.Fatalf("fenced think sketch recovered: %v", calls)
+	}
+}
+
+func TestExtract_RealCallBesideThinkRecovers(t *testing.T) {
+	// Think-awareness must not blind the parser to a real leak outside
+	// the think block.
+	content := `<think>hmm</think> <tool_call>call:read_file{"path": "a.txt"}</tool_call>`
+	calls, cleaned, leak := ExtractLeakedCalls(content, testKnown)
+	if !leak || len(calls) != 1 || calls[0].Name != "read_file" {
+		t.Fatalf("calls=%v leak=%v", calls, leak)
+	}
+	if strings.Contains(cleaned, "tool_call") {
+		t.Fatalf("tag left in: %q", cleaned)
+	}
+}

@@ -1,0 +1,1 @@
+Reasoning budget exceeded: your thinking so far is %d characters (budget %d). Stop exploring options and commit: make your next tool call, or give your final answer if the work is done. Do not reason further — another long deliberation will be cut off the same way.
