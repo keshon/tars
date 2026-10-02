@@ -594,13 +594,28 @@ func TestAgent_GemmaStyleLeakedToolCall_IsNotTrustedAsFinish(t *testing.T) {
 	t.Fatal("expected leak nudge for Gemma-style pseudo tool-call text")
 }
 
-func TestLooksLikeLeakedToolCall(t *testing.T) {
-	if !looksLikeLeakedToolCall(`(Made a function call call_1 to read_file with arguments={"path":"x"})`) {
-		t.Fatal("expected Gemma narrative leak to match")
+// A leaked call naming a real tool with parseable args executes instead
+// of costing a nudge round-trip: recovery, not refusal.
+func TestAgent_LeakedCallRecoversAndExecutes(t *testing.T) {
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: `(Made a function call call_1 to echo with arguments={})`}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(echoToolStub{}), System: "sys", SkipVerify: true})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if looksLikeLeakedToolCall("plain answer with no tools") {
-		t.Fatal("expected plain text not to match")
+	if out != "done" {
+		t.Fatalf("result = %q, want done", out)
 	}
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleTool && m.Content == "ok" {
+			return
+		}
+	}
+	t.Fatal("expected the recovered call to execute and record a tool result")
 }
 
 func TestAgent_VerifyMessage_StatesZeroWritesAsFact(t *testing.T) {

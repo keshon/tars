@@ -1,4 +1,7 @@
 .agent/
+# Another agent's worktrees (kilo). A full second checkout of this repo,
+# including its own .git file — never source, never committed.
+.kilo/
 sandbox/
 temp/
 *.exe

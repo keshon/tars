@@ -21,8 +21,11 @@ func NewKoboldClient(baseURL, model string) *Server {
 // blocks the two leak shapes actually observed: a model's native
 // "<tool_call>..." tags, and a model writing out a whole tool-call
 // envelope as a JSON *array* in plain content instead of using the
-// structured tool_calls field. Mid-message leaks (including anything
-// after a think block) are caught in Go by looksLikeLeakedToolCall.
+// structured tool_calls field. This stays because it costs one grammar
+// rule at the cheapest position (first token) and stops the leak before
+// generation spends tokens on it. Mid-message leaks (including anything
+// after a think block) are recovered in Go by ExtractLeakedCalls, which
+// executes well-formed leaked calls instead of nudging for a retry.
 //
 // This is fundamentally reactive — it's not a general solution to "models
 // sometimes leak structured output as text," just a growing blocklist of

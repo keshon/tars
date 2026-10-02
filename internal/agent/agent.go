@@ -441,6 +441,33 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			}
 			return "", fmt.Errorf("step %d: chat: %w", step, err)
 		}
+		// A model can write a tool call as text instead of making a
+		// structured one. The parser recovers well-formed ones (known
+		// tool, parseable args) into real calls, which then run through
+		// the normal tool path below - guards, permissions, repeat
+		// detection and all. Unparseable remainders keep the nudge path
+		// in the no-tool-calls branch; `leakedText` carries that verdict
+		// down so the branch does not re-detect.
+		var leakedText bool
+		if len(resp.Message.ToolCalls) == 0 && resp.FinishReason != "length" {
+			known := map[string]bool{}
+			if a.cfg.Tools != nil {
+				for _, n := range a.cfg.Tools.Names() {
+					known[n] = true
+				}
+			}
+			var recovered []llm.LeakedCall
+			var cleaned string
+			recovered, cleaned, leakedText = llm.ExtractLeakedCalls(resp.Message.Content, known)
+			for i, rc := range recovered {
+				resp.Message.ToolCalls = append(resp.Message.ToolCalls, llm.ToolCall{
+					ID:        llm.LeakCallID(step, i),
+					Name:      rc.Name,
+					Arguments: rc.Arguments,
+				})
+			}
+			resp.Message.Content = cleaned
+		}
 		if a.cfg.OnStep != nil {
 			a.cfg.OnStep(step, resp.Message)
 		}
@@ -481,10 +508,12 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 
 			// A model can write text that *looks* like a tool call
 			// ("<|tool_call>call:write_file{...}") instead of making a
-			// real structured one. Nothing executes, but the model often
+			// real structured one. Recoverable calls were extracted above;
+		// this branch sees only the unparseable remainder. Nothing here
+		// executes, but the model often
 			// then believes — and later claims — that it did. Catch this
 			// before it's mistaken for a genuine finish.
-			if looksLikeLeakedToolCall(resp.Message.Content) {
+			if leakedText {
 				history = append(history, llm.Message{
 					Role:    llm.RoleUser,
 					Content: prompts.LeakDetected,
@@ -1123,30 +1152,6 @@ func (a *Agent) budgetWarning(usage llm.Usage, warned *int) string {
 	}
 }
 
-// callSignature identifies a set of tool calls by name+arguments, order
-// independent, so the loop can tell "the model issued the exact same
-// call(s) again" apart from "the model made progress" — a tool call that
-// succeeds without error is not the same thing as the model moving
-// forward if it's the same call as last time.
-// looksLikeLeakedToolCall catches a model writing its own native
-// tool-call template as plain text instead of making a real structured
-// call — observed twice now as "<|tool_call>call:NAME{...}" and
-// "<tool_call>...</tool_call>" variants, both at the start of a message
-// and buried in the middle of one after some normal prose. A
-// start-of-message-only grammar constraint can't catch the second case;
-// this check runs on the full content regardless of position.
-func looksLikeLeakedToolCall(content string) bool {
-	lower := strings.ToLower(content)
-	if strings.Contains(lower, "<tool_call") || strings.Contains(lower, "<|tool_call") {
-		return true
-	}
-	// Gemma-style narrative leaks: "(Made a function call call_92023 to read_file...)"
-	if strings.Contains(lower, "made a function call") {
-		return true
-	}
-	return strings.Contains(content, "call_") && strings.Contains(lower, "arguments=")
-}
-
 func containsStr(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -1156,6 +1161,11 @@ func containsStr(list []string, s string) bool {
 	return false
 }
 
+// callSignature identifies a set of tool calls by name+arguments, order
+// independent, so the loop can tell "the model issued the exact same
+// call(s) again" apart from "the model made progress" - a tool call that
+// succeeds without error is not the same thing as the model moving
+// forward if it's the same call as last time.
 func callSignature(calls []llm.ToolCall) string {
 	parts := make([]string, len(calls))
 	for i, c := range calls {
