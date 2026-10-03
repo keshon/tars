@@ -21,7 +21,7 @@ func (m *model) View() string {
 		if m.runErr != nil {
 			bottom = m.styles.err.Render("error: "+truncate(m.runErr.Error(), 240)) + "\n" + m.input.View()
 		} else {
-			bottom = m.styles.dim.Render("follow-up · empty + enter to quit · ctrl+q quits") + "\n" + m.input.View()
+			bottom = m.styles.dim.Render("follow-up · empty + enter to quit · ctrl+q quits · ctrl+g details") + "\n" + m.input.View()
 		}
 	default:
 		bottom = m.styles.dim.Render("working… (q/esc to stop · ctrl+c to abort)")

@@ -162,14 +162,16 @@ func (m *model) handleEvent(ev api.Event) {
 	switch ev.Name {
 	case "step":
 		m.steps++
-		// Answer first, reasoning under it: the collapsed think line
-		// reads as a footnote to the response above (chat convention,
-		// newest-at-bottom). TUI-15 decided think-after-answer.
-		if text, _ := ev.Fields["text"].(string); text != "" {
-			m.appendBlock(answerBlock(text))
-		}
+		// Reasoning above its reply (TUI-15, user call): the collapsed
+		// think line introduces the answer it produced, causal order.
+		// Tool calls render as cards below, whatever prompted them.
 		if reasoning, _ := ev.Fields["reasoning"].(string); reasoning != "" {
-			m.appendBlock(thinkBlock(reasoning))
+			tb := thinkBlock(reasoning)
+			m.appendBlock(tb)
+		}
+		if text, _ := ev.Fields["text"].(string); text != "" {
+			ab := answerBlock(text)
+			m.appendBlock(ab)
 		}
 		if calls, _ := ev.Fields["tool_calls"].([]any); len(calls) > 0 {
 			for _, c := range calls {
@@ -193,6 +195,12 @@ func (m *model) handleEvent(ev api.Event) {
 		summary, _ := ev.Fields["summary"].(string)
 		if rule != "" {
 			m.appendBlock(findingBlock(rule, path, int(line), summary))
+		}
+	case "nudge":
+		// Harness notices render as dim markers: same text the model
+		// saw (provenance mark included), no decisions attached.
+		if text, _ := ev.Fields["text"].(string); text != "" {
+			m.appendBlock(markerBlock(text))
 		}
 	case "usage":
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {

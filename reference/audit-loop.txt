@@ -1,0 +1,109 @@
+# TARS agent-loop audit (2026-10-03, against HEAD)
+
+Question: is the bot logic strong or not.
+Method: full read of internal/agent/agent.go run machinery + suspend +
+supporting funcs, every finding verified against code (file:line).
+Related: AUDIT.md (agent-written, older revision — verdicts on its
+three findings included below).
+
+## Verdict: strong, with two medium caveats
+
+Termination is airtight: every loop path is bounded (MaxSteps outer
+bound; stuck counter + MaxStuckSteps; MaxThinkWraps; MaxZeroWriteRefusals;
+one-shot empty-finish flag; maxIdenticalAttempts=3 refusals; verify
+toggles; overflow recovery incl. the step-0 case). No infinite loop
+exists in the code as read. The weaknesses are (1) *success semantics*
+on give-up and (2) *trust posture* vs branding — both below, both
+fixable without redesign.
+
+## Confirmed sound (checked, no action)
+
+- Repeat guards cohere: wrotePaths refusal, identical-failure refusal
+  (3rd identical attempt refused, counter cleared on any mutation),
+  idempotent short-circuit with error-results (not progress), same-tool
+  counter narrowed to non-mutating steps with mutated-reset (the FPS
+  scaffolding failure cannot recur by construction).
+- Concurrency: exclusive calls sequential in order; concurrent batch
+  joined by WaitGroup; results indexed, no shared-index writes.
+- Resume paths: Resume/ResumeWithAnswer maintain wire validity
+  (tool-result pairing, no naked user message after unanswered calls);
+  PausedOnQuestion distinguishes crash from question correctly.
+- Overflow: step-0 case handled, compaction bounded, saveState atomic
+  (tmp+rename) and best-effort; per-iteration save makes mid-branch
+  saves redundant but harmless.
+- Leak recovery executes well-formed leaks with fresh unique IDs
+  (`leaked-step-i`); the duplicate-ID comment refers to model-emitted
+  ids, not loop-assigned ones. Think-region sketches never execute.
+- Escalate-and-reset (stuckSteps=0 after StuckFailing) is correct, not
+  a bug: without reset every later step re-fires the escalation.
+- ctx flows to exec (CommandContext); streaming has unary fallback.
+
+## Findings
+
+### L-1 Give-up returns success (medium)
+After MaxZeroWriteRefusals (3) refusals, a non-empty announcement
+falls through and returns as a SUCCESSFUL finish (agent.go ~660-681);
+a twice-empty finish likewise returns ("", nil) (~672-677). The run is
+bounded, but callers (mission-fix distinguishes ErrMaxSteps from
+success) cannot tell "done" from "narrated instead of doing".
+Recommend: return a dedicated error (e.g. ErrGaveUp, counted like
+ErrMaxSteps for retry purposes) instead of empty/narrated success.
+
+### L-2 Default-allow shell, no gate (medium — posture decision)
+Policy.Evaluate no-match is Allow, and BeforeToolCall only suspends on
+Ask/Deny (agent.go ~782-794): run_shell with arbitrary commands never
+reaches the operator. Default policy Asks only sensitive *reads*.
+For an owner-operated local harness this is coherent ("default open,
+restrictions opt in" is documented in permission.go), but it oversells
+the Zero-Trust branding. Options, operator's call: (a) default Ask on
+run_shell (opencode-like; naggy without always-memory per command),
+(b) keep and document the posture explicitly in README/architecture,
+(c) Ask on shell metacharacters/redirections only (middle ground:
+pipes/`>`/`rm -rf` patterns trigger, plain `go test` doesn't).
+
+### L-3 Stuck-escalation text inconsistency (low — AUDIT.md #1 refined)
+Non-tool branches `continue` past interject (verified lines 549-675),
+so StuckEscalated never fires there; but truncation/think/leak branches
+escalate locally via the SHARED stuck counter (StuckFailing), and
+verify/zero-write/empty have their own bounds. Only the nudge *text*
+differs, not boundedness. Recommend: a mode-switching eval probe
+(alternating failure modes); pass closes it, spin reopens as real work.
+No control-flow refactor on a model's say-so.
+
+### L-4 Delegate paths unattributed (low)
+parseDelegateMutations trusts the harness-generated DELEGATE envelope
+(fine — tool-formatted, not model-claimed) but extracts COUNTS only:
+subagent-written files never enter MutatedPaths, so session sweeps and
+reports undercount delegated work. Recommend: extend the envelope with
+paths (tool change, additive) or document the blind spot.
+
+## AUDIT.md re-verdicts (for the record)
+
+- #1 (escalation bypass): confirmed mechanism, overstated impact —
+  see L-3. Probe-first, no refactor.
+- #2 (scaffolding regression): STALE. Fixed in code (non-mutating
+  counter + mutated reset); the comment is archaeology. Also note its
+  line numbers don't match HEAD — agent audits must pin revision.
+- #3 (counter reset): REJECTED. Escalate-and-reset is correct.
+
+## Recommended order
+
+L-1 (error on give-up) → L-2 decision (posture) → mode-switch probe
+(L-3 closer) → L-4 envelope paths. None requires redesign; total is
+small, safe, testable per item.
+
+## Resolutions (2026-10-03, all verified by suite)
+
+- L-1 CLOSED: exhausted zero-write refusals and second empty finish
+  now return wrapped ErrMaxSteps (mission retry semantics kept);
+  tests rewritten to expect errors + new give-up tests.
+- L-2 CLOSED as tripwire: Default() asks on destructive shell shapes
+  (rm -rf, del /s, del /q, rd /s, format, mkfs, dd if=, fork) for
+  run_shell + start_background, with the obfuscation caveat in-code;
+  user --allow/--deny still wins. Normal commands unaffected (tested).
+- L-3 CLOSED by TestAgent_ModeSwitchingFailuresStillTerminate:
+  alternating leak/empty terminates as wrapped max-steps error in 4
+  calls. No refactor; boundedness proven, not assumed.
+- L-4 CLOSED: DELEGATE envelope carries paths: lines, parsed with
+  counts, appended to mutatedPaths (deduped) — session sweeps and
+  reports now see delegated files.

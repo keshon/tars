@@ -47,22 +47,39 @@ type Policy struct {
 	Rules []Rule
 }
 
-// Default returns the shipping policy: permissive but sensitive reads ask.
+// destructiveShell are command-line substrings that ask first.
+// Tripwire, not sandbox: substring matching is obfuscatable
+// (`r\m\ -\rf` sails through), which is why these Ask for operator
+// judgment instead of Denying. The workspace guardrail (Resolve) and
+// real containment (container/VM) are separate layers; see the
+// workspace package header on what each layer promises.
+var destructiveShell = []string{
+	"rm -rf", "del /s", "del /q", "rd /s", "format ", "mkfs", "dd if=", ":(){",
+}
+
+// Default returns the shipping policy: permissive but sensitive reads
+// ask, and destructive shell shapes ask. Everything else allows;
+// restrictions opt in, and later user rules (--allow/--deny) win.
 func Default() Policy {
-	return Policy{Rules: []Rule{
+	rules := []Rule{
 		{Tool: "*", Pattern: "*", Effect: Allow},
 		{Tool: "read_file", Pattern: "*.env", Effect: Ask},
 		{Tool: "read_file", Pattern: "*.env.*", Effect: Ask},
 		{Tool: "read_file", Pattern: "*credentials*", Effect: Ask},
 		{Tool: "read_file", Pattern: "*secret*", Effect: Ask},
-	}}
+	}
+	for _, tool := range []string{"run_shell", "start_background"} {
+		for _, pat := range destructiveShell {
+			rules = append(rules, Rule{Tool: tool, Pattern: pat, Effect: Ask})
+		}
+	}
+	return Policy{Rules: rules}
 }
 
 // Evaluate returns the effect for a tool call against a resource.
 // No match means Allow: the default is open, restrictions opt in.
 func (p Policy) Evaluate(tool, resource string) Effect {
 	eff := Allow
-	matched := false
 	for _, r := range p.Rules {
 		if !toolMatch(r.Tool, tool) {
 			continue
@@ -71,9 +88,7 @@ func (p Policy) Evaluate(tool, resource string) Effect {
 			continue
 		}
 		eff = r.Effect
-		matched = true
 	}
-	_ = matched
 	return eff
 }
 

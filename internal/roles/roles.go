@@ -95,6 +95,12 @@ type Env struct {
 	// See agent.Config.OnUsage.
 	OnUsage func(step int, usage llm.Usage)
 
+	// OnNudge receives loop-generated harness text (verify rounds,
+	// refusals, leak notices, wrap-ups, stuck escalations) tagged by
+	// kind. Nil disables reporting; the [harness] prefix applies
+	// regardless, so provenance never depends on observers.
+	OnNudge func(kind, text string)
+
 	// StateDir, when set, is where transcripts go; a role's stateFile
 	// argument is resolved against it. Empty means the caller passes
 	// whole paths, or none at all.
@@ -147,6 +153,7 @@ func Planner(e Env, label, stateFile string) *agent.Agent {
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
 		OnUsage:         e.OnUsage,
+		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 	})
@@ -181,6 +188,7 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
 		OnUsage:         e.OnUsage,
+		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 	})
@@ -203,6 +211,7 @@ func Subagent(e Env, role string) *agent.Agent {
 		BeforeToolCall:  e.gate(),
 		OnToolResult:    e.OnToolResult,
 		OnUsage:         e.OnUsage,
+		OnNudge:         e.OnNudge,
 	})
 }
 
@@ -228,6 +237,7 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 		OnStep:             e.onStep(label),
 		OnToolResult:       e.OnToolResult,
 		OnUsage:            e.OnUsage,
+		OnNudge:            e.OnNudge,
 		Policy:             e.policy(),
 		BeforeToolCall:     e.gate(),
 	})
@@ -269,6 +279,7 @@ func Interactive(e Env, label, stateFile string,
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
 		OnUsage:         e.OnUsage,
+		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 		Stream:          e.Stream,

@@ -122,7 +122,7 @@ func gutterGlyph(r role) string {
 	case roleUser:
 		return "> "
 	case roleThink:
-		return "~ "
+		return "  "
 	case roleTool:
 		return "→ "
 	case roleGate:
@@ -130,7 +130,7 @@ func gutterGlyph(r role) string {
 	case roleMission:
 		return "# "
 	case roleMarker:
-		return "- "
+		return "  "
 	case roleError:
 		return "! "
 	case roleWarning:
@@ -187,12 +187,12 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	raw := b.text
 	if b.role == roleThink {
 		if !expandThink {
-			raw = "⋯ " + thinkSummary(b.text) + " (" + thinkToggleHint + " for full view)"
+			// Compact: labeled summary with size only here, never in
+			// full view. No toggle hint (it lives in the bottom bar).
+			raw = "[thinking] " + thinkSummary(b.text)
 		} else {
-			// Framed, never capped: the header orients a long
-			// expansion without hiding any of it.
-			raw = fmt.Sprintf("── thinking · %d chars · %s for compact view ──\n%s",
-				len([]rune(b.text)), thinkToggleHint, b.text)
+			// Full view labels once, then the whole text, uncapped.
+			raw = "[thinking]\n" + b.text
 		}
 	}
 	stamped := !b.at.IsZero() && stamps(b.role)
@@ -205,7 +205,7 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	default:
 		logical := strings.Split(raw, "\n")
 		for li, line := range logical {
-			for i, f := range reflow(line, fragWidth(width, stamped, li == len(logical)-1)) {
+			for i, f := range reflow(line, fragWidth(width, stamped, li == 0)) {
 				g := ""
 				if !b.bare {
 					g = st.gutter(b.role)
@@ -217,8 +217,8 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 			}
 		}
 	}
-	if stamped {
-		out[len(out)-1] = alignStamp(out[len(out)-1], st, b.at, width)
+	if stamped && len(out) > 0 {
+		out[0] = alignStamp(out[0], st, b.at, width)
 	}
 	return strings.Join(out, "\n")
 }
@@ -253,11 +253,8 @@ func renderToolCard(b block, st styles, expand, stamped bool, width int) []strin
 		kept = append(kept, fmt.Sprintf("… (%d more lines)", len(lines)-resultPreviewLines))
 		lines = kept
 	}
-	for li, line := range lines {
+	for _, line := range lines {
 		w := width - gutterWidth - 2
-		if stamped && li == len(lines)-1 {
-			w -= stampWidth
-		}
 		for _, f := range reflow(line, w) {
 			out = append(out, "  "+st.dim.Render("│ ")+resultLineStyle(line, f, st))
 		}
@@ -291,7 +288,7 @@ func renderMdBlock(b block, raw string, st styles, stamped bool, width int) []st
 	mls := mdBlockLines(raw)
 	for li, ml := range mls {
 		span := &spanState{}
-		for i, f := range reflow(ml.text, fragWidth(width, stamped, li == len(mls)-1)) {
+		for i, f := range reflow(ml.text, fragWidth(width, stamped, li == 0)) {
 			var body string
 			if ml.fence {
 				body = st.dim.Render(f)
@@ -402,32 +399,56 @@ func (m *model) refreshContent() {
 	if !m.ready {
 		return
 	}
-	var sb strings.Builder
-	// Only the latest think block follows the toggle: expanding
-	// meant reading current reasoning, not flooding history. Older
-	// thinks stay summarized until a newer one arrives.
-	lastThink := -1
-	for i, b := range m.blocks {
-		if b.role == roleThink {
-			lastThink = i
+	var parts []string
+	prevBreak := false
+	for _, b := range m.blocks {
+		if b.breakBefore && len(parts) > 0 && !prevBreak {
+			parts = append(parts, turnRule(m.vp.Width, m.styles))
+		}
+		parts = append(parts, renderBlock(b, m.styles, !m.compact, m.vp.Width))
+		prevBreak = b.breakBefore
+	}
+	content := strings.Join(parts, "\n\n")
+	heights := make([]int, len(parts))
+	for i, p := range parts {
+		heights[i] = strings.Count(p, "\n") + 1
+	}
+	// Position hold: same part count means a pure re-render (toggle,
+	// resize), so growth above the old viewport top shifts the offset
+	// down by exactly that growth; growth below leaves it alone. New
+	// parts (appends, hide toggles) keep the offset: appends land
+	// below by construction.
+	if !m.follow && len(heights) > 0 && len(heights) == len(m.partLines) {
+		oldTop := m.vp.YOffset
+		acc, idx := 0, 0
+		// Parts join with one blank line between them: the viewport
+		// offset of part i is its content plus i separators.
+		for idx < len(m.partLines) && acc+m.partLines[idx] <= oldTop {
+			acc += m.partLines[idx] + 1
+			idx++
+		}
+		shift := 0
+		for j := 0; j < idx && j < len(heights); j++ {
+			shift += heights[j] - m.partLines[j]
+		}
+		m.vp.SetContent(content)
+		off := oldTop + shift
+		if maxOff := strings.Count(content, "\n") + 1 - m.vp.Height; maxOff > 0 && off > maxOff {
+			off = maxOff
+		}
+		if off < 0 {
+			off = 0
+		}
+		m.vp.YOffset = off
+	} else {
+		m.vp.SetContent(content)
+		if m.follow {
+			m.vp.GotoBottom()
+		} else if len(heights) == 0 {
+			m.vp.YOffset = 0
 		}
 	}
-	for i, b := range m.blocks {
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
-		// Turn separators: a turn-opening block draws the rule above
-		// it, unless it opens the transcript or follows another
-		// opener (new-task marker into first echo).
-		if b.breakBefore && i > 0 && !m.blocks[i-1].breakBefore {
-			sb.WriteString(turnRule(m.vp.Width, m.styles) + "\n\n")
-		}
-		sb.WriteString(renderBlock(b, m.styles, !m.compact && (b.role != roleThink || i == lastThink), m.vp.Width))
-	}
-	m.vp.SetContent(sb.String())
-	if m.follow {
-		m.vp.GotoBottom()
-	}
+	m.partLines = heights
 }
 
 // minWrapWidth guards absurdly narrow viewports: below it, lines pass

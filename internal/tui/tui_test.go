@@ -79,11 +79,14 @@ func TestStepReasoningRendersDim(t *testing.T) {
 	if len(mm.blocks) != 2 {
 		t.Fatalf("blocks = %v", mm.blocks)
 	}
-	if mm.blocks[1].role != roleThink {
-		t.Fatalf("reasoning must be a think block: %+v", mm.blocks[1])
+	if mm.blocks[0].role != roleThink {
+		t.Fatalf("reasoning must be a think block: %+v", mm.blocks[0])
 	}
-	if !strings.Contains(mm.blocks[1].text, "hmm, tricky") {
+	if !strings.Contains(mm.blocks[0].text, "hmm, tricky") {
 		t.Fatalf("reasoning not kept: %v", mm.blocks)
+	}
+	if mm.blocks[1].role != roleAnswer {
+		t.Fatalf("answer must follow its thinking: %+v", mm.blocks[1])
 	}
 }
 
@@ -369,8 +372,11 @@ func TestCommand_NewStartsFresh(t *testing.T) {
 	if mm.state != stRunning {
 		t.Fatalf("state = %v, want running", mm.state)
 	}
-	if len(mm.blocks) != 1 {
-		t.Fatalf("transcript not reset to the new-task marker: %v", mm.blocks)
+	if len(mm.blocks) != 2 || mm.blocks[0].role != roleMarker || mm.blocks[1].role != roleUser {
+		t.Fatalf("transcript must open marker + task echo: %+v", mm.blocks)
+	}
+	if mm.blocks[1].text != "second" {
+		t.Fatalf("echo = %q, want verbatim task", mm.blocks[1].text)
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for atomic.LoadInt32(&sent) == 0 && time.Now().Before(deadline) {
@@ -706,8 +712,8 @@ func TestEmptyStart_SubmitBegins(t *testing.T) {
 	if len(mm.blocks) != 2 || mm.blocks[1].role != roleUser {
 		t.Fatalf("opening task must echo as user block: %+v", mm.blocks)
 	}
-	if !strings.Contains(mm.blocks[1].text, "❯ hello?") {
-		t.Fatalf("echo text = %q", mm.blocks[1].text)
+	if mm.blocks[1].text != "hello?" {
+		t.Fatalf("echo text = %q, want verbatim task", mm.blocks[1].text)
 	}
 	select {
 	case d := <-sent:
@@ -732,7 +738,7 @@ func TestRolesAssignedAcrossEvent(t *testing.T) {
 		},
 	}))
 	mm := updated.(*model)
-	want := []role{roleAnswer, roleThink, roleTool}
+	want := []role{roleThink, roleAnswer, roleTool}
 	if len(mm.blocks) != len(want) {
 		t.Fatalf("blocks = %+v", mm.blocks)
 	}
@@ -748,18 +754,21 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 	long := "...The user is asking something, and here is a long chain of internal deliberation that must not read as the answer. " +
 		"Second line of musing that only the expanded view may show."
 	collapsed := renderBlock(thinkBlock(long), st, false, 80)
-	if !strings.Contains(collapsed, "⋯") {
-		t.Fatalf("collapsed thinking needs its marker: %q", collapsed)
+	if !strings.Contains(collapsed, "[thinking]") {
+		t.Fatalf("collapsed thinking needs its label: %q", collapsed)
+	}
+	if !strings.Contains(collapsed, "chars]") {
+		t.Fatalf("collapsed thinking shows size only here: %q", collapsed)
 	}
 	if strings.Contains(collapsed, "Second line of musing") {
 		t.Fatalf("collapsed thinking leaks body: %q", collapsed)
 	}
-	if !strings.Contains(collapsed, thinkToggleHint) {
-		t.Fatalf("collapsed thinking must name its key: %q", collapsed)
-	}
 	expanded := renderBlock(thinkBlock(long), st, true, 80)
 	if !strings.Contains(expanded, "Second line of musing") {
 		t.Fatalf("expanded thinking must show all: %q", expanded)
+	}
+	if strings.Contains(expanded, "chars]") {
+		t.Fatalf("expanded thinking must not repeat the size: %q", expanded)
 	}
 }
 
@@ -1100,7 +1109,7 @@ func TestInitialTaskEchoedAsUser(t *testing.T) {
 	if len(m.blocks) != 1 || m.blocks[0].role != roleUser {
 		t.Fatalf("opening task must echo as user block: %+v", m.blocks)
 	}
-	if !strings.Contains(m.blocks[0].text, "❯ hi") {
+	if m.blocks[0].text != "hi" {
 		t.Fatalf("echo must trim the task: %q", m.blocks[0].text)
 	}
 }
@@ -1112,7 +1121,7 @@ func TestLongStepFlowsUncut(t *testing.T) {
 	reason := strings.Repeat("deliberation — ", 100)
 	var buf bytes.Buffer
 	em := events.New(&buf)
-	api.EmitStep(em, "run", 1, llm.Message{Content: text, Reasoning: reason})
+	api.EmitStep(em, "run", 1, llm.Message{Content: text, Reasoning: reason}, false)
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
 		t.Fatalf("not json: %v", err)
@@ -1129,11 +1138,11 @@ func TestLongStepFlowsUncut(t *testing.T) {
 	if len(mm.blocks) != 2 {
 		t.Fatalf("blocks = %d", len(mm.blocks))
 	}
-	if mm.blocks[0].role != roleAnswer || mm.blocks[0].text != text {
-		t.Fatal("answer cut or misroled by the funnel")
-	}
-	if mm.blocks[1].role != roleThink || mm.blocks[1].text != reason {
+	if mm.blocks[0].role != roleThink || mm.blocks[0].text != reason {
 		t.Fatal("reasoning cut or misroled by the funnel")
+	}
+	if mm.blocks[1].role != roleAnswer || mm.blocks[1].text != text {
+		t.Fatal("answer cut or misroled by the funnel")
 	}
 }
 
@@ -1546,21 +1555,116 @@ func TestFindingRendersWarning(t *testing.T) {
 	}
 }
 
-func TestThinkLatestExpandsAlone(t *testing.T) {
+func TestNudgeRendersMarker(t *testing.T) {
 	m := sizeModel(t, testModel())
-	old := "old deliberation " + strings.Repeat("x", 200)
-	newer := "new deliberation"
-	m.appendBlock(thinkBlock(old))
-	m.appendBlock(answerBlock("mid"))
-	m.appendBlock(thinkBlock(newer))
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name:   "nudge",
+		Fields: map[string]any{"kind": "verify", "text": "[harness] check your work"},
+	}))
+	mm := updated.(*model)
+	if len(mm.blocks) != 1 || mm.blocks[0].role != roleMarker {
+		t.Fatalf("nudge must be a marker block: %+v", mm.blocks)
+	}
+	if view := mm.vp.View(); !strings.Contains(view, "[harness]") {
+		t.Fatalf("provenance mark missing: %q", view)
+	}
+	// Empty nudges append nothing.
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "nudge", Fields: map[string]any{}}))
+	if mm := updated.(*model); len(mm.blocks) != 1 {
+		t.Fatal("empty nudge must not append")
+	}
+}
+
+func TestHarnessReplyRendersNormally(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name: "step", Fields: map[string]any{"text": "real answer"},
+	}))
+	mm := updated.(*model)
+	updated, _ = mm.Update(eventMsg(api.Event{
+		Name: "nudge", Fields: map[string]any{"kind": "verify", "text": "[harness] check"},
+	}))
+	mm = updated.(*model)
+	updated, _ = mm.Update(eventMsg(api.Event{
+		Name: "step", Fields: map[string]any{"text": "noted", "harness_reply": true},
+	}))
+	mm = updated.(*model)
+	if len(mm.blocks) != 3 {
+		t.Fatalf("blocks = %d", len(mm.blocks))
+	}
+	// No hiding anymore: nudges and harness replies render like
+	// everything else (hiding model-visible content misleads).
+	view := mm.vp.View()
+	for _, want := range []string{"real answer", "[harness]", "noted"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestThinkExpandsGlobally(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.appendBlock(thinkBlock("old deliberation " + strings.Repeat("x", 200)))
+	m.appendBlock(thinkBlock("new deliberation"))
 	m.compact = false
 	m.refreshContent()
 	view := m.vp.View()
-	if !strings.Contains(view, newer) || !strings.Contains(view, "for compact view") {
-		t.Fatalf("latest think must expand framed: %q", view)
+	// Reflow wraps long runs: count runes, not substrings.
+	if n := strings.Count(view, "x"); n < 200 {
+		t.Fatalf("global expand opened %d x-runes, want 200", n)
 	}
-	if strings.Contains(view, strings.Repeat("x", 200)) {
-		t.Fatal("older think must stay summarized")
+	if n := strings.Count(view, "[thinking]"); n != 2 {
+		t.Fatalf("both thinks must label expanded: %d headers", n)
+	}
+}
+
+func TestToggleHoldsPosition(t *testing.T) {
+	// Growth below the viewport: offset untouched.
+	m := sizeModel(t, testModel())
+	for i := 0; i < 40; i++ {
+		m.appendBlock(markerBlock("filler"))
+	}
+	m.appendBlock(thinkBlock("reasoning " + strings.Repeat("y", 300)))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	mm := updated.(*model)
+	if mm.follow {
+		t.Fatal("setup: pgup must unfollow")
+	}
+	y0 := mm.vp.YOffset
+	first := strings.Split(mm.vp.View(), "\n")[0]
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	mm = updated.(*model)
+	if mm.vp.YOffset != y0 {
+		t.Fatalf("growth below moved offset %d -> %d", y0, mm.vp.YOffset)
+	}
+	if got := strings.Split(mm.vp.View(), "\n")[0]; got != first {
+		t.Fatal("growth below changed the first line")
+	}
+	// Growth above: first visible line stays first.
+	m2 := sizeModel(t, testModel())
+	m2.appendBlock(thinkBlock("reasoning " + strings.Repeat("z", 300)))
+	for i := 0; i < 40; i++ {
+		m2.appendBlock(markerBlock("filler"))
+	}
+	updated, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	mm2 := updated.(*model)
+	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	mm2 = updated.(*model)
+	if mm2.follow {
+		t.Fatal("setup: pgup must unfollow")
+	}
+	before := mm2.vp.View()
+	first2 := strings.Split(before, "\n")[0]
+	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	mm2 = updated.(*model)
+	if got := strings.Split(mm2.vp.View(), "\n")[0]; got != first2 {
+		t.Fatalf("growth above moved first line:\nwas  %q\nnow  %q", first2, got)
+	}
+	// Collapse back: byte-identical view returns.
+	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if got := updated.(*model).vp.View(); got != before {
+		t.Fatal("collapse must restore the exact view")
 	}
 }
 

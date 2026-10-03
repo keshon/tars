@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -101,20 +102,56 @@ func TestAgent_ZeroWriteFinish_RefusedUntilSomethingIsWritten(t *testing.T) {
 // Refusing forever would just burn MaxSteps. After MaxZeroWriteRefusals
 // the run ends and the mission layer takes over with the failing check
 // output, which is better evidence than another nudge.
-func TestAgent_ZeroWriteFinish_RefusalsAreBounded(t *testing.T) {
+func TestAgent_ZeroWriteFinish_GivesUpAsError(t *testing.T) {
 	client := &stubClient{responses: []llm.ChatResponse{
 		say("let me write it"), say("let me write it"), say("let me write it"),
 		say("let me write it"), say("let me write it"),
 	}}
 	a := zeroWriteAgent(client)
 
-	if _, err := a.Run(context.Background(), "task"); err != nil {
-		t.Fatalf("Run: %v", err)
+	_, err := a.Run(context.Background(), "task")
+	if err == nil || !errors.Is(err, ErrMaxSteps) {
+		t.Fatalf("Run err = %v, want wrapped max-steps", err)
 	}
-	// 1 verify round + MaxZeroWriteRefusals refusals, then the finish is
-	// allowed through — well short of MaxSteps.
+	// 1 verify round + MaxZeroWriteRefusals refusals, then the error —
+	// bounded like before, but never accepted as success.
 	if want := 2 + MaxZeroWriteRefusals; client.calls != want {
 		t.Fatalf("calls = %d, want %d", client.calls, want)
+	}
+}
+
+func TestAgent_OnNudge_KindsAndPrefix(t *testing.T) {
+	client := &stubClient{responses: []llm.ChatResponse{
+		say("x"), say("x"), say("x"), say("x"), say("x"),
+	}}
+	var kinds []string
+	a := New(Config{
+		Client: client, Tools: NewRegistry(mutStub{"write_file"}), System: "sys",
+		SkipVerify: true, VerifyOnZeroWrites: true,
+		OnNudge: func(kind, text string) {
+			kinds = append(kinds, kind)
+			if !strings.HasPrefix(text, "[harness] ") {
+				t.Errorf("nudge without provenance: %q", text)
+			}
+		},
+	})
+	// The give-up error is expected; kinds are the assertion.
+	_, _ = a.Run(context.Background(), "task")
+	want := []string{"verify", "refusal", "refusal", "refusal"}
+	if len(kinds) != len(want) {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("kinds = %v, want %v", kinds, want)
+		}
+	}
+	// Every non-task user message in history carries the mark: the
+	// model can no longer mistake harness text for the operator.
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && m.Content != "task" && !strings.HasPrefix(m.Content, "[harness] ") {
+			t.Errorf("unmarked harness text: %q", m.Content)
+		}
 	}
 }
 

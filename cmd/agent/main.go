@@ -425,6 +425,7 @@ func main() {
 		OnToolResult:    toolResultPrinter(*modeFlag, emitter),
 		OnUsage:         usagePrinter(*modeFlag, emitter),
 		OnFinding:       findingPrinter(*modeFlag),
+		OnNudge:         nudgePrinter(*modeFlag),
 	}
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})
@@ -595,7 +596,7 @@ func runMission(ctx context.Context, p missionParams) error {
 		ApprovePlan:  approve,
 		VerifyCmd:    p.verifyCmd,
 		OnStep: func(subID string, step int, msg llm.Message) {
-			api.EmitStep(p.emitter, subID, step, msg)
+			api.EmitStep(p.emitter, subID, step, msg, false)
 			if msg.Content != "" {
 				fmt.Fprintf(p.noteW, "[%s step %d] %s\n", subID, step, agent.TruncateMiddle(msg.Content, p.logMax))
 			}
@@ -728,7 +729,7 @@ func stdioSuspender(noteW io.Writer, emitter *events.Emitter) agent.Suspender {
 func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, int, llm.Message) {
 	if mode == "json" && emitter != nil {
 		return func(label string, step int, msg llm.Message) {
-			api.EmitStep(emitter, label, step, msg)
+			api.EmitStep(emitter, label, step, msg, false)
 		}
 	}
 	return func(label string, step int, msg llm.Message) { printStep(label, step, msg, logMax) }
@@ -760,6 +761,17 @@ func findingPrinter(mode string) func(rule, path string, line int, summary strin
 	}
 	return func(rule, path string, line int, summary string) {
 		fmt.Printf("check %s %s:%d %s\n", rule, path, line, summary)
+	}
+}
+
+// nudgePrinter shows loop-generated harness notices in print mode;
+// json mode carries them as nudge events via the session emitter.
+func nudgePrinter(mode string) func(kind, text string) {
+	if mode == "json" {
+		return nil
+	}
+	return func(kind, text string) {
+		fmt.Printf("nudge [%s] %s\n", kind, text)
 	}
 }
 

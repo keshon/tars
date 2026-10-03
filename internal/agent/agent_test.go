@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -47,6 +48,43 @@ func TestAgent_EmptyFinish_RetriesOnceBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestAgent_EmptyFinish_GivesUpAfterRetry(t *testing.T) {
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: ""}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: ""}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true})
+
+	_, err := a.Run(context.Background(), "task")
+	if err == nil || !errors.Is(err, ErrMaxSteps) {
+		t.Fatalf("Run err = %v, want wrapped max-steps", err)
+	}
+	if client.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (one retry, then give up)", client.calls)
+	}
+}
+
+func TestAgent_ModeSwitchingFailuresStillTerminate(t *testing.T) {
+	// Alternates leaked-text finishes and empty finishes: neither mode
+	// alone may strand the loop, and switching must not reset the
+	// accounting. Scripted stubs bound execution by construction (the
+	// stub panics past its script), so termination here is proven, not
+	// merely bounded by MaxSteps.
+	leak := llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant,
+		Content: "Here's the file.\n<|tool_call>call:write_file{path: \"x.txt\"}<tool_call|>"}}
+	empty := llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: ""}}
+	client := &stubClient{responses: []llm.ChatResponse{leak, empty, leak, empty}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true, MaxSteps: 12})
+
+	_, err := a.Run(context.Background(), "task")
+	if err == nil || !errors.Is(err, ErrMaxSteps) {
+		t.Fatalf("Run err = %v, want wrapped max-steps", err)
+	}
+	if client.calls != 4 {
+		t.Fatalf("calls = %d, want 4 (two leaks escalate, second empty gives up)", client.calls)
+	}
+}
+
 func TestAgent_DelegateMutations_CountTowardVerifyZeroWrites(t *testing.T) {
 	delegateArgs, _ := json.Marshal(map[string]string{"task": "write file"})
 	client := &stubClient{responses: []llm.ChatResponse{
@@ -87,12 +125,15 @@ func (d delegateStub) Run(context.Context, json.RawMessage) (string, error) {
 }
 
 func TestParseDelegateMutations(t *testing.T) {
-	got := parseDelegateMutations("DELEGATE\nmutations: 2\n----\nsub result")
+	got, paths := parseDelegateMutations("DELEGATE\nmutations: 2\npaths: a.txt\npaths: b.txt\n----\nsub result")
 	if got != 2 {
 		t.Fatalf("parseDelegateMutations = %d, want 2", got)
 	}
-	if parseDelegateMutations("plain text") != 0 {
-		t.Fatal("expected 0 for unstructured content")
+	if len(paths) != 2 || paths[0] != "a.txt" || paths[1] != "b.txt" {
+		t.Fatalf("paths = %v", paths)
+	}
+	if got, paths := parseDelegateMutations("plain text"); got != 0 || paths != nil {
+		t.Fatalf("unstructured content = %d %v, want 0 nil", got, paths)
 	}
 }
 
@@ -975,7 +1016,7 @@ func TestAgent_CompactHistoryAt90Percent(t *testing.T) {
 
 	found := false
 	for _, m := range client.lastHistory {
-		if len(m.Content) >= len(prompts.CompactNotice) && m.Content[:len(prompts.CompactNotice)] == prompts.CompactNotice {
+		if rest, ok := strings.CutPrefix(m.Content, "[harness] "); ok && strings.HasPrefix(rest, prompts.CompactNotice) {
 			found = true
 		}
 	}

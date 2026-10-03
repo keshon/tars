@@ -43,8 +43,8 @@ func TestCompactNotice_StartsWithBaseNotice(t *testing.T) {
 	if len(got) < 3 {
 		t.Fatalf("too short: %d", len(got))
 	}
-	if !strings.HasPrefix(got[2].Content, prompts.CompactNotice) {
-		t.Fatalf("notice prefix lost: %q", got[2].Content)
+	if !strings.HasPrefix(got[2].Content, harnessText(prompts.CompactNotice)) {
+		t.Fatalf("marked notice prefix lost: %q", got[2].Content)
 	}
 	if !strings.Contains(got[2].Content, "dropped") {
 		t.Fatalf("extractive summary missing: %q", got[2].Content)

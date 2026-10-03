@@ -29,14 +29,12 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 	}
 	m.pushHistory(text)
 	// No session yet (opened without a task): the first line starts
-	// a fresh run rather than resuming nothing.
+	// a fresh run rather than resuming nothing. The echo lives in
+	// startFresh (after its transcript reset) so every fresh-task
+	// path — first line, /new — renders the opening task exactly once.
 	if m.sess == nil {
 		if err := m.startFresh(text); err != nil {
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
-		} else {
-			// Echo after startFresh: it resets the transcript, so
-			// an earlier echo would not survive the wipe.
-			m.appendBlock(userBlock("❯ " + text))
 		}
 		return m, nil
 	}
@@ -45,7 +43,7 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		m.appendBlock(errorBlock("cannot resume: " + err.Error()))
 		return m, nil
 	}
-	m.appendBlock(userBlock("❯ " + text))
+	m.appendBlock(userBlock(text))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return m.sess.Resume(runCtx, history, text)
 	})
@@ -98,7 +96,7 @@ func (m *model) startInitial(task string) error {
 		return err
 	}
 	m.sess = sess
-	m.appendBlock(userBlock("❯ " + strings.TrimSpace(task)))
+	m.appendBlock(userBlock(strings.TrimSpace(task)))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return sess.Run(runCtx)
 	})
@@ -121,6 +119,7 @@ func (m *model) startFresh(task string) error {
 	nb := markerBlock("— new task —")
 	nb.breakBefore = true
 	m.appendBlock(nb)
+	m.appendBlock(userBlock(task))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return m.sess.Run(runCtx)
 	})

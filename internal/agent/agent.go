@@ -178,6 +178,13 @@ type Config struct {
 
 	// OnDelta receives streamed content chunks for live display.
 	OnDelta func(chunk string)
+
+	// OnNudge receives loop-generated harness text (verify rounds,
+	// refusals, leak notices, wrap-ups, stuck escalations) with a
+	// kind tag. Nil disables reporting; the [harness] provenance
+	// prefix applies regardless, so the model always sees what the
+	// operator would see.
+	OnNudge func(kind, text string)
 }
 
 type Agent struct {
@@ -489,10 +496,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 					history = compactHistory(history, keep/2)
 					a.saveState(history)
 				}
-				history = append(history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: prompts.OverflowRecovered,
-				})
+				history = a.nudge(history, "overflow", prompts.OverflowRecovered)
 				continue
 			}
 			return "", fmt.Errorf("step %d: chat: %w", step, err)
@@ -553,16 +557,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// counter so a backend that truncates every response is still
 			// bounded by MaxStuckSteps → MaxSteps.
 			if resp.FinishReason == "length" {
-				history = append(history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: prompts.Truncated,
-				})
+				history = a.nudge(history, "truncated", prompts.Truncated)
 				st.stuckSteps++
 				if st.stuckSteps >= a.cfg.MaxStuckSteps {
-					history = append(history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: prompts.StuckFailing,
-					})
+					history = a.nudge(history, "stuck", prompts.StuckFailing)
 					st.stuckSteps = 0
 				}
 				continue
@@ -579,10 +577,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 				if thought := llm.DeliberationChars(resp.Message); thought > a.cfg.ReasoningBudget {
 					st.thinkWraps++
 					st.stuckSteps++
-					history = append(history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: fmt.Sprintf(prompts.ThinkWrapUp, thought, a.cfg.ReasoningBudget),
-					})
+					history = a.nudge(history, "think-wrap", fmt.Sprintf(prompts.ThinkWrapUp, thought, a.cfg.ReasoningBudget))
 					a.saveState(history)
 					continue
 				}
@@ -596,16 +591,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// then believes — and later claims — that it did. Catch this
 			// before it's mistaken for a genuine finish.
 			if leakedText {
-				history = append(history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: prompts.LeakDetected,
-				})
+				history = a.nudge(history, "leak", prompts.LeakDetected)
 				st.stuckSteps++
 				if st.stuckSteps >= a.cfg.MaxStuckSteps {
-					history = append(history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: prompts.LeakRepeated,
-					})
+					history = a.nudge(history, "leak", prompts.LeakRepeated)
 					st.stuckSteps = 0
 				}
 				continue
@@ -614,10 +603,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			if st.blockFinishDueToVerify {
 				st.blockFinishDueToVerify = false
 				st.verifiedOnce = false
-				history = append(history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: fmt.Sprintf(prompts.VerifyFailedContinue, st.verifyFailedOutput),
-				})
+				history = a.nudge(history, "verify", fmt.Sprintf(prompts.VerifyFailedContinue, st.verifyFailedOutput))
 				st.verifyFailedOutput = ""
 				continue
 			}
@@ -643,9 +629,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 						}
 					}
 				}
-				history = append(history, llm.Message{Role: llm.RoleUser, Content: verifyMsg})
+				history = a.nudge(history, "verify", verifyMsg)
 				if budgetNudge != "" {
-					history = append(history, llm.Message{Role: llm.RoleUser, Content: budgetNudge})
+					history = a.nudge(history, "budget", budgetNudge)
 				}
 				continue
 			}
@@ -663,23 +649,28 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// the finish and quote the model's own claim back at it. Bounded
 			// by MaxZeroWriteRefusals: a few cheap in-context retries beat a
 			// fresh fix worker that has to rediscover the whole subtask.
-			if a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0 &&
-				st.zeroWriteFinishes < MaxZeroWriteRefusals {
-				st.zeroWriteFinishes++
-				history = append(history, llm.Message{
-					Role: llm.RoleUser,
-					Content: fmt.Sprintf(prompts.AnnouncedNotWritten,
+			if a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0 {
+				if st.zeroWriteFinishes < MaxZeroWriteRefusals {
+					st.zeroWriteFinishes++
+					history = a.nudge(history, "refusal", fmt.Sprintf(prompts.AnnouncedNotWritten,
 						lastClaim(resp.Message.Content),
-						strings.Join(a.cfg.MutatingTools, "/")),
-				})
-				a.saveState(history)
-				continue
+						strings.Join(a.cfg.MutatingTools, "/")))
+					a.saveState(history)
+					continue
+				}
+				// Refusals exhausted and still nothing written: end the
+				// run as a failure, not a narration-shaped success.
+				// Wrapping ErrMaxSteps keeps mission retry semantics (a
+				// stuck worker can converge; a dead backend cannot).
+				return "", fmt.Errorf("%w: announced completion %d times without writing anything",
+					ErrMaxSteps, st.zeroWriteFinishes)
 			}
 			if strings.TrimSpace(resp.Message.Content) == "" {
 				if !st.emptyFinishRetried {
 					st.emptyFinishRetried = true
 					continue
 				}
+				return "", fmt.Errorf("%w: empty finish after retry", ErrMaxSteps)
 			}
 			a.LastRunMutations = st.mutatingSucceeded
 			a.report.MutatedPaths = st.mutatedPaths
@@ -874,8 +865,13 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 					}
 				}
 				if call.Name == "delegate_task" {
-					if m := parseDelegateMutations(content); m > 0 {
+					if m, paths := parseDelegateMutations(content); m > 0 {
 						st.mutatingSucceeded += m
+						for _, p := range paths {
+							if !containsStr(st.mutatedPaths, p) {
+								st.mutatedPaths = append(st.mutatedPaths, p)
+							}
+						}
 					}
 				}
 			}
@@ -1001,22 +997,31 @@ func writePathFromArgs(args json.RawMessage) string {
 
 // parseDelegateMutations reads the structured DELEGATE header from a
 // delegate_task result so the parent run can count subagent writes.
-func parseDelegateMutations(content string) int {
+func parseDelegateMutations(content string) (int, []string) {
 	if !strings.HasPrefix(content, "DELEGATE\n") {
-		return 0
+		return 0, nil
 	}
+	mutations := 0
+	var paths []string
 	for _, line := range strings.Split(content, "\n") {
 		if strings.HasPrefix(line, "mutations: ") {
 			var n int
 			if _, err := fmt.Sscanf(line, "mutations: %d", &n); err == nil {
-				return n
+				mutations = n
 			}
+			continue
+		}
+		if p, ok := strings.CutPrefix(line, "paths: "); ok {
+			if p = strings.TrimSpace(p); p != "" {
+				paths = append(paths, p)
+			}
+			continue
 		}
 		if line == "----" {
 			break
 		}
 	}
-	return 0
+	return mutations, paths
 }
 
 // defaultCompactAtPercent is the share of the context window at which
@@ -1095,6 +1100,38 @@ type stepOutcome struct {
 // The latches keep each advisory to once per run; without them a nudge
 // repeats every step for as long as its counter stays over the line,
 // which is its own kind of noise.
+// harnessText marks loop-generated text as harness provenance. The
+// model that mused "probably meta instructions from the user" was
+// reading bare instructions; "[harness] ..." names the author inline,
+// in history, events, and transcripts alike.
+func harnessText(text string) string {
+	return "[harness] " + text
+}
+
+// notifyNudge reports harness text to the observer, nil-safe.
+func (a *Agent) notifyNudge(kind, text string) {
+	if a.cfg.OnNudge != nil {
+		a.cfg.OnNudge(kind, text)
+	}
+}
+
+// nudge appends harness text to history and reports it. Every
+// loop-generated message goes through here (or markNudge below) so
+// observers see exactly what the model saw — never a paraphrase.
+func (a *Agent) nudge(history []llm.Message, kind, text string) []llm.Message {
+	marked := harnessText(text)
+	a.notifyNudge(kind, marked)
+	return append(history, llm.Message{Role: llm.RoleUser, Content: marked})
+}
+
+// markNudge reports harness text and returns it marked, for call sites
+// (interject) that append history themselves.
+func (a *Agent) markNudge(kind, text string) string {
+	marked := harnessText(text)
+	a.notifyNudge(kind, marked)
+	return marked
+}
+
 func (a *Agent) interject(st *runState, o stepOutcome) string {
 	// A budget notice fires once per threshold crossed, so it has to
 	// queue rather than be dropped when something more urgent takes the
@@ -1119,26 +1156,29 @@ func (a *Agent) interject(st *runState, o stepOutcome) string {
 		st.stuckNudges++
 		switch {
 		case st.stuckNudges == 1 && o.repeat:
-			return prompts.StuckRepeating
+			return a.markNudge("stuck", prompts.StuckRepeating)
 		case st.stuckNudges == 1:
-			return prompts.StuckFailing
+			return a.markNudge("stuck", prompts.StuckFailing)
 		case st.stuckNudges == 2:
-			return prompts.StuckEscalated
+			return a.markNudge("stuck", prompts.StuckEscalated)
 		default:
 			return ""
 		}
 
 	case st.consecutiveSameToolCount >= maxSameToolSteps && !st.toolLoopWarned:
 		st.toolLoopWarned = true
-		return prompts.ToolLoop
+		return a.markNudge("stuck", prompts.ToolLoop)
 
 	case st.exploratorySteps >= a.cfg.MaxExploratorySteps && !st.searchFatigueWarned:
 		st.searchFatigueWarned = true
-		return prompts.SearchFatigue
+		return a.markNudge("stuck", prompts.SearchFatigue)
 	}
 
 	msg := st.pendingBudget
 	st.pendingBudget = ""
+	if msg != "" {
+		return a.markNudge("budget", msg)
+	}
 	return msg
 }
 

@@ -113,6 +113,10 @@ type model struct {
 	// thinkToggleHint); render-only, history keeps everything either
 	// way. On by default: details on demand, never a flood.
 	compact bool
+	// partLines holds rendered line counts per transcript part, kept so
+	// pure re-renders (toggles, resizes) can hold the reader's content
+	// position instead of its offset. See refreshContent.
+	partLines []int
 	// overlays is the overlay stack (overlay.go); gates are its first
 	// client. gstage/gateTool/gateResource describe the open permission
 	// gate; note is the reject-note input; always remembers run-local
@@ -151,7 +155,7 @@ func gateEvent(name string, fields map[string]any) api.Event {
 }
 
 // withoutPrintHooks strips the CLI print hooks from Env for fullscreen
-// runs: stepPrinter-style callbacks (and the finding printer) write to
+// runs: stepPrinter-style callbacks (steps, findings, nudges) write to
 // stdout, racing the alt-screen renderer (stale status rows plus leaked
 // "[step N]" lines that heal only on resize). The TUI reads the event
 // stream, never the hooks; no-ops keep every call site safe without
@@ -162,6 +166,7 @@ func withoutPrintHooks(env roles.Env) roles.Env {
 	env.OnToolResult = func(string, string) {}
 	env.OnUsage = func(int, llm.Usage) {}
 	env.OnFinding = nil
+	env.OnNudge = nil
 	return env
 }
 

@@ -29,6 +29,23 @@ func TestUnknownDefaultsAllow(t *testing.T) {
 	}
 }
 
+func TestDestructiveShellAsks(t *testing.T) {
+	p := Default()
+	for _, cmd := range []string{"rm -rf /tmp/x", "del /s /q build", "sudo mkfs.ext4 /dev/sda1", "dd if=/dev/zero of=x"} {
+		if got := p.Evaluate("run_shell", cmd); got != Ask {
+			t.Errorf("shell %q = %v, want ask", cmd, got)
+		}
+		if got := p.Evaluate("start_background", cmd); got != Ask {
+			t.Errorf("background %q = %v, want ask", cmd, got)
+		}
+	}
+	for _, cmd := range []string{"go test ./...", "npm run dev", "git status"} {
+		if got := p.Evaluate("run_shell", cmd); got != Allow {
+			t.Errorf("shell %q = %v, want allow", cmd, got)
+		}
+	}
+}
+
 func TestDecide_Answers(t *testing.T) {
 	for _, ans := range []string{"y", "Y", "yes", "a", "always"} {
 		if eff, err := Decide(ans); eff != Allow || err != nil {

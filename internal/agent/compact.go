@@ -32,7 +32,7 @@ func compactHistory(history []llm.Message, keepSteps int) []llm.Message {
 	kept := groups[cut:]
 
 	out := append([]llm.Message(nil), prefix...)
-	out = append(out, llm.Message{Role: llm.RoleUser, Content: compactNotice(dropped)})
+	out = append(out, llm.Message{Role: llm.RoleUser, Content: harnessText(compactNotice(dropped))})
 	for _, g := range kept {
 		out = append(out, g...)
 	}

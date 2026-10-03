@@ -69,10 +69,11 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 		t.Fatalf("result = %q", out)
 	}
 	// Framing is the transport's job: Session streams steps, results,
-	// and usage — nothing else. (The stub answers "done" to everything
-	// including the verify round, so more than one step event is normal
-	// here. The stub reports zero usage, so usage events carry zeros.)
-	seenStep, seenUsage := false, false
+	// usage, and harness nudges — nothing else. (The stub answers "done"
+	// to everything including the verify round, so more than one step
+	// event is normal here. The stub reports zero usage, so usage events
+	// carry zeros.)
+	seenStep, seenUsage, seenNudge := false, false, false
 	for _, ev := range events {
 		switch ev.Name {
 		case "step":
@@ -82,12 +83,23 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 			if _, ok := ev.Fields["prompt"]; !ok {
 				t.Fatalf("usage without prompt: %+v", ev)
 			}
+		case "nudge":
+			seenNudge = true
+			if _, ok := ev.Fields["kind"]; !ok {
+				t.Fatalf("nudge without kind: %+v", ev)
+			}
+			if text, _ := ev.Fields["text"].(string); !strings.HasPrefix(text, "[harness] ") {
+				t.Fatalf("nudge without provenance: %+v", ev)
+			}
 		default:
-			t.Fatalf("events = %+v, want steps and usage only", events)
+			t.Fatalf("events = %+v, want steps, usage and nudges only", events)
 		}
 	}
 	if !seenStep || !seenUsage {
 		t.Fatalf("steps and usage both expected: %+v", events)
+	}
+	if !seenNudge {
+		t.Fatalf("verify nudge expected on the wire: %+v", events)
 	}
 }
 
@@ -165,7 +177,7 @@ func TestEmitStep_MatchesEmitterEncoding(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	EmitStep(events.New(&buf), "w1", 3, msg)
+	EmitStep(events.New(&buf), "w1", 3, msg, false)
 
 	var got []Event
 	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
@@ -199,7 +211,7 @@ func TestEmitStep_IncludesCallID(t *testing.T) {
 	var buf bytes.Buffer
 	EmitStep(events.New(&buf), "run", 1, llm.Message{
 		ToolCalls: []llm.ToolCall{{ID: "c9", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
-	})
+	}, false)
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
 		t.Fatalf("not json: %v", err)
@@ -211,6 +223,69 @@ func TestEmitStep_IncludesCallID(t *testing.T) {
 	call, ok := calls[0].(map[string]any)
 	if !ok || call["id"] != "c9" {
 		t.Fatalf("call = %v", calls[0])
+	}
+}
+
+func TestEmitStep_HarnessReplyFlag(t *testing.T) {
+	var buf bytes.Buffer
+	EmitStep(events.New(&buf), "run", 1, llm.Message{Content: "hi"}, true)
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if rec["harness_reply"] != true {
+		t.Fatalf("flag missing: %v", rec)
+	}
+	var buf2 bytes.Buffer
+	EmitStep(events.New(&buf2), "run", 1, llm.Message{Content: "hi"}, false)
+	var rec2 map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf2.Bytes()), &rec2); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if _, ok := rec2["harness_reply"]; ok {
+		t.Fatalf("flag must be omitted when false: %v", rec2)
+	}
+}
+
+func TestSession_HarnessReplyFlaggedAfterNudge(t *testing.T) {
+	var events []Event
+	s, err := New(Config{
+		Task: "task",
+		Env:  testEnv(t, stubOK{}, nil),
+		OnEvent: func(ev Event) {
+			events = append(events, ev)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The step right after a nudge carries the flag when text-only.
+	nudgeAt := -1
+	for i, ev := range events {
+		if ev.Name == "nudge" {
+			nudgeAt = i
+			break
+		}
+	}
+	if nudgeAt < 0 {
+		t.Fatalf("no nudge in %d events", len(events))
+	}
+	found := false
+	for _, ev := range events[nudgeAt+1:] {
+		if ev.Name != "step" {
+			continue
+		}
+		if ev.Fields["harness_reply"] != true {
+			t.Fatalf("post-nudge step missing flag: %+v", ev.Fields)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("no step followed the nudge")
 	}
 }
 
@@ -281,6 +356,23 @@ func TestEmitFinding_RoundTrips(t *testing.T) {
 		t.Fatalf("fields = %v", fields)
 	}
 	EmitFinding(nil, "x", "y", "z", 0, "w") // nil-safe
+}
+
+func TestEmitNudge_RoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	EmitNudge(events.New(&buf), "verify", "[harness] check your work")
+	var got []Event
+	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "nudge" {
+		t.Fatalf("events = %+v", got)
+	}
+	if got[0].Fields["kind"] != "verify" {
+		t.Fatalf("fields = %v", got[0].Fields)
+	}
+	EmitNudge(nil, "x", "y") // nil-safe
 }
 
 func TestEmitUsage_RoundTrips(t *testing.T) {

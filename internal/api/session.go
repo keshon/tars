@@ -95,8 +95,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	prevOnStep := env.OnStep
 	prevOnResult := env.OnToolResult
 	prevOnUsage := env.OnUsage
+	// expectReply marks the next text-only step as harness-caused: a
+	// nudge was just delivered, so the following bare answer reacts to
+	// the harness, not the operator. One-shot and text-only: tool calls
+	// are work, whatever prompted them.
+	expectReply := false
 	env.OnStep = func(label string, step int, msg llm.Message) {
-		EmitStep(emitter, label, step, msg)
+		hr := expectReply && len(msg.ToolCalls) == 0
+		expectReply = false
+		EmitStep(emitter, label, step, msg, hr)
 		if prevOnStep != nil {
 			prevOnStep(label, step, msg)
 		}
@@ -111,6 +118,14 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		EmitUsage(emitter, step, usage)
 		if prevOnUsage != nil {
 			prevOnUsage(step, usage)
+		}
+	}
+	prevOnNudge := env.OnNudge
+	env.OnNudge = func(kind, text string) {
+		EmitNudge(emitter, kind, text)
+		expectReply = true
+		if prevOnNudge != nil {
+			prevOnNudge(kind, text)
 		}
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
@@ -150,8 +165,15 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	prevOnStep := env.OnStep
 	prevOnResult := env.OnToolResult
 	prevOnUsage := env.OnUsage
+	// expectReply marks the next text-only step as harness-caused: a
+	// nudge was just delivered, so the following bare answer reacts to
+	// the harness, not the operator. One-shot and text-only: tool calls
+	// are work, whatever prompted them.
+	expectReply := false
 	env.OnStep = func(label string, step int, msg llm.Message) {
-		EmitStep(emitter, label, step, msg)
+		hr := expectReply && len(msg.ToolCalls) == 0
+		expectReply = false
+		EmitStep(emitter, label, step, msg, hr)
 		if prevOnStep != nil {
 			prevOnStep(label, step, msg)
 		}
@@ -166,6 +188,14 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 		EmitUsage(emitter, step, usage)
 		if prevOnUsage != nil {
 			prevOnUsage(step, usage)
+		}
+	}
+	prevOnNudge := env.OnNudge
+	env.OnNudge = func(kind, text string) {
+		EmitNudge(emitter, kind, text)
+		expectReply = true
+		if prevOnNudge != nil {
+			prevOnNudge(kind, text)
 		}
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
@@ -221,12 +251,17 @@ func (w *callbackWriter) Write(p []byte) (int, error) {
 
 // EmitStep writes one step as a JSONL event on emitter. Shared by the
 // direct loop, mission workers, and Session so all three speak the same
-// schema. events.Message caps each text field.
-func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message) {
+// schema. events.Message caps each text field. harnessReply marks a
+// text-only answer to a harness nudge (first reply is enough); the
+// field is omitted when false so old consumers see no change.
+func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message, harnessReply bool) {
 	if emitter == nil {
 		return
 	}
 	ev := map[string]any{"step": step, "label": label}
+	if harnessReply {
+		ev["harness_reply"] = true
+	}
 	if msg.Content != "" {
 		ev["text"] = events.Message(msg.Content)
 	}
@@ -259,6 +294,16 @@ func EmitFinding(emitter *events.Emitter, scope, rule, path string, line int, su
 	emitter.Emit("finding", map[string]any{
 		"scope": scope, "rule": rule, "path": path, "line": line, "summary": summary,
 	})
+}
+
+// EmitNudge writes one loop-generated harness notice as a JSONL event:
+// the same text the model saw (including its [harness] provenance
+// mark), tagged by kind for display filtering.
+func EmitNudge(emitter *events.Emitter, kind, text string) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit("nudge", map[string]any{"kind": kind, "text": text})
 }
 
 // maxSweepFiles bounds the session-end deep pass; maxSweepFindings

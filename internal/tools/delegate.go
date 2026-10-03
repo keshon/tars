@@ -99,9 +99,17 @@ func (d *Delegate) Run(ctx context.Context, args json.RawMessage) (string, error
 	if strings.TrimSpace(result) == "" {
 		return "", fmt.Errorf("subagent returned empty result")
 	}
-	return formatDelegateResult(sub.LastRunMutations, result), nil
+	return formatDelegateResult(sub.LastRunMutations, sub.MutatedPaths(), result), nil
 }
 
-func formatDelegateResult(mutations int, result string) string {
-	return fmt.Sprintf("DELEGATE\nmutations: %d\n----\n%s", mutations, result)
+func formatDelegateResult(mutations int, paths []string, result string) string {
+	var b strings.Builder
+	b.WriteString("DELEGATE\n")
+	fmt.Fprintf(&b, "mutations: %d\n", mutations)
+	for _, p := range paths {
+		fmt.Fprintf(&b, "paths: %s\n", p)
+	}
+	b.WriteString("----\n")
+	b.WriteString(result)
+	return b.String()
 }

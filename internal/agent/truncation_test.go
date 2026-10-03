@@ -33,7 +33,7 @@ func TestAgent_TruncatedFinish_NudgesAndContinues(t *testing.T) {
 	}
 	var nudged bool
 	for _, m := range client.lastHistory {
-		if m.Role == llm.RoleUser && m.Content == prompts.Truncated {
+		if m.Role == llm.RoleUser && m.Content == harnessText(prompts.Truncated) {
 			nudged = true
 		}
 	}
