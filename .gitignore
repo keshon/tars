@@ -16,3 +16,5 @@ eval/log/
 tmp/
 # Local launchers holding live API keys are never committed.
 run-remote.cmd
+# Local serve launcher (ports and backends are machine-specific).
+run-serve.cmd

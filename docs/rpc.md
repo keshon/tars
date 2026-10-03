@@ -1,0 +1,58 @@
+# RPC over stdio (`-serve`)
+
+`agent -serve` speaks line-delimited JSON-RPC on stdin and writes event
+lines plus id-responses on stdout. Human chatter always goes to stderr,
+so stdout parses cleanly. Single-flight: one run and one pending gate at
+a time; anything else reports an error instead of queueing.
+
+## Methods
+
+```json
+{"id": 1, "method": "run", "params": {"task": "add Bye() to sample.go", "mission": false}}
+{"id": 2, "method": "respond", "params": {"answer": "y"}}
+{"id": 3, "method": "cancel"}
+```
+
+- `run` starts a direct run (`"mission": true` runs the planner
+  pipeline instead). Each run gets a fresh task dir and snapshot, like
+  the CLI. Answers arrive as `{"id": 1, "result": {"answer": "..."}}`
+  or `{"id": 1, "error": {"message": "..."}}`.
+- `respond` answers the currently suspended gate with raw text. The
+  y/a/n and approve/reject mappings live server-side, exactly as on
+  the CLI: reply `"y"` to allow, anything else to deny; reply `"y"` to
+  approve a plan, `"n"` to reject, anything else as a revision note.
+- `cancel` aborts the in-flight run. A second `run` while one is active
+  is refused; `respond` with no gate pending is refused.
+
+Malformed lines answer `{"id": null, "error": ...}`. Stdin EOF drains
+the in-flight run before exiting (a piped one-shot closes stdin right
+after its request), so `printf ... | agent -serve` works instead of
+racing. Ctrl+C aborts immediately. Human chatter always goes to stderr
+in serve mode, whatever `-mode` says.
+
+## Events (no id)
+
+The same vocabulary as `-mode json`, so one parser serves both:
+
+```json
+{"seq": 1, "event": "run_start", "task": "...", "mission": false}
+{"seq": 2, "event": "step", "label": "", "step": 0, "tool_calls": [{"name": "read_file", "args": "{...}"}]}
+{"seq": 3, "event": "awaiting_input", "kind": "permission", "id": ""}
+{"seq": 4, "event": "input_answered", "kind": "permission", "id": ""}
+{"seq": 5, "event": "mission", "text": "subtask s1: check PASSED"}
+{"seq": 6, "event": "result", "answer": "..."}
+```
+
+`kind` is `ask_user`, `permission`, or `plan_approval`. All flags that
+shape a CLI run (`-backend`, `-workspace`, `-allow`, `-mcp`, `-yes`,
+`-reasoning-budget`, …) shape `-serve` identically — it is the same
+harness behind a different front door.
+
+## Example
+
+```bash
+printf '%s\n' \
+  '{"id":1,"method":"run","params":{"task":"what files are here?"}}' |
+  go run ./cmd/agent -serve -backend-kind llama -backend http://127.0.0.1:8080 -workspace ./site |
+  while IFS= read -r line; do echo "$line" | jq -c '{event, id, result}'; done
+```

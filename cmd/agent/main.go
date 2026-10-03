@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
@@ -87,18 +88,20 @@ func main() {
 	revertFlag := flag.Bool("revert", false, "restore tracked workspace files to git HEAD and exit (untracked files are kept)")
 	planFlag := flag.Bool("plan", false, "plan mode: read-only tools, propose a plan and change nothing")
 	modeFlag := flag.String("mode", "print", "output mode: print (human-readable) or json (one JSON object per line)")
+	serveFlag := flag.Bool("serve", false, "serve JSON-RPC over stdio instead of running one task: methods run/respond/cancel, events on stdout. See docs/rpc.md")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
-	if task == "" && *resume == "" && *forkFlag == "" {
+	if task == "" && *resume == "" && *forkFlag == "" && !*serveFlag {
 		log.Fatal(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
 	}
 
 	// noteW is where human-readable chatter goes. In -mode json it is
 	// stderr, so stdout carries nothing but JSONL and a caller can pipe
 	// it straight into a parser; in print mode it is stdout as before.
+	// -serve always uses stderr: stdout is the protocol.
 	noteW := io.Writer(os.Stdout)
-	if *modeFlag == "json" {
+	if *modeFlag == "json" || *serveFlag {
 		noteW = os.Stderr
 	}
 	note := func(format string, args ...any) {
@@ -116,6 +119,12 @@ func main() {
 		})
 		defer emitter.Emit("run_end", nil)
 	}
+
+	// One suspender for every gate in the run: ask_user questions,
+	// permission prompts, and the mission plan approval below all ask
+	// through it. A single shared stdin reader matters — three buffered
+	// readers on one stdin would eat each other's input.
+	suspend := stdioSuspender(noteW, emitter)
 
 	// Auto-mission for multi-file tasks — the cheap alternative to hoping
 	// the reactive loop (or spontaneous delegate_task) holds a plan.
@@ -299,7 +308,7 @@ func main() {
 	}()
 
 	if missionDir != "" {
-		runMission(ctx, missionParams{
+		if err := runMission(ctx, missionParams{
 			client:       client,
 			ws:           ws,
 			procs:        bgProcs,
@@ -313,7 +322,10 @@ func main() {
 			autoApprove:  *yes,
 			noteW:        noteW,
 			emitter:      emitter,
-		})
+			suspend:      suspend,
+		}); err != nil {
+			log.Fatalf("%v", err)
+		}
 		return
 	}
 
@@ -329,20 +341,25 @@ func main() {
 			return "", fmt.Errorf("ask_user: clarifying question limit (%d) reached — "+
 				"make a decision and proceed with a stated assumption", maxClarifyingQuestions)
 		}
-		fmt.Printf("\n[paused — state saved at %s]\n", stateFile)
-		fmt.Printf("[resume: agent -resume %s -answer \"your answer\"]\n", stateFile)
-		fmt.Printf("\n[agent asks] %s\n> ", question)
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
+		rep, err := suspend(context.Background(), agent.SuspendRequest{
+			Kind: agent.SuspendAsk,
+			Prompt: fmt.Sprintf("\n[paused — state saved at %s]\n"+
+				"[resume: agent -resume %s -answer \"your answer\"]\n"+
+				"\n[agent asks] %s", stateFile, stateFile, question),
+		})
 		if err != nil {
-			return "", fmt.Errorf("reading answer: %w", err)
+			return "", err
 		}
-		return strings.TrimSpace(line), nil
+		return rep.Answer, nil
 	}
 
 	// Git snapshot before any work, so the run is reviewable/revertible.
-	if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
-		note("snapshot: %s", snap.Path)
+	// Skipped in serve mode: each served run snapshots into its own
+	// task dir instead, and this stateFile belongs to no run.
+	if !*serveFlag {
+		if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
+			note("snapshot: %s", snap.Path)
+		}
 	}
 
 	mcpTools, mcpClients := discoverMCP(ctx, *mcpFlag)
@@ -352,6 +369,30 @@ func main() {
 		}
 	}()
 
+	if *serveFlag {
+		// stdout is the protocol in serve mode regardless of -mode:
+		// human chatter always goes to stderr.
+		serveMain(ctx, serveDeps{
+			client:       client,
+			ws:           ws,
+			procs:        bgProcs,
+			maxTokens:    *maxTokens,
+			contextLimit: contextLimit,
+			logMax:       *logMax,
+			verifyCmd:    *verifyCmd,
+			autoApprove:  *yes,
+			autoDeny:     *yes,
+			pure:         *pureFlag,
+			allow:        *allowFlag,
+			deny:         *denyFlag,
+			backendKind:  *backendKind,
+			stream:       *streamFlag,
+			thinkBudget:  *thinkBudget,
+			mcpTools:     mcpTools,
+		}, os.Stdin, os.Stdout, os.Stderr)
+		return
+	}
+
 	env := roles.Env{
 		Client:          client,
 		WS:              ws,
@@ -359,7 +400,7 @@ func main() {
 		MaxTokens:       *maxTokens,
 		ContextLimit:    contextLimit,
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
-		Gate:            permissionGate(*yes),
+		Gate:            permissionGate(*yes, suspend),
 		BackendKind:     *backendKind,
 		Stream:          *streamFlag && *modeFlag != "json",
 		MCPTools:        mcpTools,
@@ -451,19 +492,22 @@ type missionParams struct {
 	// stdout stays pure JSONL). emitter is nil unless -mode json.
 	noteW   io.Writer
 	emitter *events.Emitter
+	// suspend answers the plan approval gate. Same shared suspender as
+	// the direct-mode gates: one stdin reader per run.
+	suspend agent.Suspender
 }
 
 // runMission is the -mission entry point: harness-owned plan → execute →
 // verify instead of one long reactive conversation. The interaction
 // point with the human is the plan approval gate; workers themselves
 // never ask questions.
-func runMission(ctx context.Context, p missionParams) {
+func runMission(ctx context.Context, p missionParams) error {
 	var m *mission.Mission
 	if p.resuming {
 		var err error
 		m, err = mission.Load(p.dir)
 		if err != nil {
-			log.Fatalf("resume mission: %v", err)
+			return fmt.Errorf("resume mission: %w", err)
 		}
 		progress := ""
 		if len(m.Subtasks) > 0 {
@@ -473,7 +517,7 @@ func runMission(ctx context.Context, p missionParams) {
 	} else {
 		m = &mission.Mission{ID: filepath.Base(p.dir), Task: p.task, Phase: mission.PhaseExplore}
 		if err := m.Save(p.dir); err != nil {
-			log.Fatalf("create mission: %v", err)
+			return fmt.Errorf("create mission: %w", err)
 		}
 	}
 
@@ -481,16 +525,15 @@ func runMission(ctx context.Context, p missionParams) {
 	// weak model's garbage plans: a human reads it before anything runs.
 	var approve func(string) (bool, string)
 	if !p.autoApprove {
-		reader := bufio.NewReader(os.Stdin)
 		approve = func(rendered string) (bool, string) {
-			fmt.Fprintln(p.noteW, "\n=== proposed plan ===")
-			fmt.Fprintln(p.noteW, rendered)
-			fmt.Fprint(p.noteW, "\napprove? [y]es / [n]o / or type a revision note\n> ")
-			line, err := reader.ReadString('\n')
+			rep, err := p.suspend(context.Background(), agent.SuspendRequest{
+				Kind:   agent.SuspendPlan,
+				Prompt: "=== proposed plan ===\n" + rendered + "\n\napprove? [y]es / [n]o / or type a revision note",
+			})
 			if err != nil {
 				return false, ""
 			}
-			line = strings.TrimSpace(line)
+			line := strings.TrimSpace(rep.Answer)
 			switch strings.ToLower(line) {
 			case "y", "yes":
 				return true, ""
@@ -512,7 +555,7 @@ func runMission(ctx context.Context, p missionParams) {
 		ApprovePlan:  approve,
 		VerifyCmd:    p.verifyCmd,
 		OnStep: func(subID string, step int, msg llm.Message) {
-			emitStepEvent(p.emitter, subID, step, msg)
+			api.EmitStep(p.emitter, subID, step, msg)
 			if msg.Content != "" {
 				fmt.Fprintf(p.noteW, "[%s step %d] %s\n", subID, step, agent.TruncateMiddle(msg.Content, p.logMax))
 			}
@@ -535,9 +578,7 @@ func runMission(ctx context.Context, p missionParams) {
 	}
 	fmt.Fprintln(p.noteW, "\n=== mission report ===")
 	fmt.Fprintln(p.noteW, report)
-	if err != nil {
-		log.Fatalf("%v", err)
-	}
+	return err
 }
 
 // buildPolicy combines built-in defaults with -allow/-deny overrides.
@@ -579,27 +620,54 @@ func parseRuleSpecs(spec string, eff permission.Effect) []permission.Rule {
 	return out
 }
 
-// permissionGate prompts for Ask-gated calls on stdin. -yes auto-denies
-// asks (fail-closed for unattended runs) instead of prompting.
-func permissionGate(autoDeny bool) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
-	return func(tool, resource string, _ json.RawMessage) (permission.Effect, error) {
+// permissionGate answers Ask-gated calls through the shared suspender.
+// -yes auto-denies without suspending (fail-closed for unattended runs).
+// The y/a/n mapping lives here, not in the transport: a channel-backed
+// run answers the same question from its own UI.
+func permissionGate(autoDeny bool, suspend agent.Suspender) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+	return func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
 		if autoDeny {
 			return permission.Deny, nil
 		}
-		fmt.Printf("\n[permission] %s on %q — allow? [y]es once / [a]lways / [n]o\n> ", tool, resource)
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
+		rep, err := suspend(context.Background(), agent.SuspendRequest{
+			Kind:     agent.SuspendPermission,
+			Tool:     tool,
+			Resource: resource,
+			Prompt:   fmt.Sprintf("\n[permission] %s on %q - allow? [y]es once / [a]lways / [n]o", tool, resource),
+		})
 		if err != nil {
-			return permission.Deny, fmt.Errorf("blocked: no answer")
+			return permission.Deny, err
 		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "y", "yes":
-			return permission.Allow, nil
-		case "a", "always":
+		switch strings.ToLower(strings.TrimSpace(rep.Answer)) {
+		case "y", "yes", "a", "always":
 			return permission.Allow, nil
 		default:
 			return permission.Deny, fmt.Errorf("blocked by operator (%s on %s)", tool, resource)
 		}
+	}
+}
+
+// stdioSuspender answers gates from the terminal: the current behavior,
+// centralized so future transports replace one constructor instead of
+// three stdin blocks. Prompts go to noteW (stderr in -mode json), never
+// to event stdout. Each suspension emits awaiting_input/input_answered
+// events - the vocabulary a future TUI or RPC client already speaks.
+func stdioSuspender(noteW io.Writer, emitter *events.Emitter) agent.Suspender {
+	reader := bufio.NewReader(os.Stdin)
+	return func(_ context.Context, req agent.SuspendRequest) (agent.SuspendReply, error) {
+		if emitter != nil {
+			emitter.Emit("awaiting_input", map[string]any{"kind": string(req.Kind), "id": req.ID})
+		}
+		fmt.Fprintf(noteW, "%s\n> ", req.Prompt)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return agent.SuspendReply{}, fmt.Errorf("reading answer: %w", err)
+		}
+		ans := strings.TrimSpace(line)
+		if emitter != nil {
+			emitter.Emit("input_answered", map[string]any{"kind": string(req.Kind), "id": req.ID})
+		}
+		return agent.SuspendReply{Answer: ans}, nil
 	}
 }
 
@@ -609,33 +677,10 @@ func permissionGate(autoDeny bool) func(tool, resource string, args json.RawMess
 func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, int, llm.Message) {
 	if mode == "json" && emitter != nil {
 		return func(label string, step int, msg llm.Message) {
-			emitStepEvent(emitter, label, step, msg)
+			api.EmitStep(emitter, label, step, msg)
 		}
 	}
 	return func(label string, step int, msg llm.Message) { printStep(label, step, msg, logMax) }
-}
-
-// emitStepEvent writes one step as a JSONL event. Shared by the direct
-// loop and mission workers so both modes speak the same schema.
-// events.Message caps each text field, so logMax does not apply here.
-func emitStepEvent(emitter *events.Emitter, label string, step int, msg llm.Message) {
-	if emitter == nil {
-		return
-	}
-	ev := map[string]any{"step": step, "label": label}
-	if msg.Content != "" {
-		ev["text"] = events.Message(msg.Content)
-	}
-	calls := make([]any, 0, len(msg.ToolCalls))
-	for _, tc := range msg.ToolCalls {
-		calls = append(calls, map[string]any{
-			"name": tc.Name, "args": events.Message(string(tc.Arguments)),
-		})
-	}
-	if len(calls) > 0 {
-		ev["tool_calls"] = calls
-	}
-	emitter.Emit("step", ev)
 }
 
 // discoverMCP starts each -mcp server and returns its tools and clients.

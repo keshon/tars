@@ -1,0 +1,184 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/events"
+	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/roles"
+	"github.com/keshon/tars/internal/tools"
+	"github.com/keshon/tars/internal/workspace"
+)
+
+func testEnv(t *testing.T, client llm.Client, record func(string, int, llm.Message)) roles.Env {
+	t.Helper()
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return roles.Env{
+		Client: client, WS: ws, Procs: tools.NewBackgroundProcesses(),
+		OnStep: record,
+	}
+}
+
+func TestNew_Validates(t *testing.T) {
+	if _, err := New(Config{}); err == nil {
+		t.Fatal("empty task must fail")
+	}
+	ws, _ := workspace.New(t.TempDir())
+	if _, err := New(Config{Task: "x", Env: roles.Env{WS: ws}}); err == nil {
+		t.Fatal("nil client must fail")
+	}
+	if _, err := New(Config{Task: "x", Env: roles.Env{Client: stubOK{}, WS: ws}}); err != nil {
+		t.Fatalf("valid config: %v", err)
+	}
+}
+
+type stubOK struct{}
+
+func (stubOK) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
+	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+}
+
+func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
+	var events []Event
+	s, err := New(Config{
+		Task: "task",
+		Env:  testEnv(t, stubOK{}, nil),
+		OnEvent: func(ev Event) {
+			events = append(events, ev)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("result = %q", out)
+	}
+	// Framing is the transport's job: Session streams steps only. (The
+	// stub answers "done" to everything including the verify round, so
+	// more than one step event is normal here.)
+	for _, ev := range events {
+		if ev.Name != "step" {
+			t.Fatalf("events = %+v, want steps only", events)
+		}
+	}
+	last := events[len(events)-1]
+	if last.Fields["text"] != "done" {
+		t.Fatalf("fields = %+v", last.Fields)
+	}
+}
+
+func TestSession_AskGoesThroughSuspender(t *testing.T) {
+	asked := 0
+	client := &askThenDone{}
+	s, err := New(Config{
+		Task: "task",
+		Env:  testEnv(t, client, nil),
+		Answer: func(_ context.Context, req agent.SuspendRequest) (agent.SuspendReply, error) {
+			if req.Kind != agent.SuspendAsk {
+				t.Errorf("kind = %s", req.Kind)
+			}
+			asked++
+			return agent.SuspendReply{Answer: "assumed"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if asked != 1 {
+		t.Fatalf("ask suspender called %dx", asked)
+	}
+}
+
+type askThenDone struct{ calls int }
+
+func (s *askThenDone) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
+	s.calls++
+	if s.calls == 1 {
+		return llm.ChatResponse{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID: "q1", Name: "ask_user",
+				Arguments: json.RawMessage(`{"question":"which?"}`),
+			}},
+		}}, nil
+	}
+	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+}
+
+func TestSession_HeadlessFailsClosed(t *testing.T) {
+	s, err := New(Config{
+		Task: "task",
+		Env:  testEnv(t, &askThenDone{}, nil),
+		// No Answer: ClosedSuspender must fail, never hang.
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = s.Run(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("headless run hung instead of failing closed")
+	}
+}
+
+func TestEmitStep_MatchesEmitterEncoding(t *testing.T) {
+	// The schema contract both directions: EmitStep output must parse as
+	// the same JSON -mode json prints, and a Session callbackWriter must
+	// decode it back field-identical.
+	msg := llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: "working",
+		ToolCalls: []llm.ToolCall{
+			{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+		},
+	}
+	var buf bytes.Buffer
+	EmitStep(events.New(&buf), "w1", 3, msg)
+
+	var got []Event
+	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "step" {
+		t.Fatalf("events = %+v", got)
+	}
+	if got[0].Seq != 1 {
+		t.Fatalf("seq = %d", got[0].Seq)
+	}
+	fields := got[0].Fields
+	if fields["label"] != "w1" {
+		t.Fatalf("label = %v", fields["label"])
+	}
+	if fields["text"] != "working" {
+		t.Fatalf("text = %v", fields["text"])
+	}
+	calls, ok := fields["tool_calls"].([]any)
+	if !ok || len(calls) != 1 {
+		t.Fatalf("tool_calls = %v", fields["tool_calls"])
+	}
+	call, ok := calls[0].(map[string]any)
+	if !ok || call["name"] != "read_file" {
+		t.Fatalf("call = %v", calls[0])
+	}
+}
