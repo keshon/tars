@@ -25,6 +25,7 @@ import (
 
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
+	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
@@ -46,6 +47,7 @@ type serveDeps struct {
 	verifyCmd    string
 	autoApprove  bool
 	autoDeny     bool
+	auditPath    string
 	pure         bool
 	allow        string
 	deny         string
@@ -247,7 +249,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 		MaxTokens:       d.maxTokens,
 		ContextLimit:    d.contextLimit,
 		Policy:          buildPolicy(d.pure, d.allow, d.deny),
-		Gate:            permissionGate(d.autoDeny, suspend, d.ws),
+		Gate:            audit.Hook(d.auditPath, "serve", permissionGate(d.autoDeny, suspend, d.ws)),
 		BackendKind:     d.backendKind,
 		Stream:          d.stream,
 		MCPTools:        d.mcpTools,

@@ -264,6 +264,9 @@ func (t WriteFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if err := guardWriteSize("write_file", in.Content); err != nil {
+		return "", err
+	}
 	if msg := rewriteInsteadOfPatch(full, in.Path, in.Content); msg != "" {
 		return "", fmt.Errorf("%s", msg)
 	}

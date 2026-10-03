@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/keshon/tars/internal/api"
+	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/roles"
 )
@@ -31,6 +32,8 @@ type Config struct {
 	Task      string
 	StateFile string
 	Verify    func(ctx context.Context) (output string, ok bool)
+	// AuditPath, when set, appends gate decisions as JSONL (see audit).
+	AuditPath string
 }
 
 type runState int
@@ -193,7 +196,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	m.input.Prompt = "> "
 
 	env := withoutPrintHooks(cfg.Env)
-	env.Gate = m.gateHook(hub, runCtx, cfg.Env.WS)
+	env.Gate = audit.Hook(cfg.AuditPath, "tui", m.gateHook(hub, runCtx, cfg.Env.WS))
 	m.newSession = func(task, stateFile string) (*api.Session, error) {
 		return api.New(api.Config{
 			Env:       env,

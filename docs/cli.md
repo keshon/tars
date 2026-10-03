@@ -36,6 +36,7 @@ found under `TARS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
 | `-direct` | `false` | Force the reactive loop even when the task looks multi-file |
 | `-plan` | `false` | Plan mode: read-only tools, proposes a plan and changes nothing |
 | `-yes` | `false` | Skip the mission plan approval gate |
+| `-audit PATH` | - | Append gate decisions as JSONL to PATH (off when empty) |
 | `-verify-cmd CMD` | — | Command run at the self-check checkpoint, e.g. `"go test ./..."`. Real output is fed back as fact instead of trusting the model's claim |
 | `-resume PATH` | — | Continue an interrupted run from its saved state |
 | `-fork PATH` | — | Branch from a prior transcript file but write to a fresh task id |

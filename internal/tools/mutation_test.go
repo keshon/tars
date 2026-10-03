@@ -54,6 +54,16 @@ func TestPatchFile_IdenticalRejected(t *testing.T) {
 	}
 }
 
+func TestPatchFile_OversizedNewContentRejected(t *testing.T) {
+	ws, dir := testWS(t)
+	writeTmp(t, dir, "a.txt", "one\ntwo\nthree\nfour\nfive\n")
+	big := strings.Repeat("x", writeMaxBytes+1)
+	_, err := runTool(t, PatchFile{WS: ws}, `{"path":"a.txt","old_content":"two","new_content":"`+big+`"}`)
+	if err == nil || !strings.Contains(err.Error(), "write cap") {
+		t.Fatalf("expected write-cap refusal, got %v", err)
+	}
+}
+
 func TestPatchFile_ReturnsDiff(t *testing.T) {
 	ws, dir := testWS(t)
 	writeTmp(t, dir, "a.txt", "one\ntwo\nthree\nfour\nfive\nsix\n")

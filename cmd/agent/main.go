@@ -23,6 +23,7 @@ import (
 
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
+	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/mission"
@@ -67,6 +68,7 @@ func main() {
 		"without it. Also auto-enabled when the task names ≥2 deliverable files (see -direct)")
 	direct := flag.Bool("direct", false, "force the reactive agent loop even when the task looks multi-file")
 	yes := flag.Bool("yes", false, "skip the mission plan approval gate and run the plan as generated")
+	auditPath := flag.String("audit", "", "append gate decisions as JSONL to this file (off when empty)")
 	backendKind := flag.String("backend-kind", "kobold", "which server: "+
 		strings.Join(llm.Kinds(), ", ")+". kobold/llama are local; openai is any hosted "+
 		"OpenAI-compatible API (OpenAI, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI). "+
@@ -393,6 +395,7 @@ func main() {
 			verifyCmd:    *verifyCmd,
 			autoApprove:  *yes,
 			autoDeny:     *yes,
+			auditPath:    *auditPath,
 			pure:         *pureFlag,
 			allow:        *allowFlag,
 			deny:         *denyFlag,
@@ -411,7 +414,7 @@ func main() {
 		MaxTokens:       *maxTokens,
 		ContextLimit:    contextLimit,
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
-		Gate:            permissionGate(*yes, suspend, ws),
+		Gate:            audit.Hook(*auditPath, "cli", permissionGate(*yes, suspend, ws)),
 		BackendKind:     *backendKind,
 		Model:           *model,
 		Stream:          *streamFlag && *modeFlag != "json",

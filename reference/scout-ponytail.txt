@@ -1,0 +1,56 @@
+=== WHAT PONYTAIL IS ===
+
+Ponytail is not an agent harness; it is a portable "lazy senior dev" skill plus thin host adapters that inject a minimal-code ruleset into many different coding agents (Claude Code, Codex, Cursor, OpenCode, Gemini, pi, and others).
+Its core is a 7-rung decision ladder (YAGNI, reuse codebase, stdlib, native platform, installed dep, one-liner, else minimum code) with explicit non-negotiable carve-outs for validation, data-loss handling, security, and accessibility.
+Distribution is via skills files, lifecycle hooks, and per-host adapters, backed by an unusually honest benchmark suite that measures code size against correctness and safety gates.
+
+=== 5 IDEAS TARS SHOULD BORROW ===
+
+1. LIFECYCLE HOOKS AS THIN ADAPTERS OVER ONE SHARED PROMPT BUILDER, WITH A NEVER-BLOCK CONTRACT
+What it is: All host entry points (session start, per-prompt, subagent start) call one shared instruction builder and differ only in output envelope. Every hook has a short timeout and fails silent/open so a broken hook never freezes the session. Windows stdin-hang workarounds are documented inline.
+Where it lives:
+- hooks/ponytail-instructions.js (getPonytailInstructions, getFallbackInstructions, filterSkillBodyForMode)
+- hooks/ponytail-runtime.js (writeHookOutput per-host JSON vs raw text, readMode/setMode/clearMode)
+- hooks/ponytail-activate.js (SessionStart: write flag, emit ruleset, one-time statusline nudge)
+- hooks/ponytail-mode-tracker.js (UserPromptSubmit: parse /ponytail command, 1000ms setTimeout fallback, process.exit on stdin end/error)
+- hooks/claude-codex-hooks.json (declarative hook map: SessionStart, SubagentStart, UserPromptSubmit, timeout 5)
+Why it fits tars: Directly maps to a small Go harness. One func BuildSystemPrompt(mode) in stdlib-only Go, plus tiny event hooks (session_start, before_llm, subagent_start) that format the same string for Bubble Tea vs headless vs log output. Copy the never-block rule: context.WithTimeout + best-effort file writes, never return hook errors to the agent loop.
+Adaptation: replace Node stdin/fire-and-forget with Go contexts and explicit timeouts; log to a debug file instead of truly silent.
+
+2. TIERED INTENSITY (lite/full/ultra/off) WITH MODE-FILTERED PROMPT AND ENV > FILE > DEFAULT RESOLUTION
+What it is: A single SKILL.md contains all levels; the hook filters it per active mode by keeping only the matching intensity-table rows and worked examples, with a small embedded fallback if the skill file is unreadable. Default mode resolves: PONYTAIL_DEFAULT_MODE env, then config file defaultMode (XDG_CONFIG_HOME or %APPDATA% or ~/.config), then hardcoded full. Bare /ponytail toggles on, /ponytail default <mode> persists to disk, plain switches stay session-scoped.
+Where it lives:
+- skills/ponytail/SKILL.md (Intensity table, lite/full/ultra definitions)
+- hooks/ponytail-instructions.js (filterSkillBodyForMode, getFallbackInstructions)
+- hooks/ponytail-config.js (getDefaultMode, getConfigDir, getConfigPath, normalizeMode, writeDefaultMode)
+- pi-extension/index.js (resolveSessionMode, parsePonytailCommand, before_agent_start section injection)
+Why it fits tars: Ideal for stdlib-first Go. No plugin system: one enum, one prompt-template filter, os.Getenv + encoding/json + os.UserHomeDir. Gives the TUI a cheap mode switcher and keeps context small by injecting only the active level.
+Adaptation: port the line-filter carefully (quoted-value guard is load-bearing); add a Go test mirroring their invariant check.
+
+3. SUBAGENT CONTEXT PROPAGATION THAT FAILS OPEN, WITH REGEX SCOPING DONE SAFELY
+What it is: Parent-session context does not reach subagents automatically, so a dedicated SubagentStart hook re-injects the same ruleset. Optional matcher env scopes injection by agent_type; missing/unparseable type, bad regex, stdin error, and timeout all fail open (inject). No backtracking risk in RE2-style engines.
+Where it lives:
+- hooks/ponytail-subagent.js (readMode gate, matcher, timeout handling, stdin-independent fast path)
+- hooks/ponytail-runtime.js (SubagentStart JSON envelope branch)
+Why it fits tars: Directly relevant to Zero-Trust where spawned subagents/tools are the leak point. In Go this is even cleaner: regexp/RE2 has no backtracking, just regexp.Compile with fail-open on error and a short context deadline. Borrow semantics verbatim: absent flag means inject nothing; matcher unset means inject everywhere; unknown type means inject.
+Adaptation: decide per-tool vs per-agent_type scoping; surface the matcher in TUI settings rather than env-only.
+
+4. EVAL DISCIPLINE: MEASUREMENT VS GATE SPLIT, GOOD/BAD REFS, SELFTEST BEFORE SPEND, GIT-DIFF SCORING
+What it is: LOC is always-pass measurement; correctness/safety are binary gates, so a broken one-liner cannot win on size. Every scorer ships good (must pass) and bad (must be caught) references, and run.py --selftest proves instruments before any API spend. Agentic tier scores real sessions on git diff added-lines (seeded repo + baseline commit), excludes tests from bloat, supports offline --rescore, audited LLM judges with their own --selftest ranking checks.
+Where it lives:
+- benchmarks/loc.js, benchmarks/correctness.js
+- benchmarks/agentic/tasks.py (seed/good/bad per task), benchmarks/agentic/run.py (selftest, rescore)
+- benchmarks/agentic/README.md (honesty notes, reproduce commands)
+Why it fits tars: Best thing to copy wholesale in Go testing style. go test with table-driven scorers, testdata/good and testdata/bad fixtures, a -selftest gate in CI, git-diff LOC as measurement only. Their "implicit safety requirement" trick cheaply tests whether tars's default prompt preserves guards unprompted.
+Adaptation: replace promptfoo/Claude-CLI orchestration with a tiny Go runner; keep the honest split (LOC proxy + separate safety + completeness), never a single score.
+
+5. MACHINE-GREPPABLE TECH-DEBT MARKERS PLUS TAGGED ONE-LINE REVIEW FORMAT
+What it is: Deliberate shortcuts carry a ponytail: ceiling-comment naming ceiling and upgrade path, harvested by read-only grep into a ledger with rot detection. Reviews use a fixed tag set (delete/stdlib/native/reuse/yagni/shrink), one line per finding, net-lines metric; "Lean already. Ship." is the explicit empty result so TUI can render it as success.
+Where it lives:
+- AGENTS.md (ceiling-comment rule), skills/ponytail/SKILL.md, skills/ponytail-debt/SKILL.md, skills/ponytail-review/SKILL.md, skills/ponytail-audit/SKILL.md, docs/platform-native.md
+Why it fits tars: Context management without a database. Comments are grep-able with stdlib, trivial to render in Bubble Tea (ledger/review views), enforceable in Zero-Trust policy. Copy the tag vocabulary for tars audit output so diffs stay parseable.
+Adaptation: pick a tars: prefix to avoid collision, define the exact regex once, ship the platform-native table as Go-specific (os, path/filepath, net/http, slices/maps, testing).
+
+=== DO NOT BORROW ===
+
+Do NOT borrow the 20-host adapter matrix and per-host output branching (manifests, hook JSON shapes, statusline scripts, installers for Claude Code, Codex, Copilot, Cursor, Gemini, pi, OpenCode, and others). Tars wins by being one small local Go binary with one hook protocol and one TUI. Importing host-specific envelopes and copy-drift tests would triple maintenance for zero local benefit and fight stdlib-first, cgo-free (every new host is a new QA axis). Take the principle (thin adapters over one builder) but invert it: support exactly one adapter (tars itself) and let other tools consume tars output, not the reverse.

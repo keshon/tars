@@ -58,6 +58,20 @@ func guardEdit(tool, oldContent, newContent string) error {
 	if oldContent == newContent {
 		return fmt.Errorf("%s: old_content and new_content are identical — nothing would change", tool)
 	}
+	return guardWriteSize(tool, newContent)
+}
+
+// writeMaxBytes caps one file-writing call's new content. Refused,
+// never truncated: a cut write corrupts silently, and legitimate
+// artifacts rarely approach a megabyte (reads cap at 48K; the loop
+// re-reads what it writes).
+const writeMaxBytes = 1024 * 1024
+
+// guardWriteSize refuses oversized writes before they touch disk.
+func guardWriteSize(tool, content string) error {
+	if len(content) > writeMaxBytes {
+		return fmt.Errorf("%s: content %d bytes exceeds write cap %d — split the write", tool, len(content), writeMaxBytes)
+	}
 	return nil
 }
 

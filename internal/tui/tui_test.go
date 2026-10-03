@@ -17,6 +17,7 @@ import (
 
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
+	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/permission"
@@ -942,6 +943,33 @@ func TestGateRejectEmptyNoteDenies(t *testing.T) {
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if rep := awaitReply(t, answered); rep.Answer != "n" {
 		t.Fatalf("reply = %+v, want plain deny", rep)
+	}
+}
+
+func TestGateHook_AuditsDecisions(t *testing.T) {
+	m := sizeModel(t, testModel())
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	hook := audit.Hook(path, "tui", m.gateHook(m.hub, context.Background(), ws))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = hook("read_file", "a.txt", json.RawMessage(`{}`))
+	}()
+	waitPending(t, m.hub)
+	if err := m.hub.Respond("y"); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"front":"tui"`) || !strings.Contains(string(data), `"effect":"allow"`) {
+		t.Fatalf("audit record missing: %s", data)
 	}
 }
 

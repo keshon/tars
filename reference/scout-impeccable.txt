@@ -1,0 +1,59 @@
+=== 1. WHAT IMPECCABLE IS ===
+
+Impeccable is a design-guidance skill for AI coding agents: one skill, 24 slash commands (audit, polish, critique, harden, live, ...), plus 61 deterministic detector rules that flag AI-generated frontend anti-patterns with no LLM and no API key.
+Underneath sits a real Rust engine (Cargo workspace) shipped as a single static binary per platform via a small sh/cmd launcher, with a per-edit design hook, a Stop deep pass, a monorepo-aware context/doctor subsystem, and an oracle golden-test corpus that pins every verb byte-for-byte.
+Source of truth is skill/ plus crates/; provider folders and plugin/ are generated distribution artifacts synced only at release time.
+
+=== 2. FIVE IDEAS TARS SHOULD BORROW ===
+
+--- Idea 1: Two-tier deterministic gate (cheap per-edit + deep Stop + pre-write deny) ---
+What it is: per-edit hook surfaces only mechanical, unambiguous problems; taste-level checks deferred to a Stop-hook deep pass over touched files, deduplicated against per-edit findings. Third shape: pre-write gate denying bad writes, degrading to allow-with-warning after N repeated denials so the agent never loops forever.
+Where it lives:
+- skill/reference/hooks.md (tier policy, harness matrix, triage ladder)
+- crates/hook/src/hook.rs (per-edit pass + Stop deep pass, always exit 0)
+- crates/hook/src/before_edit.rs (pre-write gate, denial-count downgrade)
+- crates/hook/src/hook_lib.rs (IMMEDIATE_TIER_RULES, dedupe cache)
+- crates/hook/src/stop_baseline.rs (conservative Stop attribution)
+Why it fits tars: best Zero-Trust pattern in the repo. Policy as deterministic code, not model judgment; cheap pass keeps hot loop fast, deep pass keeps it complete; dedupe + suppression + downgrade are three independent anti-nag mechanisms.
+Adaptation: copy tier split and dedupe cache almost verbatim; map harnesses to tars events (post-tool vs session-end vs pre-tool); stdlib-friendly (JSON stdin/stdout, small cache file, no daemon).
+
+--- Idea 2: Fail-open hook hardening (deny-lists, byte caps, reentrancy guards, audit log) ---
+What it is: every hook assumes hostile/degenerate input and fails open (allow/skip, never block on infra failure). Guards: sensitive-path regex (.env, .git, id_rsa), generated-path regex, path-traversal rejection, 1 MiB caps, reentrancy guards, per-session file caps, opt-in NDJSON audit log.
+Where it lives:
+- crates/hook/src/hook_lib.rs (SENSITIVE_PATH_RE, GENERATED_PATH_RE, limits, audit writer)
+- crates/hook/src/hook.rs (depth/disabled/malformed-stdin early returns)
+- crates/hook/src/before_edit.rs (capped reads, projected-edit reconstruction)
+- skill/reference/hooks.md (failure modes: malformed config ignored, never fatal)
+Why it fits tars: Zero-Trust checklist to lift wholesale. The "skip reasons" vocabulary (no-file-path, sensitive, generated, outside-project, too-large, suppressed) is excellent UX for a tool pane: every silent decision named and auditable.
+Adaptation: Go stdlib covers all (regexp, io.LimitReader); keep fail-open posture; audit log off by default. Skip their UTF-16 accounting (JS-parity only); use rune/byte budgets.
+
+--- Idea 3: Context as machine-readable directives + cheap-boot vs deep-doctor split ---
+What it is: `context` runs once per session emitting a deterministic directive stream (RESOLVED_CONTEXT JSON, MANUAL_DETECTOR_REQUIRED, staleness directives) instead of asking the model to discover files. Cheap boot subset (CONTEXT_STALE line, throttled) vs full `doctor` verb (--json/--fix, drift grouped by severity route/mention/auto, only auto applied). Monorepo resolution in the same crate so every verb resolves one project root.
+Where it lives:
+- crates/context/src/context.rs, context_cli.rs, staleness.rs, doctor.rs
+- skill/SKILL.src.md ("Never repair drift as a side effect")
+Why it fits tars: exactly the context discipline a small harness needs: one loader verb, one JSON contract, "report, don't repair". Steal the shapes (resolved-context JSON, per-artifact {id,severity,summary,fix}, --fix restricted to auto).
+Adaptation: tars context files differ (tools/policy, not PRODUCT/DESIGN); drop JS-monorepo parsing unless targeting JS; keep git-boundary + home-dir stops.
+
+--- Idea 4: Oracle goldens + CLI contract (streams, exit codes, JSON discipline) ---
+What it is: every verb's observable behavior pinned by replayable goldens. Human findings to stderr (stdout stays clean for --json); exit 0 = clean, 1 = operational failure, 2 = findings; machine paths/timestamps normalized before diffing; frozen vectors never regenerated; verbs return codes, only main exits.
+Where it lives:
+- docs/CLI-CONTRACT.md, tests/oracle/README.md, tests/oracle/run.mjs
+- crates/cli/src/main.rs (verb router), AGENTS.md (area-to-suite obligations)
+Why it fits tars: the eval/testing discipline a small Go harness needs most, stdlib-compatible. stdout/stderr split plus 0/1/2 ladder maps onto Bubble Tea (detail pane reads stderr/human, automation reads stdout/JSON). Copy "verbs return codes, main exits" and "never overwrite goldens to pass".
+Adaptation: tiny Go golden harness (testdata dirs + normalized compare); copy `detect --quiet` as TUI status-line source.
+
+--- Idea 5: Budget-clamped finding rendering + narrowest-exception suppression ladder ---
+What it is: hook output rendered under explicit budgets (max 5 findings, max 8000 chars, deny path 4000) with graceful degradation (short footer, drop lines, collapse "and N more", clamp last line, never blow context). Suppression ladder: value-scoped (agent self-servable with --reason), file-scoped, rule-wide (needs user approval); shared vs local (gitignored) config; hook never writes ignore config.
+Where it lives:
+- crates/hook/src/hook_lib.rs (render_template, clamp_to_budget, directive footers, per-line ignore hints)
+- skill/reference/hooks.md (triage: fix / narrowest ignore + disclose / ask)
+- docs/CLI-CONTRACT.md (shared + local config merge, glob semantics)
+Why it fits tars: budget-clamped rendering is exactly how a Bubble Tea viewport should show findings (status + expandable detail); the suppression ladder beats allow/deny-all and maps onto tars tool approvals (broad suppressions need the human, narrow ones self-servable).
+Adaptation: straightforward Go port; keep per-line suppression affordance; local-overrides-gitignored.
+
+=== 3. DO NOT BORROW ===
+
+Do NOT borrow the live-mode localhost server + in-page JS injection + framework-adapter machinery (dev-server orchestration, browser overlay bars, edit journals, Svelte/Vue adapters, CDP passes).
+Representative surface (verified): crates/live/src/live_server.rs, session.rs, live_boot.rs (50+ files: accept/commit/discard flows, svelte_bridge, pending_edits, source_lock, plus in-page bundles skill/scripts/live-browser*.js).
+Why it would hurt tars: a second product (browser IDE backend) hiding in a linter repo; largest attack surface in the tree; heaviest maintenance tail. Directly contradicts Zero-Trust, stdlib-first, cgo-free. Steal only the underneath idea ("verify in bounded passes, not a loop"); replace the server with: run deterministic checks over changed files once, show clamped findings in the TUI, stop.

@@ -230,3 +230,20 @@ func TestWriteFile_AllowsGenuineRewritesAndNewFiles(t *testing.T) {
 		t.Fatalf("genuine rewrite refused: %v", err)
 	}
 }
+
+func TestWriteFile_OversizedContentRefused(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	big := strings.Repeat("x", writeMaxBytes+1)
+	args, _ := json.Marshal(map[string]string{"path": "big.go", "content": big})
+	if _, err := (WriteFile{WS: ws}).Run(context.Background(), args); err == nil ||
+		!strings.Contains(err.Error(), "write cap") {
+		t.Fatalf("expected write-cap refusal, got %v", err)
+	}
+	if _, stat := os.Stat(filepath.Join(dir, "big.go")); !os.IsNotExist(stat) {
+		t.Fatal("refused write must not touch disk")
+	}
+}
