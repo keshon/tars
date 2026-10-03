@@ -295,3 +295,45 @@ func TestGateHub_SingleFlight(t *testing.T) {
 		t.Fatal("suspender never woke")
 	}
 }
+
+func TestServe_EOFCancelsGatedRun(t *testing.T) {
+	// A run suspended on a gate with closed stdin can never be answered:
+	// EOF must cancel it (id-response error) instead of hanging shutdown.
+	stub := &stubChat{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "q1", Name: "ask_user", Arguments: json.RawMessage(`{"question":"which?"}`)},
+		}}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+	}}
+	inR, inW := io.Pipe()
+	out := &outLines{ch: make(chan string, 256)}
+	var notes bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveMain(context.Background(), testServeDeps(t, stub), inR, out, &notes)
+	}()
+
+	if _, err := io.WriteString(inW, "{\"id\":1,\"method\":\"run\",\"params\":{\"task\":\"hi\"}}\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the run suspends, then close stdin with no answer.
+	out.waitFor(t, 10*time.Second, func(rec map[string]any) bool {
+		ev, _ := rec["event"].(string)
+		return ev == "awaiting_input"
+	})
+	_ = inW.Close()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("serveMain hung on EOF with a gated run")
+	}
+	// The run must have failed (cancelled), not vanished: its id-response
+	// carries the error.
+	out.waitFor(t, time.Second, func(rec map[string]any) bool {
+		id, _ := rec["id"].(float64)
+		_, hasErr := rec["error"]
+		return id == 1 && hasErr
+	})
+}

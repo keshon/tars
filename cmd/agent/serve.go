@@ -102,6 +102,15 @@ func (h *gateHub) clear() {
 	h.pending = false
 }
 
+// hasPending reports whether a gate is currently suspended awaiting an
+// answer. Used at shutdown: a pending gate with closed stdin can never
+// be answered, so the run is unblocked by cancelling instead of draining.
+func (h *gateHub) hasPending() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pending
+}
+
 func (h *gateHub) respond(answer string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -254,8 +263,17 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 	// Stdin closed: no more requests will arrive, but an in-flight run
 	// still owns its answer — drain it instead of abandoning it. This is
 	// what makes piped one-shots (`printf ... | agent -serve`) work
-	// instead of racing startup against EOF. A hung backend still hangs
-	// shutdown; Ctrl+C aborts via the signal handler.
+	// instead of racing startup against EOF. Exception: a run suspended
+	// on a gate can never proceed — its answer was going to arrive on
+	// the stdin that just closed — so cancel it instead of hanging.
+	// Ctrl+C aborts everything immediately via the signal handler.
+	if hub.hasPending() {
+		runMu.Lock()
+		if cancel != nil {
+			cancel()
+		}
+		runMu.Unlock()
+	}
 	wg.Wait()
 }
 

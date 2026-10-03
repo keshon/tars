@@ -26,9 +26,10 @@ a time; anything else reports an error instead of queueing.
 
 Malformed lines answer `{"id": null, "error": ...}`. Stdin EOF drains
 the in-flight run before exiting (a piped one-shot closes stdin right
-after its request), so `printf ... | agent -serve` works instead of
-racing. Ctrl+C aborts immediately. Human chatter always goes to stderr
-in serve mode, whatever `-mode` says.
+after its request), unless the run is suspended on a gate — its answer
+was going to arrive on the stdin that just closed, so the run is
+cancelled instead of hanging. Ctrl+C aborts immediately. Human chatter
+always goes to stderr in serve mode, whatever `-mode` says.
 
 ## Events (no id)
 
