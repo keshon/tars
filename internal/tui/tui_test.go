@@ -1267,18 +1267,6 @@ func TestDividerExactWidth(t *testing.T) {
 	}
 }
 
-func TestThreadStripOrder(t *testing.T) {
-	m := testModel()
-	m.appendBlock(userBlock("u"))
-	m.appendBlock(answerBlock("a"))
-	m.appendBlock(thinkBlock("t"))
-	strip := m.threadStrip()
-	iu, ia, it := strings.Index(strip, "●"), strings.Index(strip, "○"), strings.Index(strip, "~")
-	if iu < 0 || ia < 0 || it < 0 || !(iu < ia && ia < it) {
-		t.Fatalf("strip out of order: %q", strip)
-	}
-}
-
 func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
@@ -1317,10 +1305,13 @@ func TestHintAlwaysShown(t *testing.T) {
 func TestHelpSections(t *testing.T) {
 	st := defaultStyles()
 	out := renderBlock(markerBlock(strings.Join(renderHelp(), "\n")), st, false, 80)
-	for _, want := range []string{"keys", "gates", "commands", "● user"} {
+	for _, want := range []string{"keys", "gates", "commands"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing %q", want)
 		}
+	}
+	if strings.Contains(out, "thread") {
+		t.Fatalf("thread strip removed everywhere: %q", out)
 	}
 	// Two columns: every command description starts at the same
 	// absolute column (keys padded to the section max).

@@ -70,3 +70,59 @@ func TestMarkdownGlobSafe(t *testing.T) {
 		t.Fatalf("tool args must stay raw: %q", out)
 	}
 }
+
+func TestMarkdownTableGrid(t *testing.T) {
+	rows := renderTable([]string{
+		"| A | B |",
+		"| --- | --- |",
+		"| x | yy |",
+	})
+	want := []string{"| A | B  |", "| ─── | ─── |", "| x | yy |"}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for i := range want {
+		if rows[i].text != want[i] {
+			t.Fatalf("row %d = %q, want %q", i, rows[i].text, want[i])
+		}
+	}
+	if !rows[0].header || !rows[1].fence || rows[2].header || rows[2].fence {
+		t.Fatalf("row kinds wrong: %+v", rows)
+	}
+}
+
+func TestMarkdownTableAlignRight(t *testing.T) {
+	rows := renderTable([]string{
+		"| Name | Number |",
+		"| --- | ---: |",
+		"| ab | 7 |",
+	})
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if !strings.Contains(rows[2].text, "|      7 |") {
+		t.Fatalf("right align missing: %q", rows[2].text)
+	}
+}
+
+func TestMarkdownTableEndToEnd(t *testing.T) {
+	st := defaultStyles()
+	in := "4. Risks\n| Risk | Level |\n| --- | --- |\n| Sandbox | High |"
+	out := renderBlock(answerBlock(in), st, false, 80)
+	if strings.Contains(out, ":---") || strings.Contains(out, "| ---") {
+		t.Fatalf("separator row leaked: %q", out)
+	}
+	for _, want := range []string{"Risk", "Sandbox", "High"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestMarkdownPipesLiteral(t *testing.T) {
+	st := defaultStyles()
+	out := renderBlock(answerBlock("echo a | grep b"), st, false, 80)
+	if !strings.Contains(out, "echo a | grep b") {
+		t.Fatalf("pipe line altered: %q", out)
+	}
+}

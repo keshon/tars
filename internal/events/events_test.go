@@ -38,7 +38,7 @@ func TestNilEmitter_Drops(t *testing.T) {
 }
 
 func TestMessage_Truncates(t *testing.T) {
-	long := strings.Repeat("x", 5000)
+	long := strings.Repeat("x", 17000)
 	got := Message(long)
 	if n := len([]rune(got)); n > messageMaxRunes+1 {
 		t.Fatalf("not truncated: %d runes", n)
@@ -49,11 +49,15 @@ func TestMessage_Truncates(t *testing.T) {
 	if Message("short") != "short" {
 		t.Fatal("short text altered")
 	}
+	// A detailed answer (multi-section + table) passes intact.
+	if got := Message(strings.Repeat("y", 12000)); len([]rune(got)) != 12000 {
+		t.Fatalf("detailed answer cut at %d runes", len([]rune(got)))
+	}
 }
 
 func TestMessage_RuneSafe(t *testing.T) {
 	// A byte cut would split the em-dash (3 bytes in UTF-8) mid-rune.
-	long := strings.Repeat("—", 5000)
+	long := strings.Repeat("—", 17000)
 	got := Message(long)
 	body := strings.TrimSuffix(got, "…")
 	if !utf8.ValidString(body) {

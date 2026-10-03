@@ -27,9 +27,11 @@ type mdLine struct {
 // "# Head" (space required, so "#tag" stays literal), and "- "/"* "
 // bullets prettified to "• " (same 2-cell cost, no reflow change).
 func mdBlockLines(raw string) []mdLine {
+	lines := strings.Split(raw, "\n")
 	var out []mdLine
 	inFence := false
-	for _, line := range strings.Split(raw, "\n") {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			inFence = !inFence
@@ -38,6 +40,17 @@ func mdBlockLines(raw string) []mdLine {
 		}
 		if inFence {
 			out = append(out, mdLine{text: line, fence: true})
+			continue
+		}
+		// Tables need a header row, a separator row, and | cells:
+		// strict enough that shell pipelines never qualify.
+		if strings.HasPrefix(trimmed, "|") && i+1 < len(lines) && isTableSep(lines[i+1]) {
+			j := i + 2
+			for j < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[j]), "|") {
+				j++
+			}
+			out = append(out, renderTable(lines[i:j])...)
+			i = j - 1
 			continue
 		}
 		if text, ok := cutHeader(line); ok {
@@ -49,6 +62,146 @@ func mdBlockLines(raw string) []mdLine {
 			continue
 		}
 		out = append(out, mdLine{text: line})
+	}
+	return out
+}
+
+// isTableSep recognizes a | --- | :---: | row: cells of dashes and
+// colons only, each with at least one dash.
+func isTableSep(line string) bool {
+	t := strings.Trim(strings.TrimSpace(line), "|")
+	if t == "" {
+		return false
+	}
+	for _, part := range strings.Split(t, "|") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			return false
+		}
+		hasDash := false
+		for _, r := range p {
+			if r != '-' && r != ':' {
+				return false
+			}
+			if r == '-' {
+				hasDash = true
+			}
+		}
+		if !hasDash {
+			return false
+		}
+	}
+	return true
+}
+
+type alignDir int
+
+const (
+	alignLeft alignDir = iota
+	alignRight
+	alignCenter
+)
+
+// splitTableRow cuts "| a | b |" into cells. Escaped pipes are out of
+// scope (documented): a cell containing \| splits early, visibly.
+func splitTableRow(line string) []string {
+	t := strings.TrimSpace(line)
+	t = strings.TrimPrefix(t, "|")
+	t = strings.TrimSuffix(t, "|")
+	parts := strings.Split(t, "|")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// stripMd removes span markers for width math: columns align on
+// visible text (markers vanish later, so measuring them would pad
+// every marked cell a few columns too wide).
+func stripMd(s string) string {
+	s = strings.ReplaceAll(s, "**", "")
+	return strings.ReplaceAll(s, "`", "")
+}
+
+func parseTableAlign(sep string, ncol int) []alignDir {
+	cells := splitTableRow(sep)
+	out := make([]alignDir, ncol)
+	for i := range out {
+		c := ""
+		if i < len(cells) {
+			c = strings.TrimSpace(cells[i])
+		}
+		switch {
+		case strings.HasPrefix(c, ":") && strings.HasSuffix(c, ":") && len(c) > 1:
+			out[i] = alignCenter
+		case strings.HasSuffix(c, ":"):
+			out[i] = alignRight
+		default:
+			out[i] = alignLeft
+		}
+	}
+	return out
+}
+
+func padCell(s string, w int, a alignDir) string {
+	n := len([]rune(stripMd(s)))
+	if n >= w {
+		return s
+	}
+	switch a {
+	case alignRight:
+		return strings.Repeat(" ", w-n) + s
+	case alignCenter:
+		left := (w - n) / 2
+		return strings.Repeat(" ", left) + s + strings.Repeat(" ", w-n-left)
+	default:
+		return s + strings.Repeat(" ", w-n)
+	}
+}
+
+// renderTable lays a | grid | out: padded cells, bold header, dim rule
+// under it (fence-kind: dim, no spans). Wide tables overflow narrow
+// terminals (reflow hard-cuts mid-row, rune-safe) — v1 accepts ragged
+// edges over reflowing inside cells, which would break columns worse.
+func renderTable(rows []string) []mdLine {
+	header := splitTableRow(rows[0])
+	ncol := len(header)
+	aligns := parseTableAlign(rows[1], ncol)
+	var body [][]string
+	for _, r := range rows[2:] {
+		body = append(body, splitTableRow(r))
+	}
+	widths := make([]int, ncol)
+	measure := func(cells []string) {
+		for i := 0; i < ncol && i < len(cells); i++ {
+			if n := len([]rune(stripMd(cells[i]))); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	measure(header)
+	for _, r := range body {
+		measure(r)
+	}
+	join := func(cells []string) string {
+		for len(cells) < ncol {
+			cells = append(cells, "")
+		}
+		padded := make([]string, ncol)
+		for i := range padded {
+			padded[i] = padCell(cells[i], widths[i], aligns[i])
+		}
+		return "| " + strings.Join(padded, " | ") + " |"
+	}
+	var out []mdLine
+	out = append(out, mdLine{text: join(header), header: true})
+	rule := make([]string, ncol)
+	for i := range rule {
+		rule[i] = strings.Repeat("─", max(widths[i], 3))
+	}
+	out = append(out, mdLine{text: join(rule), fence: true})
+	for _, r := range body {
+		out = append(out, mdLine{text: join(r)})
 	}
 	return out
 }

@@ -83,3 +83,22 @@ func TestWithRole_NonEmptyAppendsFormattedAddendum(t *testing.T) {
 		t.Fatalf("role addendum format string was not substituted: %q", got)
 	}
 }
+
+// TestSystem_KeepsLoadBearingGuards pins the sentences that shape model
+// behavior: tool discipline, anti-fake-save, background policy, asking.
+// Rewording deletes the test's premise, so reword deliberately —
+// update the fragments, never just delete them.
+func TestSystem_KeepsLoadBearingGuards(t *testing.T) {
+	for _, want := range []string{
+		"does NOT save it anywhere",
+		"Always use move_file",
+		"always use list_files",
+		"Use grep_files instead",
+		"Never run a long-running process",
+		"use ask_user to ask one focused clarifying question",
+	} {
+		if !strings.Contains(System, want) {
+			t.Errorf("system prompt lost its guard %q", want)
+		}
+	}
+}

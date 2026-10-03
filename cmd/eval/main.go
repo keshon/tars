@@ -1092,6 +1092,26 @@ func loadProbes(dir, only string) ([]Probe, error) {
 				return nil, fmt.Errorf("%s: oses has %q, want windows, linux or darwin (runtime.GOOS)", path, goos)
 			}
 		}
+		// Selftest before spend: unknown check types, missing check
+		// fields, and uncompilable regexes fail here, dry, instead of
+		// mid-run after model calls.
+		for i, c := range p.Verify {
+			if err := mission.ValidateCheck(c); err != nil {
+				return nil, fmt.Errorf("%s: verify[%d]: %w", path, i, err)
+			}
+		}
+		for _, tc := range p.Trace {
+			if tc.ArgsRegex != "" {
+				if _, err := regexp.Compile(tc.ArgsRegex); err != nil {
+					return nil, fmt.Errorf("%s: trace %q: bad args_regex %q: %v", path, tc.Tool, tc.ArgsRegex, err)
+				}
+			}
+		}
+		for _, ac := range p.Answer {
+			if _, err := regexp.Compile("(?i)" + ac.Regex); err != nil {
+				return nil, fmt.Errorf("%s: bad answer regex %q: %v", path, ac.Regex, err)
+			}
+		}
 		p.Name = name
 		out = append(out, p)
 	}

@@ -153,6 +153,36 @@ func TestRunCheck_ContentContains(t *testing.T) {
 	}
 }
 
+func TestValidateCheck_Types(t *testing.T) {
+	good := []Check{
+		{},
+		{Type: "none"},
+		{Type: "file_exists", Path: "a"},
+		{Type: "file_absent", Path: "a"},
+		{Type: "content_contains", Path: "a", Contains: "b"},
+		{Type: "shell", Cmd: "go test ./..."},
+		{Type: "http", URL: "http://x/"},
+	}
+	for _, c := range good {
+		if err := ValidateCheck(c); err != nil {
+			t.Errorf("ValidateCheck(%+v) = %v, want nil", c, err)
+		}
+	}
+	bad := []Check{
+		{Type: "content_containz", Path: "a", Contains: "b"},
+		{Type: "file_exists"},
+		{Type: "content_contains", Path: "a"},
+		{Type: "content_contains", Path: "a", Contains: "  "},
+		{Type: "shell"},
+		{Type: "http"},
+	}
+	for _, c := range bad {
+		if err := ValidateCheck(c); err == nil {
+			t.Errorf("ValidateCheck(%+v) = nil, want error", c)
+		}
+	}
+}
+
 func TestDerivedChecks_SkipsWhatTheDeclaredCheckAlreadyCovers(t *testing.T) {
 	sub := &Subtask{
 		FilesHint: []string{"index.html", "style.css"},

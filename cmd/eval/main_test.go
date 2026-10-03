@@ -58,3 +58,29 @@ func TestLoadProbes_AcceptsOsesAndNewCheckType(t *testing.T) {
 		t.Fatalf("verify=%+v", probes[0].Verify)
 	}
 }
+
+func TestLoadProbes_RejectsBadVerify(t *testing.T) {
+	dir := t.TempDir()
+	writeProbe(t, dir, "x.json", `{"task":"t","tier":"smoke",
+		"verify":[{"type":"content_containz","path":"a","contains":"b"}]}`)
+	if _, err := loadProbes(dir, ""); err == nil ||
+		!strings.Contains(err.Error(), "verify[0]") {
+		t.Fatalf("want verify rejection, got %v", err)
+	}
+	writeProbe(t, dir, "y.json", `{"task":"t","tier":"smoke",
+		"verify":[{"type":"content_contains","path":"a"}]}`)
+	if _, err := loadProbes(dir, ""); err == nil ||
+		!strings.Contains(err.Error(), "verify[") {
+		t.Fatalf("want missing-field rejection, got %v", err)
+	}
+}
+
+func TestLoadProbes_RejectsBadRegex(t *testing.T) {
+	dir := t.TempDir()
+	writeProbe(t, dir, "x.json", `{"task":"t","tier":"smoke",
+		"trace":[{"tool":"read_file","args_regex":"([unclosed"}]}`)
+	if _, err := loadProbes(dir, ""); err == nil ||
+		!strings.Contains(err.Error(), "args_regex") {
+		t.Fatalf("want regex rejection, got %v", err)
+	}
+}

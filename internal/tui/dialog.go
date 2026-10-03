@@ -110,10 +110,6 @@ func helpSections() []helpSection {
 			{"pgup / pgdn + wheel", "scroll"},
 			{"end", "back to live"},
 		}},
-		{"thread (last 12 blocks by role)", [][2]string{
-			{"", "● user  ○ answer  ~ think  → tool"},
-			{"", "= result  ? gate  - marker  ! error"},
-		}},
 		{"gates", [][2]string{
 			{"y", "once"},
 			{"a", "always for this run (confirm)"},

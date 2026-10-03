@@ -24,6 +24,42 @@ const checkShellTimeout = 120 * time.Second
 // paraphrase). A check the harness can't even attempt (bad type, path
 // escaping the workspace) is a failure with the reason as output — never
 // a silent pass.
+// ValidateCheck rejects probe checks the runner could never satisfy:
+// unknown types and missing required fields. loadProbes runs it dry so
+// a typo fails before spending model calls, not mid-run after them.
+// Every rule here mirrors a branch of RunCheck below; add both together.
+func ValidateCheck(c Check) error {
+	switch c.Type {
+	case "", "none":
+		return nil
+	case "file_exists", "file_absent":
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("type %q needs path", c.Type)
+		}
+		return nil
+	case "content_contains":
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("type %q needs path", c.Type)
+		}
+		if strings.TrimSpace(c.Contains) == "" {
+			return fmt.Errorf("type %q needs non-blank contains (blank needles fail at runtime)", c.Type)
+		}
+		return nil
+	case "shell":
+		if strings.TrimSpace(c.Cmd) == "" {
+			return fmt.Errorf("type %q needs cmd", c.Type)
+		}
+		return nil
+	case "http":
+		if strings.TrimSpace(c.URL) == "" {
+			return fmt.Errorf("type %q needs url", c.Type)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown check type %q", c.Type)
+	}
+}
+
 func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output string, ok bool) {
 	switch c.Type {
 	case "", "none":
