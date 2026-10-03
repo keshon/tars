@@ -24,7 +24,7 @@ func (m *model) View() string {
 			bottom = m.styles.dim.Render("follow-up · empty + enter to quit · ctrl+q quits") + "\n" + m.input.View()
 		}
 	default:
-		bottom = m.styles.dim.Render("working… (q to abort)")
+		bottom = m.styles.dim.Render("working… (q/esc to stop · ctrl+c to abort)")
 	}
-	return body + "\n" + m.statusLine() + "\n" + bottom
+	return body + "\n" + m.dividerLine() + "\n" + m.statusLine() + "\n" + bottom
 }

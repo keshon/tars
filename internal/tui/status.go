@@ -2,7 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // statusLine renders the exactly-one-line status: steps, context
@@ -45,10 +48,10 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, sec)
 }
 
-// spinnerFrames animates the running state on the existing 1s tick.
-// No extra messages, no goroutines: the frame index falls out of
-// elapsed, so the spinner costs one table lookup per render.
-var spinnerFrames = []string{"|", "/", "-", "\\"}
+// spinnerFrames pulses the TARS name on the existing 1s tick —
+// memorable, ASCII-only (zero font risk), no extra messages or
+// goroutines: the frame index falls out of elapsed.
+var spinnerFrames = []string{"Tars", "tArs", "taRs", "tarS"}
 
 // spinner shows the current frame while a run is in flight, else
 // nothing: paired with elapsed, time-since-submit stays visible while
@@ -77,4 +80,65 @@ func kTokens(n int) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// threadWidth caps the role strip to the most recent blocks.
+const threadWidth = 12
+
+// dividerLine splits history from the bottom zone: a dim rule carrying
+// the thread strip (last blocks by role) right-aligned on it. One
+// line, two jobs; the status line below stays a status line.
+func (m *model) dividerLine() string {
+	strip := " " + m.threadStrip()
+	w := m.termW
+	if m.ready && m.vp.Width > 0 {
+		w = m.vp.Width
+	}
+	rule := w - lipgloss.Width(strip)
+	if rule < minWrapWidth {
+		rule = minWrapWidth
+	}
+	return m.styles.dim.Render(strings.Repeat("─", rule)) + strip
+}
+
+// threadStrip compresses recent transcript makeup into one glance:
+// role glyphs for the last blocks, most-recent rightmost. It answers
+// "what is my context made of" honestly — block roles, never invented
+// token shares (the backend reports totals only).
+func (m *model) threadStrip() string {
+	start := 0
+	if len(m.blocks) > threadWidth {
+		start = len(m.blocks) - threadWidth
+	}
+	var sb strings.Builder
+	sb.WriteString(m.styles.dim.Render("thread "))
+	for _, b := range m.blocks[start:] {
+		sb.WriteString(threadGlyph(b.role, m.styles))
+	}
+	return sb.String()
+}
+
+// threadGlyph maps a role to one width-1 cell in its role color.
+// Shapes differ, not just colors, so the strip survives monochrome.
+func threadGlyph(r role, st styles) string {
+	switch r {
+	case roleUser:
+		return st.user.Render("●")
+	case roleAnswer:
+		return "○"
+	case roleThink:
+		return st.think.Render("~")
+	case roleTool:
+		return st.dim.Render("→")
+	case roleResult:
+		return st.dim.Render("=")
+	case roleGate:
+		return st.gate.Render("?")
+	case roleMarker:
+		return st.dim.Render("-")
+	case roleError:
+		return st.err.Render("!")
+	default:
+		return " "
+	}
 }

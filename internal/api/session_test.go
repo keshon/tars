@@ -192,6 +192,25 @@ func TestEmitStep_MatchesEmitterEncoding(t *testing.T) {
 	}
 }
 
+func TestEmitStep_IncludesCallID(t *testing.T) {
+	var buf bytes.Buffer
+	EmitStep(events.New(&buf), "run", 1, llm.Message{
+		ToolCalls: []llm.ToolCall{{ID: "c9", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
+	})
+	var rec map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	calls, ok := rec["tool_calls"].([]any)
+	if !ok || len(calls) != 1 {
+		t.Fatalf("tool_calls = %v", rec["tool_calls"])
+	}
+	call, ok := calls[0].(map[string]any)
+	if !ok || call["id"] != "c9" {
+		t.Fatalf("call = %v", calls[0])
+	}
+}
+
 func TestEmitUsage_RoundTrips(t *testing.T) {
 	var buf bytes.Buffer
 	EmitUsage(events.New(&buf), 4, llm.Usage{PromptTokens: 12400, CompletionTokens: 300, CachedTokens: 2000})

@@ -136,7 +136,9 @@ func (m *model) fitBottom() {
 	if m.state == stAsk || m.state == stDone {
 		lines += m.input.Height() - 1
 	}
-	h := m.termH - 2 - lines
+	// The -3 counts status line, divider rule, and the bottom base;
+	// `lines` adds per-state extras (done hint, reject label, input growth).
+	h := m.termH - 3 - lines
 	if h < 1 {
 		h = 1
 	}
@@ -174,12 +176,16 @@ func (m *model) handleEvent(ev api.Event) {
 				call, _ := c.(map[string]any)
 				name, _ := call["name"].(string)
 				args, _ := call["args"].(string)
-				m.appendBlock(toolBlock("→ " + name + " " + truncate(args, 120)))
+				id, _ := call["id"].(string)
+				m.appendBlock(toolCardBlock(id, name+" "+truncate(args, 120)))
 			}
 		}
 	case "tool_result":
 		text, _ := ev.Fields["text"].(string)
-		m.appendBlock(resultBlock(text))
+		callID, _ := ev.Fields["call_id"].(string)
+		if !m.attachResult(callID, text) {
+			m.appendBlock(resultBlock(text))
+		}
 	case "usage":
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {
 			m.tokens = int(p)
@@ -314,16 +320,14 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	default:
 		switch msg.String() {
-		case "ctrl+c", "q":
-			// Unconditional here on purpose: while running the input
-			// is blurred, so "q" is an abort gesture, never typing.
+		case "ctrl+c":
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
-		case "esc":
-			// Interrupt the run but stay in chat: unlike quit, the
-			// transcript and session survive, and the next submit
-			// starts from a fresh context via startRun.
+		case "q", "esc":
+			// Stop the run but stay in chat (TUI-21): while running
+			// the input is blurred, so neither key is typing. Quitting
+			// mid-run lives on ctrl+c only.
 			m.interrupted = true
 			m.cancel()
 			m.state = stDone

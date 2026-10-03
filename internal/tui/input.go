@@ -17,7 +17,8 @@ func truncate(s string, n int) string {
 // Enter submits (handled by the model, never reaching the widget);
 // ctrl+o inserts a newline instead. Shift+enter would be the familiar
 // spelling, but Windows consoles deliver it indistinguishably from
-// enter — ctrl+o is unambiguous everywhere.
+// enter — and bubbletea has no KeyShiftEnter to catch it with where
+// it is distinguishable. ctrl+o is unambiguous everywhere.
 func newInput() textarea.Model {
 	ta := textarea.New()
 	ta.Prompt = "> "

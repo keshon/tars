@@ -88,16 +88,65 @@ func (m *model) dialogView() string {
 	return strings.Repeat("\n", top) + box
 }
 
-// helpLines documents keys and commands in one place: the /help dialog
-// and nothing else, so help can never rot in two copies.
-func helpLines() []string {
-	return []string{
-		"keys: ctrl+q quit · q/ctrl+c abort run · esc interrupt, stay in chat · y/n/a answer permission",
-		"      enter submits · ctrl+o newline · up/down history · ctrl+g thinking",
-		"      pgup/pgdn + wheel scroll · end back to live",
-		"gates: [y]es once / [a]lways for this run (confirm) / [n]o (a note redirects the model)",
-		"commands: /quit /help /new <task> /status /retry",
+// helpSection groups rows under a title for the two-column help:
+// keys left, descriptions right, aligned per section. Single copy
+// shared by the command and tests, so help can never rot in two.
+type helpSection struct {
+	title string
+	rows  [][2]string
+}
+
+func helpSections() []helpSection {
+	return []helpSection{
+		{"keys", [][2]string{
+			{"ctrl+q", "quit"},
+			{"q / esc", "stop run, stay in chat"},
+			{"ctrl+c", "abort (quits mid-run)"},
+			{"y / n / a", "answer permission"},
+			{"enter", "submits"},
+			{"ctrl+o", "newline"},
+			{"up / down", "history"},
+			{"ctrl+g", "thinking"},
+			{"pgup / pgdn + wheel", "scroll"},
+			{"end", "back to live"},
+		}},
+		{"thread (last 12 blocks by role)", [][2]string{
+			{"", "● user  ○ answer  ~ think  → tool"},
+			{"", "= result  ? gate  - marker  ! error"},
+		}},
+		{"gates", [][2]string{
+			{"y", "once"},
+			{"a", "always for this run (confirm)"},
+			{"n", "reject (a note redirects the model)"},
+		}},
+		{"commands", [][2]string{
+			{"/quit", "exit"},
+			{"/help", "this list"},
+			{"/new <task>", "fresh task"},
+			{"/status", "run facts"},
+			{"/retry", "re-run last failed turn"},
+		}},
 	}
+}
+
+// renderHelp lays sections out: bold title, key column padded to the
+// section max, descriptions after. Single copy shared by the command
+// and tests, so help can never rot in two copies.
+func renderHelp() []string {
+	var out []string
+	for _, s := range helpSections() {
+		out = append(out, "# "+s.title)
+		w := 0
+		for _, r := range s.rows {
+			if n := len([]rune(r[0])); n > w {
+				w = n
+			}
+		}
+		for _, r := range s.rows {
+			out = append(out, "  "+r[0]+strings.Repeat(" ", w-len([]rune(r[0]))+2)+r[1])
+		}
+	}
+	return out
 }
 
 // statusLines snapshots run facts for the /status dialog. Everything
@@ -119,6 +168,7 @@ func (m *model) statusLines() []string {
 	}
 	return []string{
 		"backend: " + nonEmpty(m.backendKind),
+		"model: " + nonEmpty(m.modelName),
 		"workspace: " + nonEmpty(m.wsRoot),
 		"task dir: " + taskDir,
 		"context: " + m.meter(),

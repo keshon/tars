@@ -53,7 +53,12 @@ type Env struct {
 	ContextLimit int
 	Policy       permission.Policy
 	BackendKind  string
-	Stream       bool
+
+	// Model names the backend model for display (status, logs). Local
+	// servers ignore it on the wire (they serve one model); it still
+	// answers "what am I talking to". Empty renders as a dash.
+	Model  string
+	Stream bool
 
 	// ReasoningBudget caps <think> deliberation per response in
 	// characters. Zero means the agent default; negative disables

@@ -413,6 +413,7 @@ func main() {
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
 		Gate:            permissionGate(*yes, suspend, ws),
 		BackendKind:     *backendKind,
+		Model:           *model,
 		Stream:          *streamFlag && *modeFlag != "json",
 		MCPTools:        mcpTools,
 		ReasoningBudget: *thinkBudget,

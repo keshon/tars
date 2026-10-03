@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/keshon/tars/internal/api"
+	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/roles"
 )
 
@@ -124,10 +125,38 @@ type model struct {
 	// Status facts snapshotted from cfg at construction for /status:
 	// backend/workspace identity and budgets the run was given.
 	backendKind string
+	modelName   string
 	wsRoot      string
 	thinkBudget int
 	mcpCount    int
 	policyRules int
+}
+
+// gateEvent reshapes hub fields into the TUI's event: kind, prompt,
+// and the permission call identity gates render from. A field dropped
+// here never reaches handleEvent: the always-confirm scope went blank
+// live for exactly this reason (tests inject events directly and never
+// saw it).
+func gateEvent(name string, fields map[string]any) api.Event {
+	prompt, _ := fields["prompt"].(string)
+	tool, _ := fields["tool"].(string)
+	resource, _ := fields["resource"].(string)
+	return api.Event{Name: name, Fields: map[string]any{
+		"kind": fields["kind"], "prompt": prompt, "tool": tool, "resource": resource,
+	}}
+}
+
+// withoutPrintHooks strips the CLI print hooks from Env for fullscreen
+// runs: stepPrinter-style callbacks write to stdout, racing the
+// alt-screen renderer (stale status rows plus leaked "[step N]" lines
+// that heal only on resize). The TUI reads the event stream, never the
+// hooks; no-ops keep every call site safe without auditing each one.
+func withoutPrintHooks(env roles.Env) roles.Env {
+	env.OnDelta = func(string) {}
+	env.OnStep = func(string, int, llm.Message) {}
+	env.OnToolResult = func(string, string) {}
+	env.OnUsage = func(int, llm.Usage) {}
+	return env
 }
 
 // Run executes the task under the TUI and returns the final answer.
@@ -135,11 +164,7 @@ type model struct {
 func Run(ctx context.Context, cfg Config) (string, error) {
 	eventsCh := make(chan api.Event, 256)
 	hub := api.NewGateHub(func(name string, fields map[string]any) {
-		prompt, _ := fields["prompt"].(string)
-		eventsCh <- api.Event{Name: name, Fields: map[string]any{
-			"kind":   fields["kind"],
-			"prompt": prompt,
-		}}
+		eventsCh <- gateEvent(name, fields)
 	})
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -158,6 +183,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		always:    map[[2]string]bool{},
 		// Status facts come from cfg once: the TUI never re-reads Env.
 		backendKind: cfg.Env.BackendKind,
+		modelName:   cfg.Env.Model,
 		wsRoot:      wsRootOf(cfg.Env.WS),
 		thinkBudget: cfg.Env.ReasoningBudget,
 		mcpCount:    len(cfg.Env.MCPTools),
@@ -166,7 +192,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	m.input = newInput()
 	m.input.Prompt = "> "
 
-	env := cfg.Env
+	env := withoutPrintHooks(cfg.Env)
 	env.Gate = m.gateHook(hub, runCtx, cfg.Env.WS)
 	m.newSession = func(task, stateFile string) (*api.Session, error) {
 		return api.New(api.Config{

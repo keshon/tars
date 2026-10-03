@@ -68,7 +68,9 @@ func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			ans := "n"
 			if note != "" {
 				ans = "n: " + note
-				m.appendBlock(userBlock("reject: " + note))
+				rb := userBlock("reject: " + note)
+				rb.breakBefore = false
+				m.appendBlock(rb)
 			}
 			m.resolveGate(ans)
 			return m, nil

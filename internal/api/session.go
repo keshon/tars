@@ -228,7 +228,9 @@ func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message) 
 	calls := make([]any, 0, len(msg.ToolCalls))
 	for _, tc := range msg.ToolCalls {
 		calls = append(calls, map[string]any{
-			"name": tc.Name, "args": events.Message(string(tc.Arguments)),
+			// The id pairs results to calls (duplicate ids across
+			// steps match the most recent open card; see attachResult).
+			"id": tc.ID, "name": tc.Name, "args": events.Message(string(tc.Arguments)),
 		})
 	}
 	if len(calls) > 0 {

@@ -52,47 +52,6 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// command handles local slash commands. Anything unrecognized is
-// reported, never sent to the model — a typo must not become a task.
-func (m *model) command(text string) (tea.Model, tea.Cmd) {
-	name, arg, _ := strings.Cut(strings.TrimPrefix(text, "/"), " ")
-	m.pushHistory(text)
-	switch strings.ToLower(name) {
-	case "q", "quit":
-		m.quit = true
-		m.cancel()
-		return m, tea.Quit
-	case "help":
-		m.openDialog("help", helpLines())
-		return m, nil
-	case "new":
-		task := strings.TrimSpace(arg)
-		if task == "" {
-			m.appendBlock(errorBlock("usage: /new <task>"))
-			return m, nil
-		}
-		if err := m.startFresh(task); err != nil {
-			m.appendBlock(errorBlock("cannot start: " + err.Error()))
-			return m, nil
-		}
-		return m, nil
-	case "status":
-		m.openDialog("status", m.statusLines())
-		return m, nil
-	case "retry":
-		if m.runErr == nil || m.retryRun == nil {
-			m.appendBlock(markerBlock("nothing to retry: last run did not fail"))
-			return m, nil
-		}
-		m.appendBlock(markerBlock("— retrying —"))
-		m.startRun(m.retryRun)
-		return m, nil
-	default:
-		m.appendBlock(errorBlock("unknown command " + text + " (try /help)"))
-		return m, nil
-	}
-}
-
 // startRun resets run counters and executes run in the background,
 // delivering completion as doneMsg like the first run. Each run gets a
 // fresh context: an interrupted run's cancelled context must never leak
@@ -159,7 +118,9 @@ func (m *model) startFresh(task string) error {
 	m.sess = sess
 	m.stateFile = stateFile
 	m.blocks = nil
-	m.appendBlock(markerBlock("— new task —"))
+	nb := markerBlock("— new task —")
+	nb.breakBefore = true
+	m.appendBlock(nb)
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return m.sess.Run(runCtx)
 	})

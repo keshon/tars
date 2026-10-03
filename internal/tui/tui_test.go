@@ -291,32 +291,27 @@ func TestCommand_HelpAndUnknown(t *testing.T) {
 	if mm.quit || mm.state != stDone {
 		t.Fatalf("help must not quit or resume: quit=%v state=%v", mm.quit, mm.state)
 	}
-	if mm.dialog == nil {
-		t.Fatal("help must open a dialog")
+	if mm.dialog != nil {
+		t.Fatal("help must post to history, not a modal")
 	}
 	for _, want := range []string{"/quit", "/retry", "/status"} {
 		found := false
-		for _, ln := range mm.dialog.lines {
-			if strings.Contains(ln, want) {
+		for _, b := range mm.blocks {
+			if strings.Contains(b.text, want) {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("help missing %q: %+v", want, mm.dialog.lines)
+			t.Fatalf("help missing %q: %+v", want, mm.blocks)
 		}
 	}
-	// Enter closes, transcript untouched.
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm = updated.(*model)
-	if mm.dialog != nil || len(mm.blocks) != 0 || len(mm.overlays) != 0 {
-		t.Fatal("closing help must restore the transcript")
-	}
-
-	mm.input.SetValue("/nope")
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm = updated.(*model)
-	if mm.quit || mm.state != stDone {
-		t.Fatalf("unknown command must not quit or resume")
+	// A second unrelated command works on its own model state.
+	mm2 := sizeModel(t, testModel())
+	mm2.state = stDone
+	mm2.input.SetValue("/nope")
+	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if mm := updated.(*model); mm.quit || mm.state != stDone {
+		t.Fatal("unknown command must not quit or resume")
 	}
 }
 
@@ -585,7 +580,7 @@ func TestQuitNeedsCtrlQ(t *testing.T) {
 func TestDialogQDoesNotClose(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	m.openDialog("help", helpLines())
+	m.openDialog("help", renderHelp())
 	updated, _ := m.Update(keyRunes('q'))
 	if mm := updated.(*model); mm.dialog == nil {
 		t.Fatal("q must not close the dialog")
@@ -598,6 +593,23 @@ func TestAskCtrlQQuits(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
 	if mm := updated.(*model); !mm.quit {
 		t.Fatal("ctrl+q must quit from ask")
+	}
+}
+
+func TestQStopsRunStaysInChat(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(keyRunes('q'))
+	mm := updated.(*model)
+	if mm.quit {
+		t.Fatal("q must stop the run, not quit the program")
+	}
+	if mm.state != stDone {
+		t.Fatalf("state = %v, want done", mm.state)
+	}
+	updated, _ = mm.Update(doneMsg{err: context.Canceled})
+	mm = updated.(*model)
+	if mm.runErr != nil {
+		t.Fatalf("runErr = %v, want nil after stop", mm.runErr)
 	}
 }
 
@@ -633,11 +645,11 @@ func TestSpinnerOnlyWhileRunning(t *testing.T) {
 	m := testModel()
 	m.state = stRunning
 	m.elapsed = 0
-	if got := m.spinner(); got != "| " {
+	if got := m.spinner(); got != "Tars " {
 		t.Fatalf("spinner = %q", got)
 	}
 	m.elapsed = 2 * time.Second
-	if got := m.spinner(); got != "- " {
+	if got := m.spinner(); got != "taRs " {
 		t.Fatalf("spinner = %q, want frame advance", got)
 	}
 	m.state = stDone
@@ -648,7 +660,7 @@ func TestSpinnerOnlyWhileRunning(t *testing.T) {
 	m = sizeModel(t, testModel())
 	m.state = stRunning
 	m.elapsed = 0
-	if view := m.View(); !strings.Contains(view, "| running") {
+	if view := m.View(); !strings.Contains(view, "Tars running") {
 		t.Fatalf("status line missing spinner: %q", view)
 	}
 }
@@ -788,12 +800,9 @@ func TestHelpMentionsThinkKey(t *testing.T) {
 	m.input.SetValue("/help")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := updated.(*model)
-	if mm.dialog == nil {
-		t.Fatal("help must open a dialog")
-	}
 	found := false
-	for _, ln := range mm.dialog.lines {
-		if strings.Contains(ln, thinkToggleHint) {
+	for _, b := range mm.blocks {
+		if strings.Contains(b.text, thinkToggleHint) {
 			found = true
 		}
 	}
@@ -1024,12 +1033,12 @@ func TestOverlayPushPopRestore(t *testing.T) {
 func TestTimestampRendered(t *testing.T) {
 	st := defaultStyles()
 	at := time.Date(2026, 10, 3, 14, 22, 0, 0, time.Local)
-	out := renderBlock(block{roleUser, "❯ hi", at}, st, false, 80)
+	out := renderBlock(block{role: roleUser, text: "❯ hi", at: at}, st, false, 80)
 	if !strings.Contains(out, "[14:22]") {
 		t.Fatalf("user block missing timestamp: %q", out)
 	}
 	// Unstamped blocks (zero time) render cleanly for unit-built models.
-	plain := renderBlock(block{roleAnswer, "hi", time.Time{}}, st, false, 80)
+	plain := renderBlock(block{role: roleAnswer, text: "hi"}, st, false, 80)
 	if strings.Contains(plain, "[") {
 		t.Fatalf("zero-time block must not stamp: %q", plain)
 	}
@@ -1129,8 +1138,8 @@ func TestRenderBlockWrapsToWidth(t *testing.T) {
 	text := "lorem ipsum dolor sit amet consectetur adipiscing elit sed do"
 	out := renderBlock(answerBlock(text), st, false, 20)
 	for _, line := range strings.Split(out, "\n") {
-		if n := len([]rune(line)); n > 20 {
-			t.Fatalf("line %d cols, want <= 20: %q", n, line)
+		if n := lipgloss.Width(line); n > 20 {
+			t.Fatalf("line %d cols past 20: %q", n, line)
 		}
 	}
 	// Wrapped continuations take a blank gutter, marking them as
@@ -1151,7 +1160,7 @@ func TestPreReadyBlocksRender(t *testing.T) {
 	}
 }
 
-func TestStatusDialog(t *testing.T) {
+func TestStatusPostsToHistory(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.limit = 131072
@@ -1159,19 +1168,25 @@ func TestStatusDialog(t *testing.T) {
 	m.input.SetValue("/status")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := updated.(*model)
-	if mm.dialog == nil || mm.dialog.title != "status" {
-		t.Fatal("status must open a dialog")
+	if mm.dialog != nil {
+		t.Fatal("status must post to history, not a modal")
 	}
-	view := strings.Join(mm.dialog.lines, "\n")
+	view := m.vp.View()
 	for _, want := range []string{"backend", "workspace", "context", "ctx 12.4k / 131.1k (9%)", "gates"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("status missing %q: %q", want, view)
+			t.Fatalf("status missing %q", want)
 		}
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if mm := updated.(*model); mm.dialog != nil || len(mm.overlays) != 0 {
-		t.Fatal("esc must close the dialog and drain the overlay")
-	}
+}
+
+func TestWithoutPrintHooks_Silent(t *testing.T) {
+	env := withoutPrintHooks(roles.Env{})
+	// Callable with dummy args: silence by construction, never a
+	// nil dereference whatever the loop passes.
+	env.OnStep("l", 1, llm.Message{Content: "x"})
+	env.OnToolResult("c", "r")
+	env.OnUsage(1, llm.Usage{})
+	env.OnDelta("z")
 }
 
 func TestDialogFitsViewport(t *testing.T) {
@@ -1194,7 +1209,7 @@ func TestStartRunClosesDialog(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.send = func(tea.Msg) {}
 	m.ctx = context.Background()
-	m.openDialog("help", helpLines())
+	m.openDialog("help", renderHelp())
 	if len(m.overlays) != 1 {
 		t.Fatal("setup: dialog must push")
 	}
@@ -1210,6 +1225,125 @@ func TestTruncateRuneSafe(t *testing.T) {
 	}
 	if truncate("abc", 8) != "abc" {
 		t.Fatal("short text altered")
+	}
+}
+
+func TestDividerExactWidth(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.appendBlock(userBlock("hi"))
+	m.appendBlock(answerBlock("there"))
+	line := m.dividerLine()
+	if n := lipgloss.Width(line); n != m.vp.Width {
+		t.Fatalf("divider %d cols, want viewport %d", n, m.vp.Width)
+	}
+}
+
+func TestThreadStripOrder(t *testing.T) {
+	m := testModel()
+	m.appendBlock(userBlock("u"))
+	m.appendBlock(answerBlock("a"))
+	m.appendBlock(thinkBlock("t"))
+	strip := m.threadStrip()
+	iu, ia, it := strings.Index(strip, "●"), strings.Index(strip, "○"), strings.Index(strip, "~")
+	if iu < 0 || ia < 0 || it < 0 || !(iu < ia && ia < it) {
+		t.Fatalf("strip out of order: %q", strip)
+	}
+}
+
+func TestBottomZoneHeights(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if mm := updated.(*model); mm.vp.Height != 19 {
+		t.Fatalf("done viewport height = %d, want 19 (24 - status - rule - hint - input)", mm.vp.Height)
+	}
+	mm := updated.(*model)
+	mm.state = stRunning
+	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if mm := updated.(*model); mm.vp.Height != 20 {
+		t.Fatalf("running viewport height = %d, want 20", mm.vp.Height)
+	}
+	// Composing keeps the same budget: the hint stays put, so the
+	// layout never shifts while typing (user call: always visible).
+	mm.input.SetValue("typing")
+	mm.state = stDone
+	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if mm := updated.(*model); mm.vp.Height != 19 {
+		t.Fatalf("composing viewport height = %d, want 19", mm.vp.Height)
+	}
+}
+
+func TestHintAlwaysShown(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	if view := m.View(); !strings.Contains(view, "ctrl+q quits") {
+		t.Fatalf("empty box must show the hint: %q", view)
+	}
+	m.input.SetValue("x")
+	if view := m.View(); !strings.Contains(view, "ctrl+q quits") {
+		t.Fatalf("hint must stay while composing: %q", view)
+	}
+}
+
+func TestHelpSections(t *testing.T) {
+	st := defaultStyles()
+	out := renderBlock(markerBlock(strings.Join(renderHelp(), "\n")), st, false, 80)
+	for _, want := range []string{"keys", "gates", "commands", "● user"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help missing %q", want)
+		}
+	}
+	// Two columns: every command description starts at the same
+	// absolute column (keys padded to the section max).
+	cmds := map[string]string{
+		"/quit": "exit", "/help": "this list", "/new <task>": "fresh task",
+		"/status": "run facts", "/retry": "re-run last failed turn",
+	}
+	col, found := -1, 0
+	for _, ln := range renderHelp() {
+		rest := strings.TrimPrefix(ln, "  ")
+		for k, d := range cmds {
+			if !strings.HasPrefix(rest, k+" ") {
+				continue
+			}
+			found++
+			if i := strings.Index(ln, d); col < 0 {
+				col = i
+			} else if i != col {
+				t.Fatalf("command columns drift: %q", ln)
+			}
+		}
+	}
+	if found != len(cmds) {
+		t.Fatalf("only %d command rows found", found)
+	}
+}
+
+func TestStampsRightAligned(t *testing.T) {
+	st := defaultStyles()
+	b := answerBlock("short")
+	b.at = time.Date(2026, 10, 3, 14, 22, 0, 0, time.Local)
+	out := renderBlock(b, st, false, 40)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("short block must stay one line: %q", out)
+	}
+	if n := lipgloss.Width(lines[0]); n != 40 {
+		t.Fatalf("stamp line %d cols, want full 40", n)
+	}
+	if !strings.Contains(lines[0], "[14:22]") {
+		t.Fatalf("stamp missing: %q", lines[0])
+	}
+}
+
+func TestBareSkipsGutter(t *testing.T) {
+	st := defaultStyles()
+	b := markerBlock("note")
+	w0 := lipgloss.Width(renderBlock(b, st, false, 80))
+	b.bare = true
+	w1 := lipgloss.Width(renderBlock(b, st, false, 80))
+	if w0-w1 != gutterWidth {
+		t.Fatalf("bare must drop exactly the gutter: %d vs %d", w0, w1)
 	}
 }
 
@@ -1268,6 +1402,137 @@ func TestRetryRefusesWhenOk(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("refusal missing: %+v", mm.blocks)
+	}
+}
+
+func TestTurnSeparators(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.appendBlock(answerBlock("first"))
+	m.appendBlock(userBlock("❯ second"))
+	if n := strings.Count(m.vp.View(), "─"); n != m.vp.Width {
+		t.Fatalf("one full-width rule expected, got %d dashes", n)
+	}
+	// Marker-then-echo shares one turn: no double rule.
+	m2 := sizeModel(t, testModel())
+	nb := markerBlock("— new task —")
+	nb.breakBefore = true
+	m2.appendBlock(nb)
+	m2.appendBlock(userBlock("❯ go"))
+	if n := strings.Count(m2.vp.View(), "─"); n != 0 {
+		t.Fatalf("opener pair must not double-rule, got %d", n)
+	}
+}
+
+func TestToolCardAttachesResult(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name: "step",
+		Fields: map[string]any{
+			"tool_calls": []any{map[string]any{"id": "c1", "name": "read_file", "args": "{}"}},
+		},
+	}))
+	mm := updated.(*model)
+	if len(mm.blocks) != 1 || !mm.blocks[0].open {
+		t.Fatalf("call must open a card: %+v", mm.blocks)
+	}
+	if view := mm.vp.View(); !strings.Contains(view, "read_file") || !strings.Contains(view, "…") {
+		t.Fatalf("open card missing call/pending: %q", view)
+	}
+	updated, _ = mm.Update(eventMsg(api.Event{
+		Name:   "tool_result",
+		Fields: map[string]any{"call_id": "c1", "text": "ok"},
+	}))
+	mm = updated.(*model)
+	if len(mm.blocks) != 1 || mm.blocks[0].open {
+		t.Fatalf("result must land on the card: %+v", mm.blocks)
+	}
+	if view := mm.vp.View(); !strings.Contains(view, "ok") || !strings.Contains(view, "✓") {
+		t.Fatalf("closed card missing result/check: %q", view)
+	}
+	// Unknown IDs never corrupt a card: standalone block instead.
+	updated, _ = mm.Update(eventMsg(api.Event{
+		Name:   "tool_result",
+		Fields: map[string]any{"call_id": "zz", "text": "stray"},
+	}))
+	if mm := updated.(*model); len(mm.blocks) != 2 || mm.blocks[1].role != roleResult {
+		t.Fatalf("stray result must stand alone: %+v", mm.blocks)
+	}
+}
+
+func TestToolCardFailedGlyph(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name: "step",
+		Fields: map[string]any{
+			"tool_calls": []any{map[string]any{"id": "c2", "name": "run_shell", "args": "{}"}},
+		},
+	}))
+	mm := updated.(*model)
+	updated, _ = mm.Update(eventMsg(api.Event{
+		Name:   "tool_result",
+		Fields: map[string]any{"call_id": "c2", "text": "error: boom"},
+	}))
+	mm = updated.(*model)
+	if !mm.blocks[0].failed {
+		t.Fatal("error-prefixed result must flag the card")
+	}
+	if view := mm.vp.View(); !strings.Contains(view, "✕") {
+		t.Fatalf("failed card missing cross: %q", view)
+	}
+}
+
+func TestThinkLatestExpandsAlone(t *testing.T) {
+	m := sizeModel(t, testModel())
+	old := "old deliberation " + strings.Repeat("x", 200)
+	newer := "new deliberation"
+	m.appendBlock(thinkBlock(old))
+	m.appendBlock(answerBlock("mid"))
+	m.appendBlock(thinkBlock(newer))
+	m.showThink = true
+	m.refreshContent()
+	view := m.vp.View()
+	if !strings.Contains(view, newer) || !strings.Contains(view, "to collapse") {
+		t.Fatalf("latest think must expand framed: %q", view)
+	}
+	if strings.Contains(view, strings.Repeat("x", 200)) {
+		t.Fatal("older think must stay summarized")
+	}
+}
+
+func TestStampsPolicy(t *testing.T) {
+	st := defaultStyles()
+	for _, b := range []block{
+		toolCardBlock("c1", "run x"),
+		resultBlock("out"),
+		markerBlock("— done —"),
+		missionBlock("m"),
+	} {
+		if out := renderBlock(b, st, false, 80); strings.Contains(out, "[") {
+			t.Fatalf("chrome must not stamp: %q", out)
+		}
+	}
+	out := renderBlock(userBlock("hi"), st, false, 80)
+	if !strings.Contains(out, "[") {
+		t.Fatalf("user blocks must stamp: %q", out)
+	}
+}
+
+func TestGateEventForwardsFields(t *testing.T) {
+	ev := gateEvent("awaiting_input", map[string]any{
+		"kind": "permission", "prompt": "allow?",
+		"tool": "run_shell", "resource": "go test",
+	})
+	if ev.Fields["tool"] != "run_shell" || ev.Fields["resource"] != "go test" || ev.Fields["prompt"] != "allow?" {
+		t.Fatalf("fields = %v", ev.Fields)
+	}
+}
+
+func TestStatusShowsModel(t *testing.T) {
+	m := testModel()
+	m.modelName = "qwen"
+	view := strings.Join(m.statusLines(), "\n")
+	if !strings.Contains(view, "model: qwen") {
+		t.Fatalf("status missing model: %q", view)
 	}
 }
 

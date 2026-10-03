@@ -1,0 +1,50 @@
+TARS TUI — UI/UX REVIEW vs pi / opencode (2026-10-03)
+Sources: reference/screens-pi.txt (27 screens), reference/screens-opencode.txt
+(30 screens), live screenshots of the tars TUI at P10-7.
+
+Skeleton: CORRECT. Transcript viewport + 1-line status + fixed bottom
+bar matches opencode's session screen (minus sidebar) and pi's
+transcript + dock. Follow-end, fixed budgets, staged gates, timestamps,
+mm:ss clock, /status + /help dialogs, retry. Keep.
+
+Surfaces: ROUGH MVP. Findings, ordered by value/effort:
+
+1. RAW STRINGS, NOT DOCUMENTS. Model output shows `**bold**`,
+   backticks, `1.` lists literally. Both references render markdown
+   (opencode TextPart incl. tables, pi Markdown component). ~70% of
+   the rough feel. Fix: stdlib markdown-lite subset (headers, bold,
+   inline code, lists, fences). No glamour dep (scope discipline).
+
+2. FLAT LOG, NO TURNS. Blocks are peers; a turn (question -> tools ->
+   answer -> thinking) reads as soup. opencode groups by message,
+   pi nests tool cards under their message. Only grouping signal is
+   the weak run marker. Fix: turn separators (rule or spacing).
+
+3. TOOL CALLS HAVE NO CARD. pi tool-execution (bordered box,
+   pending->done, preview fallback), opencode BlockTool (title,
+   collapsible body, error line). Ours: one dim `-> name` line + blob,
+   failures indistinguishable from prose. Fix: bordered call+result
+   card with ok/err glyph; `error: `-prefixed results get error
+   styling (the loop already prefixes tool errors: 5-line heuristic).
+
+4. THINK-EXPANDED FLOODS. Collapsed default was right, but one ctrl+g
+   turns 60% of the screen into italic narration. pi contains expanded
+   thinking; opencode hides it behind a header. Fix: cap expanded
+   height with an inline overflow note, or per-block collapse.
+
+5. ALWAYS-ON TIMESTAMPS = NOISE. [15:04] on every block; both
+   references show time on demand. Fix: stamp user/answer only, or a
+   toggle.
+
+6. THIN STATUS. Steps/ctx/elapsed/state correct, but no backend/model
+   identity, cost, or gate-policy hint. opencode answers "what am I
+   talking to". Fix: plumb model name into status facts (small).
+
+7. SINGLE-CHANNEL ROLE CODING. Gutter (2 cells, often dim) + text
+   color only. pi combines backgrounds+borders+italics; opencode
+   left-border panels + fills. At a glance our roles blur. Fix after
+   1-3 land; do not add channels before content renders.
+
+Non-goals restated: no themes, pickers, toasts, sidebar, alt-screen.
+A chat agent that renders documents in cards will stop looking like
+an MVP long before any of those matter.
