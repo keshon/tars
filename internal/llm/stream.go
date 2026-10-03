@@ -191,6 +191,25 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 			Arguments: repairArguments(normalizeArguments(json.RawMessage(dc.Function.Arguments))),
 		})
 	}
+	// llama.cpp streams carry no usage block: estimate from the wire
+	// instead of reporting a dead meter (marked Estimated; displays
+	// show "~"). Same chars/4 ratio the reasoning budget uses.
+	estimated := false
+	if promptTokens == 0 {
+		estimated = true
+		n := 0
+		for _, m := range req.Messages {
+			n += len([]rune(m.Content)) + len([]rune(m.Reasoning))
+		}
+		if toolsJSON, err := json.Marshal(req.Tools); err == nil {
+			n += len([]rune(string(toolsJSON)))
+		}
+		promptTokens = n / 4
+	}
+	if completionTokens == 0 {
+		estimated = true
+		completionTokens = len([]rune(content.String())) / 4
+	}
 	c.recordUsage(promptTokens, completionTokens, 0)
 	p, g, n := c.UsageTotals()
 	c.logDebug("[%s] --- usage (stream: %d prompt + %d generated; run totals: %d prompt + %d generated over %d calls) ---\n\n",
@@ -198,5 +217,6 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	return ChatResponse{Message: msg, FinishReason: finish, Usage: Usage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		Estimated:        estimated,
 	}}, nil
 }

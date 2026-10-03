@@ -46,6 +46,7 @@ The same vocabulary as `-mode json`, so one parser serves both:
 {"seq": 8, "event": "result", "answer": "..."}
 {"seq": 9, "event": "finding", "scope": "per-edit", "rule": "gofmt", "path": "a.go", "line": 3, "summary": "not gofmt-clean"}
 {"seq": 10, "event": "nudge", "kind": "verify", "text": "[harness] ..."}
+{"seq": 11, "event": "delta", "text": "partial answer..."}
 ```
 
 `kind` is `ask_user`, `permission`, or `plan_approval`. Permission gates
@@ -58,7 +59,9 @@ operator's redirect. Deterministic post-write checks surface as
 report-only, never gates. Loop-generated harness notices surface as
 `nudge` events (`kind` verify/refusal/leak/think-wrap/truncated/
 overflow/budget/stuck): the same `[harness]`-marked text the model
-saw, so observers can audit every intervention. All flags that
+saw, so observers can audit every intervention. Streamed content
+chunks surface as `delta` events (display-only; the step event
+carries the authoritative text and replaces whatever was live). All flags that
 shape a CLI run (`-backend`, `-workspace`, `-allow`, `-mcp`, `-yes`,
 `-reasoning-budget`, …) shape `-serve` identically — it is the same
 harness behind a different front door.

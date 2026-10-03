@@ -104,6 +104,10 @@ type model struct {
 	// context window from Env. Together they drive the status meter.
 	tokens int
 	limit  int
+	// tokensEst marks estimated numbers (streaming backends that report
+	// no usage block); the meter prefixes "~" so estimates never pose
+	// as measurements.
+	tokensEst bool
 	// follow tracks viewport stickiness: new blocks auto-scroll only
 	// while the user hasn't scrolled away. Any manual scroll re-arms
 	// on reaching the bottom; End always re-arms.
@@ -113,6 +117,15 @@ type model struct {
 	// thinkToggleHint); render-only, history keeps everything either
 	// way. On by default: details on demand, never a flood.
 	compact bool
+	// live accumulates streamed content chunks for the live answer
+	// block; liveCut marks the 64KB truncation tail; lastLive gates
+	// repaints (see livePaintInterval).
+	live     string
+	liveCut  bool
+	lastLive time.Time
+	// livePainted is the byte length painted at the last live repaint;
+	// deltas before it are settled, after it pending. Cleared with live.
+	livePainted int
 	// partLines holds rendered line counts per transcript part, kept so
 	// pure re-renders (toggles, resizes) can hold the reader's content
 	// position instead of its offset. See refreshContent.

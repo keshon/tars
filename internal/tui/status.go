@@ -70,7 +70,11 @@ func (m *model) meter() string {
 		return "ctx —"
 	}
 	pct := m.tokens * 100 / m.limit
-	return fmt.Sprintf("ctx %s / %s (%d%%)", kTokens(m.tokens), kTokens(m.limit), pct)
+	s := fmt.Sprintf("ctx %s / %s (%d%%)", kTokens(m.tokens), kTokens(m.limit), pct)
+	if m.tokensEst {
+		return "~" + s
+	}
+	return s
 }
 
 func kTokens(n int) string {

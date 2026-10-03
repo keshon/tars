@@ -49,11 +49,27 @@ func (stubOK) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, erro
 	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
 }
 
+// writeThenDone drives one real file write, then answers: sessions
+// under test need tool activity for the verify round to fire.
+type writeThenDone struct {
+	n int
+}
+
+func (w *writeThenDone) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
+	w.n++
+	if w.n == 1 {
+		return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hi"}`)},
+		}}}, nil
+	}
+	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
+}
+
 func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 	var events []Event
 	s, err := New(Config{
 		Task: "task",
-		Env:  testEnv(t, stubOK{}, nil),
+		Env:  testEnv(t, &writeThenDone{}, nil),
 		OnEvent: func(ev Event) {
 			events = append(events, ev)
 		},
@@ -69,10 +85,10 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 		t.Fatalf("result = %q", out)
 	}
 	// Framing is the transport's job: Session streams steps, results,
-	// usage, and harness nudges — nothing else. (The stub answers "done"
-	// to everything including the verify round, so more than one step
-	// event is normal here. The stub reports zero usage, so usage events
-	// carry zeros.)
+	// usage, and harness nudges — nothing else. (This run writes a
+	// file first, so tool_result appears too — all four are known
+	// vocabulary. The stub reports zero usage, so usage events carry
+	// zeros.)
 	seenStep, seenUsage, seenNudge := false, false, false
 	for _, ev := range events {
 		switch ev.Name {
@@ -83,6 +99,10 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 			if _, ok := ev.Fields["prompt"]; !ok {
 				t.Fatalf("usage without prompt: %+v", ev)
 			}
+		case "tool_result":
+			if _, ok := ev.Fields["call_id"]; !ok {
+				t.Fatalf("tool_result without call_id: %+v", ev)
+			}
 		case "nudge":
 			seenNudge = true
 			if _, ok := ev.Fields["kind"]; !ok {
@@ -92,7 +112,7 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 				t.Fatalf("nudge without provenance: %+v", ev)
 			}
 		default:
-			t.Fatalf("events = %+v, want steps, usage and nudges only", events)
+			t.Fatalf("events = %+v, want known vocabulary only", events)
 		}
 	}
 	if !seenStep || !seenUsage {
@@ -251,7 +271,7 @@ func TestSession_HarnessReplyFlaggedAfterNudge(t *testing.T) {
 	var events []Event
 	s, err := New(Config{
 		Task: "task",
-		Env:  testEnv(t, stubOK{}, nil),
+		Env:  testEnv(t, &writeThenDone{}, nil),
 		OnEvent: func(ev Event) {
 			events = append(events, ev)
 		},
@@ -373,6 +393,23 @@ func TestEmitNudge_RoundTrips(t *testing.T) {
 		t.Fatalf("fields = %v", got[0].Fields)
 	}
 	EmitNudge(nil, "x", "y") // nil-safe
+}
+
+func TestEmitDelta_RoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	EmitDelta(events.New(&buf), "hel")
+	var got []Event
+	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "delta" {
+		t.Fatalf("events = %+v", got)
+	}
+	if got[0].Fields["text"] != "hel" {
+		t.Fatalf("fields = %v", got[0].Fields)
+	}
+	EmitDelta(nil, "x") // nil-safe
 }
 
 func TestEmitUsage_RoundTrips(t *testing.T) {

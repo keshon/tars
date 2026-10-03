@@ -139,17 +139,20 @@ func TestParseDelegateMutations(t *testing.T) {
 
 func TestAgent_VerifyOnFinish_AddsOneRoundTrip(t *testing.T) {
 	client := &stubClient{responses: []llm.ChatResponse{
+		writeStep("1", "a.txt"),
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "looks done"}},
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "confirmed correct"}},
 	}}
-	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys"})
+	a := New(Config{Client: client, Tools: NewRegistry(mutStub{"write_file"}), System: "sys"})
 
 	out, err := a.Run(context.Background(), "task")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if client.calls != 2 {
-		t.Fatalf("calls = %d, want 2 (initial answer + verify pass)", client.calls)
+	// Tool work, then finish, then exactly one verify round: the
+	// one-shot fires on working turns, not on chit-chat.
+	if client.calls != 3 {
+		t.Fatalf("calls = %d, want 3 (tools + answer + verify pass)", client.calls)
 	}
 	if out != "confirmed correct" {
 		t.Fatalf("result = %q, want %q", out, "confirmed correct")
@@ -174,13 +177,37 @@ func TestAgent_SkipVerify_ReturnsImmediately(t *testing.T) {
 	}
 }
 
-func TestAgent_VerifyOnFinish_OnlyHappensOnce(t *testing.T) {
-	// Even if the model keeps stalling with empty tool-call responses
-	// after the verify nudge, we must not loop forever asking it to verify
-	// again and again — verifiedOnce should gate this to a single pass.
+func TestClaimsFileEffects(t *testing.T) {
+	fire := []string{
+		"I created notes.txt",
+		"wrote main.go with the fix",
+		"I created the file",
+		"deleted this file yesterday",
+		"patched a/b/c.go",
+		"moved old.txt to new.txt",
+	}
+	for _, s := range fire {
+		if !claimsFileEffects(s) {
+			t.Errorf("must fire on %q", s)
+		}
+	}
+	quiet := []string{
+		"hey there!",
+		"I fixed the bug",     // claim, but no file token
+		"read the file first", // file, but a read, not an effect
+		"I will create it next",
+		"see README for details",
+	}
+	for _, s := range quiet {
+		if claimsFileEffects(s) {
+			t.Errorf("must stay silent on %q", s)
+		}
+	}
+}
+
+func TestAgent_ChitChatSkipsVerify(t *testing.T) {
 	client := &stubClient{responses: []llm.ChatResponse{
-		{Message: llm.Message{Role: llm.RoleAssistant, Content: "looks done"}},
-		{Message: llm.Message{Role: llm.RoleAssistant, Content: "still looks done"}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "hey there!"}},
 	}}
 	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys"})
 
@@ -188,8 +215,39 @@ func TestAgent_VerifyOnFinish_OnlyHappensOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if client.calls != 2 {
-		t.Fatalf("calls = %d, want exactly 2", client.calls)
+	// No tools, no file claims: one call, answer straight through,
+	// no interrogation appended.
+	if client.calls != 1 {
+		t.Fatalf("calls = %d, want 1", client.calls)
+	}
+	if out != "hey there!" {
+		t.Fatalf("result = %q", out)
+	}
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleUser && strings.HasPrefix(m.Content, "[harness] ") {
+			t.Fatalf("chit-chat must not summon a nudge: %q", m.Content)
+		}
+	}
+}
+
+func TestAgent_VerifyOnFinish_OnlyHappensOnce(t *testing.T) {
+	// Even if the model keeps stalling with empty tool-call responses
+	// after the verify nudge, we must not loop forever asking it to verify
+	// again and again - verifiedOnce should gate this to a single pass.
+	// The opening tool call earns the round; chit-chat alone would skip it.
+	client := &stubClient{responses: []llm.ChatResponse{
+		writeStep("1", "a.txt"),
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "looks done"}},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "still looks done"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(mutStub{"write_file"}), System: "sys"})
+
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if client.calls != 3 {
+		t.Fatalf("calls = %d, want exactly 3", client.calls)
 	}
 	if out != "still looks done" {
 		t.Fatalf("result = %q, want %q", out, "still looks done")
@@ -913,12 +971,13 @@ func TestAgent_VerifyMessage_OmitsFactWhenAWriteSucceeded(t *testing.T) {
 
 func TestAgent_VerifyHook_OutputFoldedIntoVerifyMessage(t *testing.T) {
 	client := &stubClient{responses: []llm.ChatResponse{
+		writeStep("1", "a.txt"),
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done with the code change"}},
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "confirmed"}},
 	}}
 	a := New(Config{
 		Client: client,
-		Tools:  NewRegistry(),
+		Tools:  NewRegistry(mutStub{"write_file"}),
 		System: "sys",
 		Verify: func(ctx context.Context) (string, bool) {
 			return "PASSED\n(no issues)", true
@@ -943,6 +1002,7 @@ func TestAgent_VerifyHook_OutputFoldedIntoVerifyMessage(t *testing.T) {
 func TestAgent_VerifyFailed_BlocksPrematureFinish(t *testing.T) {
 	verifyCalls := 0
 	client := &stubClient{responses: []llm.ChatResponse{
+		writeStep("1", "a.txt"),
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done with the code change"}},
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "confirmed correct"}},
 		{Message: llm.Message{Role: llm.RoleAssistant, Content: "fixed now"}},
@@ -950,7 +1010,7 @@ func TestAgent_VerifyFailed_BlocksPrematureFinish(t *testing.T) {
 	}}
 	a := New(Config{
 		Client: client,
-		Tools:  NewRegistry(),
+		Tools:  NewRegistry(mutStub{"write_file"}),
 		System: "sys",
 		Verify: func(ctx context.Context) (string, bool) {
 			verifyCalls++

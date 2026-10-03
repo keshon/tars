@@ -65,8 +65,10 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	// the exact turn (follow-ups reuse their loaded history, so a
 	// retry restarts from last known-good, not partial failure).
 	// runErr clears: a new turn has no result yet, and /retry gates on it.
+	// Live state clears too: a new turn starts with no partial text.
 	m.retryRun = run
 	m.runErr = nil
+	m.live, m.liveCut, m.livePainted = "", false, 0
 	// Unit-built models never set base; fall back instead of panicking
 	// on a nil parent context.
 	base := m.base

@@ -128,6 +128,13 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			prevOnNudge(kind, text)
 		}
 	}
+	prevOnDelta := env.OnDelta
+	env.OnDelta = func(chunk string) {
+		EmitDelta(emitter, chunk)
+		if prevOnDelta != nil {
+			prevOnDelta(chunk)
+		}
+	}
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
 	a := roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
@@ -196,6 +203,13 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 		expectReply = true
 		if prevOnNudge != nil {
 			prevOnNudge(kind, text)
+		}
+	}
+	prevOnDelta := env.OnDelta
+	env.OnDelta = func(chunk string) {
+		EmitDelta(emitter, chunk)
+		if prevOnDelta != nil {
+			prevOnDelta(chunk)
 		}
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
@@ -306,6 +320,16 @@ func EmitNudge(emitter *events.Emitter, kind, text string) {
 	emitter.Emit("nudge", map[string]any{"kind": kind, "text": text})
 }
 
+// EmitDelta writes one streamed content chunk as a JSONL event. Deltas
+// are display-only: the step event carries the authoritative text and
+// replaces whatever the live buffer showed.
+func EmitDelta(emitter *events.Emitter, text string) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit("delta", map[string]any{"text": text})
+}
+
 // maxSweepFiles bounds the session-end deep pass; maxSweepFindings
 // bounds its noise. Both overflow as named marker findings, never
 // silent drops.
@@ -405,5 +429,6 @@ func EmitUsage(emitter *events.Emitter, step int, usage llm.Usage) {
 		"prompt":     usage.PromptTokens,
 		"completion": usage.CompletionTokens,
 		"cached":     usage.CachedTokens,
+		"estimated":  usage.Estimated,
 	})
 }

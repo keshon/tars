@@ -112,3 +112,23 @@ func TestGateEvents_Vocabulary(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		stream, tui bool
+		mode        string
+		want        bool
+	}{
+		{false, false, "print", false},
+		{true, false, "print", true},
+		{false, true, "print", true},
+		{true, true, "print", true},
+		{true, false, "json", false},
+		{false, true, "json", false},
+	} {
+		if got := streamEnabled(tc.stream, tc.mode, tc.tui); got != tc.want {
+			t.Errorf("streamEnabled(%v,%q,%v) = %v, want %v",
+				tc.stream, tc.mode, tc.tui, got, tc.want)
+		}
+	}
+}

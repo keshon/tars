@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -432,6 +433,13 @@ type runState struct {
 	// run was supposed to write. See MaxZeroWriteRefusals.
 	zeroWriteFinishes int
 
+	// toolCalls counts tool calls issued this run. Gates the first
+	// verify round together with claimsFileEffects below: a finish
+	// with no tool work and no file-effect claims behind it is
+	// chit-chat, not work to verify. The one-shot stays armed, so a
+	// later working turn still gets verified.
+	toolCalls int
+
 	// thinkWraps counts wrap-up rounds this run: finishes attempted with
 	// more reasoning than ReasoningBudget allows. Bounded by
 	// MaxThinkWraps; past it the run degrades to finishing as-is.
@@ -496,7 +504,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 					history = compactHistory(history, keep/2)
 					a.saveState(history)
 				}
-				history = a.nudge(history, "overflow", prompts.OverflowRecovered)
+				history = a.nudge(history, NudgeOverflow, prompts.OverflowRecovered)
 				continue
 			}
 			return "", fmt.Errorf("step %d: chat: %w", step, err)
@@ -538,6 +546,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			a.cfg.OnUsage(step, resp.Usage)
 		}
 		history = append(history, resp.Message)
+		st.toolCalls += len(resp.Message.ToolCalls)
 		budgetNudge := a.budgetWarning(resp.Usage, &st.warnedThreshold)
 		if resp.Usage.PromptTokens > 0 {
 			st.lastPromptTokens = resp.Usage.PromptTokens
@@ -557,10 +566,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// counter so a backend that truncates every response is still
 			// bounded by MaxStuckSteps → MaxSteps.
 			if resp.FinishReason == "length" {
-				history = a.nudge(history, "truncated", prompts.Truncated)
+				history = a.nudge(history, NudgeTruncated, prompts.Truncated)
 				st.stuckSteps++
 				if st.stuckSteps >= a.cfg.MaxStuckSteps {
-					history = a.nudge(history, "stuck", prompts.StuckFailing)
+					history = a.nudge(history, NudgeStuck, prompts.StuckFailing)
 					st.stuckSteps = 0
 				}
 				continue
@@ -577,7 +586,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 				if thought := llm.DeliberationChars(resp.Message); thought > a.cfg.ReasoningBudget {
 					st.thinkWraps++
 					st.stuckSteps++
-					history = a.nudge(history, "think-wrap", fmt.Sprintf(prompts.ThinkWrapUp, thought, a.cfg.ReasoningBudget))
+					history = a.nudge(history, NudgeThinkWrap, fmt.Sprintf(prompts.ThinkWrapUp, thought, a.cfg.ReasoningBudget))
 					a.saveState(history)
 					continue
 				}
@@ -591,10 +600,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// then believes — and later claims — that it did. Catch this
 			// before it's mistaken for a genuine finish.
 			if leakedText {
-				history = a.nudge(history, "leak", prompts.LeakDetected)
+				history = a.nudge(history, NudgeLeak, prompts.LeakDetected)
 				st.stuckSteps++
 				if st.stuckSteps >= a.cfg.MaxStuckSteps {
-					history = a.nudge(history, "leak", prompts.LeakRepeated)
+					history = a.nudge(history, NudgeLeak, prompts.LeakRepeated)
 					st.stuckSteps = 0
 				}
 				continue
@@ -603,14 +612,24 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			if st.blockFinishDueToVerify {
 				st.blockFinishDueToVerify = false
 				st.verifiedOnce = false
-				history = a.nudge(history, "verify", fmt.Sprintf(prompts.VerifyFailedContinue, st.verifyFailedOutput))
+				history = a.nudge(history, NudgeVerify, fmt.Sprintf(prompts.VerifyFailedContinue, st.verifyFailedOutput))
 				st.verifyFailedOutput = ""
 				continue
 			}
 
 			verifyWanted := !a.cfg.SkipVerify ||
 				(a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0)
-			if verifyWanted && !st.verifiedOnce {
+			// Tool-dependent: verify when the run did tool work, when
+			// writes were expected but none landed, or when the answer
+			// claims file effects. Pure chit-chat skips (falling through
+			// to finish evaluation below); the one-shot stays armed for
+			// a later working turn. The workspace verdict below remains
+			// the authority either way — this round is a recovery chance,
+			// not the score.
+			needsVerify := st.toolCalls > 0 ||
+				(a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0) ||
+				claimsFileEffects(resp.Message.Content)
+			if verifyWanted && !st.verifiedOnce && needsVerify {
 				st.verifiedOnce = true
 				verifyMsg := prompts.Verify
 				if st.mutatingSucceeded == 0 {
@@ -629,9 +648,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 						}
 					}
 				}
-				history = a.nudge(history, "verify", verifyMsg)
+				history = a.nudge(history, NudgeVerify, verifyMsg)
 				if budgetNudge != "" {
-					history = a.nudge(history, "budget", budgetNudge)
+					history = a.nudge(history, NudgeBudget, budgetNudge)
 				}
 				continue
 			}
@@ -652,7 +671,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			if a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0 {
 				if st.zeroWriteFinishes < MaxZeroWriteRefusals {
 					st.zeroWriteFinishes++
-					history = a.nudge(history, "refusal", fmt.Sprintf(prompts.AnnouncedNotWritten,
+					history = a.nudge(history, NudgeRefusal, fmt.Sprintf(prompts.AnnouncedNotWritten,
 						lastClaim(resp.Message.Content),
 						strings.Join(a.cfg.MutatingTools, "/")))
 					a.saveState(history)
@@ -1100,6 +1119,20 @@ type stepOutcome struct {
 // The latches keep each advisory to once per run; without them a nudge
 // repeats every step for as long as its counter stays over the line,
 // which is its own kind of noise.
+// Nudge kinds tag loop-generated harness text for display filtering
+// and audit. Single source of truth (docs/rpc.md lists the same set);
+// untyped so call sites need no conversions.
+const (
+	NudgeOverflow  = "overflow"
+	NudgeTruncated = "truncated"
+	NudgeThinkWrap = "think-wrap"
+	NudgeLeak      = "leak"
+	NudgeVerify    = "verify"
+	NudgeRefusal   = "refusal"
+	NudgeBudget    = "budget"
+	NudgeStuck     = "stuck"
+)
+
 // harnessText marks loop-generated text as harness provenance. The
 // model that mused "probably meta instructions from the user" was
 // reading bare instructions; "[harness] ..." names the author inline,
@@ -1156,28 +1189,28 @@ func (a *Agent) interject(st *runState, o stepOutcome) string {
 		st.stuckNudges++
 		switch {
 		case st.stuckNudges == 1 && o.repeat:
-			return a.markNudge("stuck", prompts.StuckRepeating)
+			return a.markNudge(NudgeStuck, prompts.StuckRepeating)
 		case st.stuckNudges == 1:
-			return a.markNudge("stuck", prompts.StuckFailing)
+			return a.markNudge(NudgeStuck, prompts.StuckFailing)
 		case st.stuckNudges == 2:
-			return a.markNudge("stuck", prompts.StuckEscalated)
+			return a.markNudge(NudgeStuck, prompts.StuckEscalated)
 		default:
 			return ""
 		}
 
 	case st.consecutiveSameToolCount >= maxSameToolSteps && !st.toolLoopWarned:
 		st.toolLoopWarned = true
-		return a.markNudge("stuck", prompts.ToolLoop)
+		return a.markNudge(NudgeStuck, prompts.ToolLoop)
 
 	case st.exploratorySteps >= a.cfg.MaxExploratorySteps && !st.searchFatigueWarned:
 		st.searchFatigueWarned = true
-		return a.markNudge("stuck", prompts.SearchFatigue)
+		return a.markNudge(NudgeStuck, prompts.SearchFatigue)
 	}
 
 	msg := st.pendingBudget
 	st.pendingBudget = ""
 	if msg != "" {
-		return a.markNudge("budget", msg)
+		return a.markNudge(NudgeBudget, msg)
 	}
 	return msg
 }
@@ -1208,6 +1241,40 @@ func lastClaim(content string) string {
 		return line
 	}
 	return "(nothing)"
+}
+
+// fileClaimVerbs are past-tense effect verbs: claims of completed file
+// work. Read-verbs are deliberately absent (reads aren't effects);
+// future tense is absent too (promises aren't claims).
+var fileClaimVerbs = []string{
+	"created", "wrote", "written", "saved", "updated", "added",
+	"deleted", "removed", "modified", "patched", "moved", "renamed", "fixed",
+}
+
+// fileToken matches a filename, path, or definite file reference:
+// dotted name, slash path, or "the/this/that file(s)". The last class
+// catches the canonical fake-save phrasing ("I created the file")
+// that names no path.
+var fileToken = regexp.MustCompile(`[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\.[A-Za-z0-9]{1,5}|\/[A-Za-z0-9_.\-]+)|\b(?:the|this|that) files?\b`)
+
+// claimsFileEffects reports whether answer text claims file effects: a
+// past-tense effect verb plus a file token. Heuristic with a fail-safe
+// direction: false positives cost today's verify round; false negatives
+// (claim without a filename, e.g. "updated the config") skip like
+// chit-chat and surface at the workspace verdict, which stays authoritative.
+func claimsFileEffects(text string) bool {
+	lower := strings.ToLower(text)
+	hasVerb := false
+	for _, v := range fileClaimVerbs {
+		if strings.Contains(lower, v) {
+			hasVerb = true
+			break
+		}
+	}
+	if !hasVerb {
+		return false
+	}
+	return fileToken.MatchString(text)
 }
 
 func (a *Agent) trackSingleToolLoop(calls []llm.ToolCall, st *runState) {

@@ -54,6 +54,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.answer = msg.answer
 		m.runErr = msg.err
 		m.state = stDone
+		// Partial live text is not an answer: discard it either way.
+		m.live, m.liveCut, m.livePainted = "", false, 0
 		if m.interrupted {
 			m.interrupted = false
 			m.runErr = nil
@@ -162,6 +164,13 @@ func (m *model) handleEvent(ev api.Event) {
 	switch ev.Name {
 	case "step":
 		m.steps++
+		// The live buffer belongs to this response: clear it first so
+		// the authoritative blocks below never duplicate it. A step
+		// with empty text but a non-empty buffer adopts the buffer
+		// (backend streamed text it then omitted); tool steps never
+		// adopt, calls are work.
+		live := m.live
+		m.live, m.liveCut, m.livePainted = "", false, 0
 		// Reasoning above its reply (TUI-15, user call): the collapsed
 		// think line introduces the answer it produced, causal order.
 		// Tool calls render as cards below, whatever prompted them.
@@ -172,6 +181,10 @@ func (m *model) handleEvent(ev api.Event) {
 		if text, _ := ev.Fields["text"].(string); text != "" {
 			ab := answerBlock(text)
 			m.appendBlock(ab)
+		} else if live != "" {
+			if calls, _ := ev.Fields["tool_calls"].([]any); len(calls) == 0 {
+				m.appendBlock(answerBlock(live))
+			}
 		}
 		if calls, _ := ev.Fields["tool_calls"].([]any); len(calls) > 0 {
 			for _, c := range calls {
@@ -205,6 +218,7 @@ func (m *model) handleEvent(ev api.Event) {
 	case "usage":
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {
 			m.tokens = int(p)
+			m.tokensEst, _ = ev.Fields["estimated"].(bool)
 		}
 	case "awaiting_input":
 		kind, _ := ev.Fields["kind"].(string)
@@ -238,6 +252,24 @@ func (m *model) handleEvent(ev api.Event) {
 	case "mission":
 		if text, _ := ev.Fields["text"].(string); text != "" {
 			m.appendBlock(missionBlock("[mission] " + text))
+		}
+	case "delta":
+		// Streamed chunk: accumulate into the live buffer, repaint on
+		// completed lines or heartbeat (spec P26). No markdown yet
+		// (partial spans would break); the step event brings the
+		// full render.
+		if text, _ := ev.Fields["text"].(string); text != "" && !m.liveCut {
+			combined := m.live + text
+			if r := []rune(combined); len(r) > liveMaxRunes {
+				combined = string(r[:liveMaxRunes]) + "\n…(live truncated)"
+				m.liveCut = true
+			}
+			m.live = combined
+			if livePaintDue(m) {
+				m.livePainted = len(m.live)
+				m.lastLive = time.Now()
+				m.refreshContent()
+			}
 		}
 	}
 }

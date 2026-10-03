@@ -383,6 +383,23 @@ func stamps(r role) bool {
 	return false
 }
 
+// renderLive draws the in-flight streamed answer: answer-role gutter
+// and reflow, but no markdown (partial spans would break across
+// chunks) and no timestamp (incomplete blocks aren't stamped).
+func renderLive(text string, st styles, width int) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		for i, f := range reflow(line, width-gutterWidth) {
+			g := st.gutter(roleAnswer)
+			if i > 0 {
+				g = "  "
+			}
+			out = append(out, g+f)
+		}
+	}
+	return out
+}
+
 // turnRule is a full-width dim divider opening a turn.
 func turnRule(width int, st styles) string {
 	if width < minWrapWidth {
@@ -409,6 +426,12 @@ func (m *model) refreshContent() {
 		prevBreak = b.breakBefore
 	}
 	content := strings.Join(parts, "\n\n")
+	if m.live != "" {
+		if content != "" {
+			content += "\n\n"
+		}
+		content += strings.Join(renderLive(m.live, m.styles, m.vp.Width), "\n")
+	}
 	heights := make([]int, len(parts))
 	for i, p := range parts {
 		heights[i] = strings.Count(p, "\n") + 1
@@ -454,6 +477,29 @@ func (m *model) refreshContent() {
 // minWrapWidth guards absurdly narrow viewports: below it, lines pass
 // through rather than shredding into slivers.
 const minWrapWidth = 8
+
+// liveMaxRunes bounds the live streamed buffer; livePaintInterval
+// throttles live repaints (string ops, no I/O — cheap, but token-rate
+// full re-renders add up over long transcripts).
+const (
+	liveMaxRunes      = 64 * 1024
+	livePaintInterval = 1 * time.Second
+)
+
+// livePaintDue reports whether a fresh delta deserves a repaint: a
+// completed line since the last paint (steady, readable rhythm), or
+// the heartbeat elapsed (slow streams still move). First paint always
+// fires (zero lastLive is ancient history).
+func livePaintDue(m *model) bool {
+	if time.Since(m.lastLive) >= livePaintInterval {
+		return true
+	}
+	painted := m.livePainted
+	if painted > len(m.live) {
+		painted = 0
+	}
+	return strings.Contains(m.live[painted:], "\n")
+}
 
 // reflow word-wraps one logical line to width columns. Leading
 // whitespace survives on the first fragment; long words hard-cut

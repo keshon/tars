@@ -106,6 +106,13 @@ type Usage struct {
 	// use the full PromptTokens; this split exists for accounting only
 	// (cached tokens are cheaper on metered providers).
 	CachedTokens int
+
+	// Estimated marks chars/4 fallback numbers: some backends (llama
+	// streams) report no usage block, and a dead meter is worse than
+	// an honest estimate. Displays prefix "~"; budgets treat estimates
+	// like measurements (compaction errs early, overflow recovery
+	// covers the rest).
+	Estimated bool
 }
 
 type ChatResponse struct {

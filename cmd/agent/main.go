@@ -417,7 +417,7 @@ func main() {
 		Gate:            audit.Hook(*auditPath, "cli", permissionGate(*yes, suspend, ws)),
 		BackendKind:     *backendKind,
 		Model:           *model,
-		Stream:          *streamFlag && *modeFlag != "json",
+		Stream:          streamEnabled(*streamFlag, *modeFlag, *tuiFlag),
 		MCPTools:        mcpTools,
 		ReasoningBudget: *thinkBudget,
 		OnDelta:         func(chunk string) { fmt.Print(chunk) },
@@ -665,6 +665,15 @@ func parseRuleSpecs(spec string, eff permission.Effect) []permission.Rule {
 		out = append(out, permission.Rule{Tool: tool, Pattern: pattern, Effect: eff})
 	}
 	return out
+}
+
+// streamEnabled decides whether model responses stream token by
+// token: explicit -stream, or the fullscreen TUI (which renders live
+// text and degrades to spinner+final where the backend refuses —
+// koboldcpp has no Stream method, so agent.chat falls back unary).
+// Never in -mode json (chunks would corrupt the JSONL stream).
+func streamEnabled(streamFlag bool, modeFlag string, tuiFlag bool) bool {
+	return (streamFlag || tuiFlag) && modeFlag != "json"
 }
 
 // permissionGate answers Ask-gated calls through the shared suspender.

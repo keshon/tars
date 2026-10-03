@@ -278,6 +278,19 @@ func TestMeter_UsageAndUnknown(t *testing.T) {
 	}
 }
 
+func TestMeter_Estimated(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.limit = 131072
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name:   "usage",
+		Fields: map[string]any{"prompt": float64(12400), "estimated": true},
+	}))
+	mm := updated.(*model)
+	if got := mm.meter(); got != "~ctx 12.4k / 131.1k (9%)" {
+		t.Fatalf("estimated meter = %q", got)
+	}
+}
+
 func TestKTokens(t *testing.T) {
 	if got := kTokens(999); got != "999" {
 		t.Fatalf("got %q", got)
@@ -1572,6 +1585,98 @@ func TestNudgeRendersMarker(t *testing.T) {
 	updated, _ = mm.Update(eventMsg(api.Event{Name: "nudge", Fields: map[string]any{}}))
 	if mm := updated.(*model); len(mm.blocks) != 1 {
 		t.Fatal("empty nudge must not append")
+	}
+}
+
+func TestLiveAccumulatesAndStepReplaces(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stRunning
+	updated, _ := m.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "hel"}}))
+	mm := updated.(*model)
+	if view := mm.vp.View(); !strings.Contains(view, "hel") {
+		t.Fatalf("first delta must paint: %q", view)
+	}
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "lo"}}))
+	mm = updated.(*model)
+	if mm.live != "hello" {
+		t.Fatalf("live = %q", mm.live)
+	}
+	// Step replaces without duplication.
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "step", Fields: map[string]any{"text": "hello"}}))
+	mm = updated.(*model)
+	if mm.live != "" {
+		t.Fatal("step must clear the live buffer")
+	}
+	if n := strings.Count(mm.vp.View(), "hello"); n != 1 {
+		t.Fatalf("hello appears %d times, want exactly 1", n)
+	}
+}
+
+func TestLiveAdoptedWhenStepOmits(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "visible"}}))
+	mm := updated.(*model)
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "step", Fields: map[string]any{}}))
+	mm = updated.(*model)
+	found := false
+	for _, b := range mm.blocks {
+		if b.role == roleAnswer && strings.Contains(b.text, "visible") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("omitted step must adopt the buffer: %+v", mm.blocks)
+	}
+}
+
+func TestLiveDiscardedOnDone(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "partial"}}))
+	mm := updated.(*model)
+	updated, _ = mm.Update(doneMsg{answer: "done"})
+	if mm := updated.(*model); mm.live != "" {
+		t.Fatal("done must discard partial live text")
+	}
+}
+
+func TestLiveUnfollowedStability(t *testing.T) {
+	m := sizeModel(t, testModel())
+	for i := 0; i < 40; i++ {
+		m.appendBlock(markerBlock("filler"))
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	mm := updated.(*model)
+	if mm.follow {
+		t.Fatal("setup: pgup must unfollow")
+	}
+	y0 := mm.vp.YOffset
+	for _, chunk := range []string{"a", "b", "c", "d", "e"} {
+		updated, _ = mm.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": chunk}}))
+		mm = updated.(*model)
+	}
+	if mm.vp.YOffset != y0 {
+		t.Fatalf("live growth below moved offset %d -> %d", y0, mm.vp.YOffset)
+	}
+	if mm.live != "abcde" {
+		t.Fatalf("live = %q", mm.live)
+	}
+}
+
+func TestLiveCapped(t *testing.T) {
+	m := sizeModel(t, testModel())
+	big := strings.Repeat("z", liveMaxRunes+10)
+	updated, _ := m.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": big}}))
+	mm := updated.(*model)
+	if n := len([]rune(mm.live)); n <= liveMaxRunes {
+		t.Fatalf("live = %d runes, want over cap with marker", n)
+	}
+	if !mm.liveCut || !strings.Contains(mm.live, "live truncated") {
+		t.Fatal("cap must mark once")
+	}
+	before := mm.live
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "more"}}))
+	if mm := updated.(*model); mm.live != before {
+		t.Fatal("capped buffer must drop further chunks")
 	}
 }
 
