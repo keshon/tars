@@ -53,7 +53,8 @@ type Config struct {
 
 // Session runs one task. Create per run; it holds no global state.
 type Session struct {
-	cfg Config
+	cfg       Config
+	questions int
 }
 
 const defaultMaxQuestions = 3
@@ -85,11 +86,42 @@ func New(cfg Config) (*Session, error) {
 func (s *Session) Run(ctx context.Context) (string, error) {
 	emitter := events.New(&callbackWriter{onEvent: s.cfg.OnEvent})
 
-	questions := 0
-	maxQ := s.cfg.MaxQuestions
-	askFn := func(question string) (string, error) {
-		questions++
-		if questions > maxQ {
+	askFn := s.asker(ctx, s.cfg.MaxQuestions)
+
+	env := s.cfg.Env
+	prevOnStep := env.OnStep
+	prevOnResult := env.OnToolResult
+	prevOnUsage := env.OnUsage
+	env.OnStep = func(label string, step int, msg llm.Message) {
+		EmitStep(emitter, label, step, msg)
+		if prevOnStep != nil {
+			prevOnStep(label, step, msg)
+		}
+	}
+	env.OnToolResult = func(callID, result string) {
+		EmitToolResult(emitter, callID, result)
+		if prevOnResult != nil {
+			prevOnResult(callID, result)
+		}
+	}
+	env.OnUsage = func(step int, usage llm.Usage) {
+		EmitUsage(emitter, step, usage)
+		if prevOnUsage != nil {
+			prevOnUsage(step, usage)
+		}
+	}
+	a := roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
+	return a.Run(ctx, s.cfg.Task)
+}
+
+// asker builds the ask_user implementation over the session suspender,
+// sharing one question budget across Run and Resume calls. Resume runs
+// used to refuse all questions; a follow-up that needs clarification
+// should ask like any other turn.
+func (s *Session) asker(ctx context.Context, maxQ int) func(string) (string, error) {
+	return func(question string) (string, error) {
+		s.questions++
+		if s.questions > maxQ {
 			return "", fmt.Errorf("ask_user: clarifying question limit (%d) reached — "+
 				"make a decision and proceed with a stated assumption", maxQ)
 		}
@@ -102,17 +134,6 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		return rep.Answer, nil
 	}
-
-	env := s.cfg.Env
-	prevOnStep := env.OnStep
-	env.OnStep = func(label string, step int, msg llm.Message) {
-		EmitStep(emitter, label, step, msg)
-		if prevOnStep != nil {
-			prevOnStep(label, step, msg)
-		}
-	}
-	a := roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
-	return a.Run(ctx, s.cfg.Task)
 }
 
 // Resume continues from saved history with a note, mirroring Agent.Resume.
@@ -120,16 +141,27 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	emitter := events.New(&callbackWriter{onEvent: s.cfg.OnEvent})
 	env := s.cfg.Env
 	prevOnStep := env.OnStep
+	prevOnResult := env.OnToolResult
+	prevOnUsage := env.OnUsage
 	env.OnStep = func(label string, step int, msg llm.Message) {
 		EmitStep(emitter, label, step, msg)
 		if prevOnStep != nil {
 			prevOnStep(label, step, msg)
 		}
 	}
-	a := roles.Interactive(env, "", s.cfg.StateFile,
-		func(string) (string, error) {
-			return "", fmt.Errorf("ask_user: resume runs cannot ask")
-		}, s.cfg.Verify)
+	env.OnToolResult = func(callID, result string) {
+		EmitToolResult(emitter, callID, result)
+		if prevOnResult != nil {
+			prevOnResult(callID, result)
+		}
+	}
+	env.OnUsage = func(step int, usage llm.Usage) {
+		EmitUsage(emitter, step, usage)
+		if prevOnUsage != nil {
+			prevOnUsage(step, usage)
+		}
+	}
+	a := roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
 	return a.Resume(ctx, history, note)
 }
 
@@ -187,6 +219,12 @@ func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message) 
 	if msg.Content != "" {
 		ev["text"] = events.Message(msg.Content)
 	}
+	// Deliberation travels with the step that produced it, capped like
+	// every other field. Observers render it dimmed or not at all; the
+	// budget in the loop is what constrains it, not display.
+	if msg.Reasoning != "" {
+		ev["reasoning"] = events.Message(msg.Reasoning)
+	}
 	calls := make([]any, 0, len(msg.ToolCalls))
 	for _, tc := range msg.ToolCalls {
 		calls = append(calls, map[string]any{
@@ -197,4 +235,32 @@ func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message) 
 		ev["tool_calls"] = calls
 	}
 	emitter.Emit("step", ev)
+}
+
+// EmitToolResult writes one completed tool call as a JSONL event.
+// Callers pair it with the matching tool_calls entry by call ID; the
+// result text is capped like every other field.
+func EmitToolResult(emitter *events.Emitter, callID string, result string) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit("tool_result", map[string]any{
+		"call_id": callID,
+		"text":    events.Message(result),
+	})
+}
+
+// EmitUsage writes backend token counts as a JSONL event. Observers that
+// meter context (TUIs, JSON streams) accumulate the latest prompt count
+// against the known window; the loop itself budgets off the same numbers.
+func EmitUsage(emitter *events.Emitter, step int, usage llm.Usage) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit("usage", map[string]any{
+		"step":       step,
+		"prompt":     usage.PromptTokens,
+		"completion": usage.CompletionTokens,
+		"cached":     usage.CachedTokens,
+	})
 }

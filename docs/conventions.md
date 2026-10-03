@@ -61,7 +61,10 @@ tool whose whole job is to run somewhere unattended.
 **[practice]** The standard library first. A third-party package is considered
 only if it is cgo-free, widely used, and earns its weight — `golang.org/x/sys`
 qualifies because Windows job objects have no standard-library equivalent and
-without them a stopped dev server can survive, still holding its port.
+without them a stopped dev server can survive, still holding its port. The
+Charm terminal stack (Bubble Tea, Lipgloss, Bubbles) qualifies for `-tui`
+only: writing a fullscreen renderer on raw ANSI escapes is a second project,
+and the agent loop, tools, and backends stay dependency-free regardless.
 
 ## Building agents
 

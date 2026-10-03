@@ -1,0 +1,598 @@
+TUI SCREEN INVENTORY - opencode packages/tui/src
+Source root: D:\Projects\dev\incubator\opencode\packages\tui\src
+Generated from code inspection 2026-10-03. All screens verified in files below.
+
+=== SCREEN: App Shell / Global Frame ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\app.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog.tsx (DialogProvider backdrop)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\toast.tsx (ToastProvider)
+Purpose in one line: Root window that routes home/session/plugin, hosts global dialogs/toasts, and registers global palette commands.
+Layout top-to-bottom:
+  1. Full-terminal <box> background=theme.background (width/height=terminal dimensions)
+  2. TimeToFirstDraw (if Flag.OPENCODE_SHOW_TTFD)
+  3. Main column flexGrow=1: Switch home vs session vs plugin route (Home | Session)
+  4. app_bottom plugin Slot (single row, flexShrink=0)
+  5. app plugin Slot
+  6. StartupLoading overlay (absolute bottom-centered, zIndex 5000)
+  7. Dialog overlay (absolute zIndex 3000, dim RGBA 0,0,0,150, centered panel)
+  8. Toast overlay (absolute top=2 right=2, see Toasts)
+Key interactive elements / keybindings:
+  - command.palette.show -> CommandPaletteDialog
+  - session.list / session.new / session.quick_switch.1-9 (app.global)
+  - model.list, model.cycle_*, agent.list/cycle, variant.cycle/list, mcp.list, provider.connect, console.org.switch
+  - opencode.status/debug, theme.switch/switch_mode/mode.lock, help.show, docs.open, app.exit (/exit /quit /q)
+  - app.debug (renderer.toggleDebugOverlay), app.console (renderer.console.toggle), app.heap_snapshot, terminal.suspend, terminal.title.toggle, app.toggle.animations/file_context/diffwrap/paste_summary/session_directory_filter, permission.mode
+  - app_exit binding only when prompt empty/unfocused; escape/ctrl+c closes top dialog (ui/dialog.tsx)
+  - Mouse: copy-on-select (Selection.copy), right-click copy if Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
+What data it displays and where from:
+  - route.data (context/route.tsx: home|session|plugin); sync.data.session for continue/fork resolution; sync.data.provider.length==0 triggers DialogProvider list; sync.data.console_state.switchableOrgCount for org switch; local.agent/model, kv terminal_title_enabled/paste_summary_enabled/animations_enabled; InstallationVersion; renderer theme mode.
+
+=== SCREEN: Home / Landing ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\home.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\home\session-destination.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\logo.tsx
+Purpose in one line: New-session start page with centered logo and prompt box.
+Layout top-to-bottom:
+  1. Centered column (alignItems=center, paddingLeft/Right=2)
+  2. Top spacer flexGrow=1 + height=4 spacer
+  3. Logo (plugin Slot home_logo replace)
+  4. height=1 spacer
+  5. Prompt box width=100% maxWidth=promptMaxWidth (auto=70% width min 75, else config prompt.max_width), zIndex=1000, paddingTop=1 (Slots home_prompt / home_prompt_right)
+  6. home_bottom Slot
+  7. Bottom spacer flexGrow=1
+  8. Toast overlay
+  9. home_footer Slot (full-width bottom row)
+Key interactive elements / keybindings:
+  - Full Prompt editor (see Prompt Input Area); placeholders normal=[Fix TODO..., tech stack..., Fix tests] shell=[ls -la, git status, pwd]
+  - Auto-submit if args.prompt and sync.ready && local.model.ready
+  - No session-specific bindings; inherits app-level palette/model/agent bindings
+What data it displays and where from:
+  - route.prompt / args.prompt preseed; sync.ready; local.model.ready; tuiConfig.prompt.max_width; dimensions via useTerminalDimensions; workspace destination via HomeSessionDestinationProvider (sync.path.directory || paths.cwd).
+
+=== SCREEN: Main Session Screen ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\index.tsx (Session, UserMessage, AssistantMessage, PART_MAPPING)
+Purpose in one line: Scrollable transcript + prompt/permissions/questions footer + optional sidebar.
+Layout top-to-bottom:
+  1. Horizontal row box (flexGrow=1, minHeight=0): left content column + right Sidebar (if visible)
+  2. Left column (flexGrow=1, paddingLeft/Right=2, paddingBottom=1, gap=1):
+     a. scrollbox (stickyScroll bottom, flexGrow=1, optional scrollbar theme.backgroundElement/border) containing height=1 spacer + For each messages: revert banner OR UserMessage OR AssistantMessage parts
+     b. Bottom fixed box (flexShrink=0): PermissionPrompt (if permissions[0]) else QuestionPrompt (if questions[0]) else SubagentFooter (if parentID) + Prompt (if visible) + Toast
+  3. Right: Sidebar width=42 inline if wide>120 else absolute overlay with dim RGBA 0,0,0,70
+Key interactive elements / keybindings:
+  - session.share/rename/timeline/fork/compact/unshare/undo/redo, session.sidebar.toggle, session.toggle.conceal/timestamps/thinking/actions/scrollbar/generic_tool_output, session.first/last/messages_last_user/message.next/previous, messages.copy/session.copy/session.export, session.child.first/parent/child.next/previous, session.background (if foreground task running), session.page/line/half-page up/down
+  - Click user message -> DialogMessage; click revert banner -> Confirm redo; click Task part -> navigate child session
+  - Scroll helpers findNextVisibleMessage/scrollToMessage; toBottom() on submit/session change
+What data it displays and where from:
+  - sync.data.message[sessionID], sync.data.part[messageID], sync.data.session / sync.session.get(), sync.data.session_status, sync.data.permission/question per child session (children memo by parentID), sync.data.provider via Model.index, sync.data.config.share, sync.data.capabilities.experimentalBackgroundSubagents, local.model/agent, kv sidebar/timestamps/tool_details/scrollbar/diff_wrap/animations/generic_tool_output, project.workspace, event message.part.updated (plan_enter/exit auto-switch agent), event session.status retry -> DialogRetryAction with go-upsell KV throttling.
+
+=== SCREEN: Prompt Input Area (Session + Home) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\index.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\autocomplete.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\prompt\history.tsx, prompt/stash.tsx, prompt/traits.ts, prompt/part.ts, prompt/display.ts
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\workspace.tsx, move.tsx, stash.tsx, cwd.ts, frecency.tsx, history.tsx, local-attachment.ts
+Purpose in one line: Multiline textarea composer with @-file/agent autocomplete, shell/slash modes, history/stash, and status footer.
+Layout top-to-bottom:
+  1. Outer box width=100% (visible flag)
+  2. Left-border box (borderColor tinted by agent/highlight, SplitBorder): textarea container backgroundElement paddingLeft/Right=2 paddingTop=1: <textarea> (placeholder Ask anything... / Run a command..., syntaxStyle, cursor from tuiConfig.cursor, maxHeight=tuiConfig.prompt.max_height or height/3)
+  3. Meta row (space-between): left agent + auto + model + provider + variant; right props.right Slot
+  4. Bottom border accent row (EmptyBorder with backgroundElement underline)
+  5. Status row (space-between): spinner+status text left, usage/cost/interrupt hints right; move/workspace progress bars if active
+  6. Autocomplete popup (absolute anchored to input, @ for files/agents, / for slash commands from sync.data.command + frecency)
+Key interactive elements / keybindings:
+  - Typing; return/prompt.submit submits (double-deferred for IME); prompt.clear; prompt.editor (/editor opens $EDITOR via openEditor); prompt.skills (/skills -> DialogSkill); prompt.stash/stash.pop/stash.list; prompt.paste (clipboard image/text); session.interrupt (double-press aborts); workspace.set (/warp if experimental), session.move (/move); ! at offset 0 enters shell mode, escape/backspace at 0 exits shell; prompt.history.previous/next (up/down at boundaries); prompt.editor_context.clear dismisses editor selection chip
+  - Autocomplete mode stack: up/down/j/k/tab cycle, return select, escape dismiss; triggers @ and /
+  - Paste: bracketed paste decodePasteBytes, image->FilePart [Image N]/[PDF N], long text->[Pasted ~N lines] summarized extmark (kv paste_summary_enabled)
+What data it displays and where from:
+  - store.prompt {input,parts File/Agent/Text extmarks}, store.mode normal|shell; local.agent.current/color/list, local.model.parsed/current/variant, local.permission.mode; lastUserMessage agent/model for restore; sync.data.message/provider/command/config.experimental.disable_paste_summary; usage {tokens+percent via model.limit.context, cost via session.cost}; status sync.data.session_status[sessionID] idle/busy/retry; editor.selection/fileContext (kv file_context_enabled); project.workspace/move/workspace selection; clipboard; event tui.prompt.append.
+
+=== SCREEN: Permission Prompt ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\permission.tsx
+Purpose in one line: Inline allow-once/always/reject gate for tool calls, with diff preview for edits.
+Layout top-to-bottom:
+  1. Stage switch: permission | always | reject
+  2. permission stage: left-border warning panel backgroundPanel: header (triangle warning + Permission required + icon+title per permission type) + body (EditBody diff scrollbox OR TextBody path/pattern/command/url/query) + footer action bar backgroundElement: buttons [Allow once|Allow always|Reject] + hints (fullscreen, left-right select, enter confirm)
+  3. always stage: confirmation panel listing patterns or * until restart + [Confirm|Cancel]
+  4. reject stage (RejectPrompt): left-border error panel: title Reject permission + helper Tell OpenCode what... + textarea (traits REJECT) + footer [enter confirm | esc cancel]
+Key interactive elements / keybindings:
+  - left/h previous, right/l next, return select, escape/app.exit -> escapeKey (reject), permission.prompt.fullscreen toggles expanded Portal fullscreen (absolute top=-height+1 bottom=1 left/right=2)
+  - Reject textarea: return confirm with message, escape cancel
+  - Mouse hover/select buttons
+What data it displays and where from:
+  - PermissionRequest {id, permission edit/read/glob/grep/list/bash/task/webfetch/websearch/external_directory/doom_loop/generic, always[], patterns, metadata.filepath/diff/parentDir, tool.callID/messageID}; input lookup sync.data.part[tool.messageID] state.input; diff via <diff> view split if width>120 else unified, filetype(), syntax(); session parentID determines reject-with-message path; sdk.client.permission.reply {once|always|reject}; project.workspace.current(); pathFormatter.
+
+=== SCREEN: Question Prompt ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\question.tsx
+Purpose in one line: Multi-question tabbed picker (single auto-submits, multi needs Confirm tab) with custom answer editing.
+Layout top-to-bottom:
+  1. Left-border accent panel backgroundPanel, gap=1 padding=1:
+  2. Tab row (if !single): question headers + Confirm tab (accent if active, hover backgroundElement)
+  3. Current question block: question text (+ select all that apply) + numbered options (1. label + description, [check] if multi picked) + Type your own answer row (textarea if editing else preview)
+  4. Confirm/Review block (if on Confirm tab): list header: answers or (not answered) in error color
+  5. Footer hints row: tab (if !single), up-down select (if !confirm), enter submit/toggle/confirm, esc dismiss
+Key interactive elements / keybindings:
+  - Dedicated mode QUESTION_MODE pushed on mount
+  - Editing mode: escape cancel edit, return submit edit (handles multi toggle vs single pick), prompt.clear clears textarea
+  - Browse mode (!editing): left/h/right/l/tab (shift reverses) switch tabs, 1-9 quick pick, up/k/down/j move, return select/toggle/submit on Confirm, escape/app.exit reject; mouse hover/click tabs/options
+What data it displays and where from:
+  - QuestionRequest {id, questions[{header,question,options[{label,description}],multiple,custom}]}; store {tab,answers[][],custom[],selected,editing}; sdk.client.question.reply {requestID,answers} / question.reject; directory prop for reply scoping.
+
+=== SCREEN: Model Picker ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-model.tsx
+Purpose in one line: Fuzzy-searchable model list with Favorites/Recent/provider sections.
+Layout top-to-bottom:
+  1. DialogSelect panel: title Select model or provider name (if providerID filter) + esc
+  2. Filter input (Search, traits FILTER, autofocus)
+  3. Grouped scrollbox (maxHeight=half terminal -6): Favorites, Recent, per-provider categories, Popular providers (if !connected)
+  4. Footer actions: Connect provider / View all providers, Favorite toggle
+Key interactive elements / keybindings:
+  - dialog.select.prev/next/page_up/page_down/home/end/submit; typing filters (fuzzysort on title+category), flat=true when filtering; model.dialog.provider, model.dialog.favorite actions
+  - onSelect sets local.model with recent:true, then if variant needed replaces with DialogVariant else clear
+What data it displays and where from:
+  - sync.data.provider [{id,name,models{info.name,release_date,cost,status,providerID}}]; local.model.favorite/recent/current; useConnected(); createDialogProviderOptions() for popular; props.providerID filter; disabled if opencode *-nano; footer Free if cost.input==0.
+
+=== SCREEN: Agent Picker ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-agent.tsx
+Purpose in one line: Select active agent personality.
+Layout top-to-bottom:
+  1. DialogSelect: title Select agent + esc
+  2. Filter input
+  3. Flat list rows: agent name + description (native or description)
+Key interactive elements / keybindings:
+  - Standard DialogSelect bindings (prev/next/submit, filter typing); onSelect local.agent.set + dialog.clear
+What data it displays and where from:
+  - local.agent.list() [{name,description,native}], local.agent.current()?.name as current marker.
+
+=== SCREEN: Session List (Switch Session) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-session-list.tsx
+Purpose in one line: Search, switch, pin, rename, delete sessions with recency grouping and quick-switch slots.
+Layout top-to-bottom:
+  1. DialogSelect large: title Sessions + esc
+  2. Filter input (debounced 150ms, skipFilter=true preserveSelection)
+  3. Grouped scrollbox: Pinned then Today then date strings; each row title + footer (basename directory) + gutter (Spinner if busy/retry else slot number accent) + red bg if pending delete confirm
+  4. Footer: pin/unpin, delete, rename actions + quick-switch hint (e.g. prefix 1-9 switch) if slots exist
+Key interactive elements / keybindings:
+  - Typing filters via sdk.client.session.list {roots,limit,search,scope/path}; onMove clears delete confirm; onSelect navigate session + clear
+  - Actions: session.pin.toggle, session.delete (two-press confirm, calls sdk.client.session.delete, refresh + recover via DialogSessionDeleteFailed if workspace detached), session.rename (-> DialogSessionRename)
+  - session.quick_switch.1-9 handled globally via local.session.quickSwitch
+What data it displays and where from:
+  - sdk.client.session.list browse+search resources + sync.data.session map + currentSessionID + local.session.pinned/slots; sync.data.session_status for busy spinner; project.data.project.mainDir for footer trimming; event session.deleted updates deleted set; project.workspace for recover/warp.
+
+=== SCREEN: Timeline (Jump to Message) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\dialog-timeline.tsx
+Purpose in one line: Jump-scroll to prior user message or drill into message actions.
+Layout top-to-bottom:
+  1. DialogSelect large: title Timeline + esc
+  2. Filter input
+  3. Reverse-chron list rows: single-line text (newlines->spaces) + footer Locale.time(created)
+Key interactive elements / keybindings:
+  - Standard DialogSelect nav/filter/submit; onMove scrolls parent scrollbox to child.y; onSelect replaces with DialogMessage for that messageID
+What data it displays and where from:
+  - sync.data.message[sessionID] filter role==user + sync.data.part[messageID] first non-synthetic non-ignored text part.
+
+=== SCREEN: Fork Session (from Timeline) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\dialog-fork-from-timeline.tsx
+Purpose in one line: Fork full session or from a specific user message into a new session.
+Layout top-to-bottom:
+  1. DialogSelect large: title Fork session + esc
+  2. Filter input
+  3. List: Full session row + reverse user-message rows (same title/footer as Timeline)
+Key interactive elements / keybindings:
+  - Same DialogSelect bindings; onMove previews scroll position; onSelect sdk.client.session.fork {sessionID,messageID?} then navigate new session with prompt prefilled (text + stripped file parts) + clear
+What data it displays and where from:
+  - Same message/part sources as Timeline; sdk.client.session.fork result id; stripPromptPartIDs util.
+
+=== SCREEN: Command Palette ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\command-palette.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-select.tsx (base list engine)
+Purpose in one line: Reachable-namespaced command runner with suggested section and keybinding footers.
+Layout top-to-bottom:
+  1. DialogSelect: title Commands + esc
+  2. Filter input
+  3. List: Suggested group on top (value prefixed suggested:) when no filter, then full list; each row title + description + category + footer formatted keybindings
+Key interactive elements / keybindings:
+  - Same DialogSelect nav; typing fuzzy filters title+category (title weight 2x); onSelect dialog.clear + keymap.dispatchCommand(name)
+What data it displays and where from:
+  - keymap.getCommandEntries({namespace:palette, visibility:reachable}) filtered hidden!=true && name!=COMMAND_PALETTE_COMMAND; keymap.getCommandBindings registered; suggested flag boolean|function; config for formatKeyBindings.
+
+=== SCREEN: Diff / Tool Output Rendering (inline in transcript) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\index.tsx (ToolPart, Edit, ApplyPatch, Shell, Write, GenericTool, InlineToolRow, BlockTool)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\permission.tsx (EditBody diff)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\util\revert-diff.ts, util/collapse-tool-output.ts, util/filetype.ts, parsers-config.ts
+Purpose in one line: Per-tool visualizers: inline one-liners vs expandable block diffs/outputs.
+Layout top-to-bottom (inside scrollbox flow):
+  - InlineToolRow (paddingLeft=3, icon width=2 + text): e.g. $ command, -> Read path, * Glob/Grep pattern+counts, % WebFetch, diamond WebSearch+results, arrow Edit/Write, check Task done, gear Generic
+  - BlockTool (left border, backgroundPanel/Menu, padding 1/2, gap=1, marginTop=1): title # ... + body + error line: Shell ($ command + collapsed 10-line output + Click to expand), Edit/ApplyPatch (<diff> split if width>120 else unified, line numbers, theme diff colors, wrapMode from kv diff_wrap_mode, filetype syntax), Write (code + Diagnostics up to 3 severity-1), TodoWrite (# Todos list), Question (# Questions Q/A), Execute (calls list + error preview), GenericTool (title # tool + 3-line collapsed output, gated by showGenericToolOutput else inline)
+  - ReasoningPart: header Thought: title-duration or Thinking spinner, expandable markdown body (hide mode click toggles)
+  - TextPart: markdown grid tables, conceal flag, streaming
+  - Revert banner variant: left border panel with N message reverted + redo shortcut + diff files +/- counts
+Key interactive elements / keybindings:
+  - Click inline/block to expand/collapse if overflow (hover highlights); click error to expand error text; session.toggle.actions/details, session.toggle.generic_tool_output, session.toggle.thinking (hide/expand), session.toggle.conceal, app.toggle.diffwrap control visibility; no text inputs
+What data it displays and where from:
+  - ToolPart {tool,callID,state.status pending/running/completed/error,state.input/output/metadata.title/diff/files/todos/questions/answers/toolCalls/diagnostics/sessionId/background}; ctx.width/conceal/thinkingMode/showDetails/showGenericToolOutput/diffWrapMode/sessionID; syntax theme; pathFormatter; stripAnsi; collapseToolOutput(maxLines/maxChars); sync.data.permission for warning color; sync.data.message/session_status for Task subagent progress.
+
+=== SCREEN: Todo Display ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\todo-item.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\index.tsx (TodoWrite function, parseTodos)
+Purpose in one line: Checkbox list for todowrite tool state.
+Layout top-to-bottom:
+  1. Inside BlockTool # Todos: vertical box of TodoItem rows
+  2. Each row: [check|-| ] glyph + content text (wrap word, flexGrow=1)
+Key interactive elements / keybindings:
+  - Read-only; inherits BlockTool click-to-expand if needed; no inputs
+What data it displays and where from:
+  - parseTodos(input.todos) vs metadata.todos; status completed->[check]/in_progress warning color - else [ ]; content string; theme.warning/textMuted.
+
+=== SCREEN: Footer / Status Bar ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\footer.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\index.tsx (prompt meta footer, status/spinner row)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\subagent-footer.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\app.tsx (app_bottom Slot)
+Purpose in one line: Bottom context line: cwd left, LSP/MCP/permissions/status right; prompt shows agent/model/cost/spinner; subagent shows nav.
+Layout top-to-bottom:
+  1. Session Footer row (space-between, flexShrink=0): left directory() textMuted; right row gap=2: welcome Get started /connect (rotating when !connected) OR connected view: [triangle N Permissions] + [- N LSP green/gray] + [circle N MCP green/red if any] + /status
+  2. Prompt footer meta (above status row): agent Shell/Titlecase + auto if permission auto + - model + provider + - variant warning if any
+  3. Prompt status row: spinner blocks (agent color) + Thinking/Retrying message or usage tokens (pct) - cost; interrupt double-press hint
+  4. SubagentFooter (only if parentID): left label (Agent from title @x subagent) + (index of total) + tokens-cost; right Parent/Prev/Next buttons with shortcuts
+Key interactive elements / keybindings:
+  - No direct inputs; Subagent buttons dispatch session.parent/child.previous/child.next on click; footer hints reference /status, /connect, child.first/background shortcuts
+What data it displays and where from:
+  - useDirectory(), useConnected(), sync.data.mcp (connected count + failed flag), sync.data.lsp keys, sync.data.permission[sessionID] count, sync.data.session_status, sync.data.provider model limits, session.cost/tokens, local.agent/model/variant, project.workspace, kv animations_enabled.
+
+=== SCREEN: Toasts ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\toast.tsx
+Purpose in one line: Ephemeral top-right notification card.
+Layout top-to-bottom:
+  1. Absolute box top=2 right=2 maxWidth=min(60,width-6) padding 1/2 backgroundPanel border left+right SplitBorder borderColor=variant color
+  2. Optional bold title (marginBottom=1)
+  3. Message word-wrapped width=100%
+Key interactive elements / keybindings:
+  - None (auto-dismiss); copy on selection still applies
+What data it displays and where from:
+  - ToastContext currentToast {title?,message,variant info|success|warning|error,duration default 5000 via setTimeout unref}; producers: clipboard copy success/fail, share/unshare, export, session not found, prompt warnings, event session.error/tui.toast.show, heap snapshot, debug copy, MCP/workspace errors.
+
+=== SCREEN: Generic Modal Shell (Dialog) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-select.tsx (select variant used by most pickers)
+Purpose in one line: Centered dimmed overlay hosting one stacked dialog panel with select/filter engine.
+Layout top-to-bottom:
+  1. Fullscreen backdrop (width/height=terminal, paddingTop=height/4, align center, zIndex 3000)
+  2. Panel width 60 medium /88 large/116 xlarge, maxWidth=width-2, backgroundPanel paddingTop=1
+  3. Select variant internals: header row (bold title/titleView + esc click) + filter <input> (unless renderFilter false) + scrollbox grouped list (category headers accent bold, rows highlight primary or bg override, current dot, gutter, details truncated middle) + footer row (left/right actions + hints)
+Key interactive elements / keybindings:
+  - escape/ctrl+c closes top (clears selection first if any); click backdrop closes; click panel stops propagation
+  - Select: dialog.select.prev/next (up/down/k/j), page_up/page_down (+-10), home/end, submit (return); tab/shift+tab focus footer actions; per-action keybinds via tuiConfig.keybinds.get(command); mouse hover/move/click select; filter typing with fuzzysort; DialogSelectRef {filter,filtered,moveTo}
+What data it displays and where from:
+  - DialogContext stack [{element,onClose}], size; modeStack modal push; renderer selection for dismiss guard; props options [{title,titleView,value,description,details,footer,category,disabled,bg,gutter,margin,onSelect}] + actions [{command,title,onTrigger}] + footerHints + current deep-equal match.
+
+=== SCREEN: Alert Dialog ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-alert.tsx
+Purpose in one line: Single-message acknowledgement (e.g. retry error, update complete).
+Layout top-to-bottom:
+  1. Row space-between: bold title + esc click
+  2. Message textMuted paddingBottom=1
+  3. Right-aligned row: [ok] button primary bg
+Key interactive elements / keybindings:
+  - return Confirm alert (calls onConfirm + clear); click ok/esc; static DialogAlert.show(dialog,title,message):Promise<void>
+What data it displays and where from:
+  - Props {title,message,onConfirm?}; callers: session child retry status, Task retry click, installation.update-available complete.
+
+=== SCREEN: Confirm Dialog ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-confirm.tsx
+Purpose in one line: Two-choice confirm/cancel (share, unrevert, update).
+Layout top-to-bottom:
+  1. Row space-between: bold title + esc click
+  2. Message textMuted paddingBottom=1
+  3. Right-aligned row: [cancel][confirm] (active primary bg)
+Key interactive elements / keybindings:
+  - left/right toggle active, return confirms active, click buttons; DialogConfirm.show(dialog,title,message,label?):Promise<boolean|undefined>
+What data it displays and where from:
+  - Props {title,message,label?,onConfirm/onCancel}; callers: session.share consent, revert restore, installation.update-available (label skip).
+
+=== SCREEN: Text Input Dialog (Prompt) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-prompt.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-session-rename.tsx (rename wrapper)
+Purpose in one line: Single textarea prompt with busy state (used for rename).
+Layout top-to-bottom:
+  1. Row space-between: bold title + esc click
+  2. Gap block: description? + textarea height=3 (traits BUSY if busy, cursor from config) + Spinner if busy
+  3. Footer row: shortcut submit hint or processing...
+Key interactive elements / keybindings:
+  - dialog.prompt.submit (from tuiConfig.keybinds) confirms textarea.plainText unless busy (priority 1 over global textarea layer); esc/backdrop cancels; autofocus + gotoLineEnd on mount; Rename wrapper pre-fills session title
+What data it displays and where from:
+  - Props {title,description,placeholder,value,busy,busyText}; DialogPrompt.show()->Promise<string|null>; rename uses sync.session.get(sessionID).title + sdk.client.session.update.
+
+=== SCREEN: Share / Export Flow ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\index.tsx (session.share/unshare/copy/export commands)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-export-options.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\util\transcript.ts (formatTranscript), editor.ts (openEditor)
+Purpose in one line: Copy/share-link, copy transcript, or file-export transcript with include toggles.
+Layout top-to-bottom (Export dialog):
+  1. Row space-between: bold Export Options + esc
+  2. Filename label + textarea height=3 (traits FILENAME, default session-<8>.md)
+  3. Column checkboxes: Include thinking / tool details / assistant metadata / Open without saving ([x]/[ ] highlight primary when active)
+  4. Hint line: return confirm vs space toggle + tab for options (depends on active field)
+Key interactive elements / keybindings:
+  - tab cycles filename/thinking/toolDetails/assistantMetadata/openWithoutSaving; space toggles checkbox when not on filename; return in filename textarea confirms; share flow: DialogConfirm Share Session + kv share_consent then sdk.client.session.share -> clipboard.write url; unshare/copy/export via palette /share /unshare /copy /export
+What data it displays and where from:
+  - session().share.url, sessionID/title, messages+parts via formatTranscript({thinking,toolDetails,assistantMetadata,providers:sync.data.provider}); paths.cwd export dir; openEditor with project worktree/directory; toast/errorMessage; dialog.replace chaining.
+
+=== SCREEN: Status View ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-status.tsx
+Purpose in one line: Read-only health list for MCP/LSP/formatters/plugins (trigger /status).
+Layout top-to-bottom:
+  1. Row space-between: bold Status + esc
+  2. MCP section: N MCP Servers + rows - + name + Connected/error/Disabled/Needs auth text (color success/error/muted/warning)
+  3. LSP section (if any): N LSP Servers + rows - + id + root
+  4. Formatters: N Formatters or No Formatters + rows - + name
+  5. Plugins: N Plugins or No Plugins + rows - + name@version (parsed from string|tuple file:// or pkg@ver, sorted)
+Key interactive elements / keybindings:
+  - esc/backdrop close only; selectable text for copy-on-select; no inputs
+What data it displays and where from:
+  - sync.data.mcp {status connected/failed/disabled/needs_auth/needs_client_registration + error}, sync.data.lsp [{id,root,status}], sync.data.formatter filter enabled, sync.data.config.plugin.
+
+=== SCREEN: Debug View ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-debug.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\app.tsx (app.debug overlay, app.console, app.heap_snapshot)
+Purpose in one line: Copyable environment snapshot plus renderer debug/console toggles.
+Layout top-to-bottom:
+  1. Debug dialog (large): Row space-between bold Debug + esc
+  2. Rows label(10-char padded muted) + value word-wrapped: Version, Date ISO, OS, Terminal, Session ID, Model
+  3. Footer space-between: Share this... + copy/check copied + enter hint
+  4. Separate overlays (not dialog): renderer debug overlay (app.debug), renderer.console drawer (app.console, y-copy binding), heap snapshot toast with file list
+Key interactive elements / keybindings:
+  - return Copy debug info (clipboard.write joined lines + toast); click copy; single-value selection copy preserved (no click-to-copy on rows); app.debug/app.console/app.heap_snapshot palette commands
+What data it displays and where from:
+  - InstallationVersion/Channel, new Date(), describeOS()/describeTerminal() (util/system), route.data sessionID or n/a, local.model.current provider/model; clipboard + toast; onSnapshot() for heap files.
+
+=== SCREEN: Sidebar ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\sidebar.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\workspace-label.tsx
+Purpose in one line: Narrow right rail with session title/workspace/share and plugin slots.
+Layout top-to-bottom:
+  1. Box width=42 height=100% backgroundPanel padding 1/2/2/2 (relative inline or absolute overlay)
+  2. scrollbox flexGrow=1: gap=1 column: sidebar_title Slot (default: bold title + sessionID if channel!=latest + WorkspaceLabel type/name/status + share url) + sidebar_content Slot (empty default)
+  3. Footer flexShrink=0 paddingTop=1: sidebar_footer Slot (default - OpenCode + InstallationVersion)
+Key interactive elements / keybindings:
+  - No direct bindings; toggled via session.sidebar.toggle (auto when width>120 else overlay); scroll via scrollAcceleration from config
+What data it displays and where from:
+  - sync.session.get(sessionID) {title,workspaceID,share.url}; project.workspace.get/status; InstallationChannel/Version; plugin Slots sidebar_title/content/footer with session_id/share_url.
+
+=== SCREEN: Subagent Footer + Subagent Dialog ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\subagent-footer.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\dialog-subagent.tsx
+Purpose in one line: Child-session nav bar replacing prompt when viewing a subagent; dialog offers Open action.
+Layout top-to-bottom (Footer):
+  1. Left-border panel backgroundPanel padding 1/2/1/1: row space-between gap=1
+  2. Left: bold Label (parsed @x subagent or Subagent) + (index of total) + tokens (pct) - cost
+  3. Right: Parent + Prev + Next (hover backgroundElement, shortcuts shown)
+  Dialog: DialogSelect title Subagent Actions + single row Open the subagent's session
+Key interactive elements / keybindings:
+  - Click/ dispatch session.parent/child.previous/child.next on click; shortcuts via useCommandShortcut; dialog onSelect navigate session + clear
+What data it displays and where from:
+  - sync.data.session siblings filter parentID sorted created for index/total; sync.data.message[sessionID] last assistant tokens + provider model limits for pct; session.cost; session.title regex.
+
+=== SCREEN: Message Actions ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\routes\session\dialog-message.tsx
+Purpose in one line: Per-user-message Revert/Copy/Fork menu.
+Layout top-to-bottom:
+  1. DialogSelect title Message Actions + esc + filter
+  2. Three rows: Revert (undo messages and file changes) / Copy (message text to clipboard) / Fork (create a new session)
+Key interactive elements / keybindings:
+  - Standard select bindings; click/return triggers onSelect with dialog context
+What data it displays and where from:
+  - sync.data.message[sessionID] find messageID + sync.data.part[messageID] (text non-synthetic for copy/prompt refill, file stripped via stripPromptPartIDs); sdk.client.session.revert/fork; route.navigate forked id; clipboard.write.
+
+=== SCREEN: Autocomplete Popup (@ files/agents, / commands) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\autocomplete.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\prompt\frecency.tsx, prompt/display.ts (mentionTriggerIndex)
+Purpose in one line: Anchored suggestion list for mentions and slash commands with frecency/file search.
+Layout top-to-bottom:
+  1. Absolute popup above textarea anchor (position tick on anchor move, maxHeight constrained by terminal)
+  2. Scrollbox list rows: display + description + directory flag; highlight selected
+  3. No header/footer chrome (lightweight vs DialogSelect)
+Key interactive elements / keybindings:
+  - Trigger @ shows files/agents, / shows slash commands (sync.data.command + slashes); up/down/j/k cycle, tab/return select inserts extmark (fileStyleId/agentStyleId/pasteStyleId) + PromptInfo part, escape dismisses; modeStack autocomplete push
+What data it displays and where from:
+  - value string + cursor offset via mentionTriggerIndex/displayCharAt; sdk file search, project directories, sync.data.command, useFrecency scores, editor context, location/workspace; setPrompt/setExtmark callbacks to parent Prompt store.
+
+=== SCREEN: Help ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\ui\dialog-help.tsx
+Purpose in one line: One-paragraph pointer to command palette.
+Layout top-to-bottom:
+  1. Row space-between: bold Help + esc/enter hint
+  2. Text: Press <palette shortcut> to see all available actions...
+  3. Right-aligned [ok] primary button
+Key interactive elements / keybindings:
+  - return/escape closes; click ok/esc
+What data it displays and where from:
+  - useCommandShortcut(command.palette.show) label; no store data.
+
+=== SCREEN: Provider Connect ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-provider.tsx
+Purpose in one line: Popular + all providers list with OAuth/API-key auth flows.
+Layout top-to-bottom:
+  1. DialogSelect: title Connect provider or provider detail + esc + filter
+  2. Grouped rows: Popular vs Providers + Other (custom id) ; each row title + description (Recommended/API key/ChatGPT...)
+  3. Auth step (after pick): method list + DialogPrompt for key/secret + Link + error text; console-managed providers show org switch hint
+Key interactive elements / keybindings:
+  - Standard select nav/filter; onSelect drills to auth; custom ID validated ^[a-z0-9][a-z0-9-_]*$; clipboard for URLs; retry via sdk.client auth methods
+What data it displays and where from:
+  - sync.data.provider list + providerOptions() sorted by PROVIDER_PRIORITY; isConsoleManagedProvider(); useConnected(); sdk.client provider auth APIs; toast/clipboard.
+
+=== SCREEN: MCP Toggle ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-mcp.tsx
+Purpose in one line: Enable/disable MCP servers with live status refresh.
+Layout top-to-bottom:
+  1. DialogSelect title MCPs + esc + filter
+  2. Alphabetical rows: name + description status + footer Status (check Enabled green bold / circle Disabled muted / ... Loading)
+Key interactive elements / keybindings:
+  - Action dialog.mcp.toggle on selected (blocks while loading!=null); click/return on row also toggles (check file tail); standard nav/filter
+What data it displays and where from:
+  - sync.data.mcp entries; local.mcp.isEnabled/toggle; sdk.client.mcp.status() -> sync.set(mcp); loading signal per-name.
+
+=== SCREEN: Variant Picker ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-variant.tsx
+Purpose in one line: Choose model variant (e.g. thinking effort) or Default.
+Layout top-to-bottom:
+  1. DialogSelect flat title Select variant + esc + filter
+  2. Rows: Default + variant list strings
+Key interactive elements / keybindings:
+  - Standard select bindings; onSelect local.model.variant.set(variant|undefined) + clear
+What data it displays and where from:
+  - local.model.variant.list()/selected(); invoked from DialogModel when needed and via variant.list/cycle palette commands.
+
+=== SCREEN: Theme Picker ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-theme-list.tsx
+Purpose in one line: Live-preview theme switcher.
+Layout top-to-bottom:
+  1. DialogSelect title Themes + esc + filter
+  2. Alphabetical rows theme names, current marked
+Key interactive elements / keybindings:
+  - Standard nav; onMove live theme.set(value), onFilter first-match preview, onSelect confirm + clear else onCleanup revert to initial
+What data it displays and where from:
+  - theme.all() keys, theme.selected/set.
+
+=== SCREEN: Stash List ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-stash.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\stash.tsx, prompt/stash.tsx
+Purpose in one line: Restore or delete stashed prompt drafts.
+Layout top-to-bottom:
+  1. DialogSelect title Stash + esc + filter
+  2. Rows most-recent first: first-line preview (50ch) + relative time (just now/m/h/d or datetime) + footer ~N lines; red bg if delete-confirm pending
+Key interactive elements / keybindings:
+  - Standard nav; onMove clears delete pending; onSelect removes entry + props.onSelect(entry) restores input/parts/extmarks; action stash.delete two-press confirm
+What data it displays and where from:
+  - stash.list() [{input,parts,timestamp}] via usePromptStash; deleteHint useCommandShortcut(stash.delete).
+
+=== SCREEN: Skill Picker ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-skill.tsx
+Purpose in one line: Browse workspace skills to insert /skill into prompt.
+Layout top-to-bottom:
+  1. DialogSelect large title Skills placeholder Search skills... + esc
+  2. Rows: name padded + description single-spaced, category Skills; error emptyView if load fails + locked filter
+Key interactive elements / keybindings:
+  - Standard nav/filter; onSelect props.onSelect(skill.name) sets prompt /skill + goto end; retry on error via resource refetch
+What data it displays and where from:
+  - sdk.client.app.skills() [{name,description}]; loadError signal; maxWidth padding.
+
+=== SCREEN: Tag/File Quick Pick (legacy autocomplete helper) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-tag.tsx
+Purpose in one line: Minimal file search dialog (Autocomplete title) used as helper.
+Layout top-to-bottom:
+  1. DialogSelect title Autocomplete + filter + esc
+  2. Up to 5 rows file paths
+Key interactive elements / keybindings:
+  - Standard select filter/submit; onSelect props.onSelect(value) + clear
+What data it displays and where from:
+  - sdk.client.find.files({query,workspace:project.workspace.current()}) resource.
+
+=== SCREEN: Console Org Switch ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-console-org.tsx
+Purpose in one line: Switch active console billing org.
+Layout top-to-bottom:
+  1. DialogSelect title Switch org (plus error/locked states) + esc + filter
+  2. Rows: org name + accountEmail host, active marked; Loading orgs... placeholder while resource pending
+Key interactive elements / keybindings:
+  - Standard nav; onSelect sdk switch org + toast + clear; error view with retry
+What data it displays and where from:
+  - sdk.client.experimental.console.listOrgs() {orgs[{active,accountEmail,accountUrl}]}; toast/errorMessage.
+
+=== SCREEN: Retry / Go Upsell ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-retry-action.tsx
+Purpose in one line: Rate-limit upsell overlay with action vs dismiss (Don't show again).
+Layout top-to-bottom:
+  1. Centered panel with BgPulse treatment if link==https://opencode.ai/go (foreground alpha 186, PAD_X=3)
+  2. Title + message + link (Link component)
+  3. Footer two buttons: [action label] [dismiss] (selected highlight)
+Key interactive elements / keybindings:
+  - left/right/tab toggle selected dismiss/action, return confirms (runAction opens URL vs dismiss sets dontShow); DialogRetryAction.show(dialog,action)->Promise dontShowAgain
+What data it displays and where from:
+  - SessionStatus retry action {provider opencode/opencode-go, reason free_tier_limit/account_rate_limit, title/message/label/link}; kv go_upsell_* lastSeen/dontShow with 24h window; event session.status in session/index.tsx.
+
+=== SCREEN: Workspace List / Create / File Changes / Unavailable / Move ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-workspace-list.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-workspace-create.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-workspace-file-changes.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-workspace-unavailable.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\workspace.tsx (inline progress/notice)
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\prompt\move.tsx + dialog-move-session.tsx (Move session variant)
+Purpose in one line: Experimental worktree workspace manager: list/delete, create/warp, conflict review, disconnected warning.
+Layout top-to-bottom (List):
+  1. DialogSelect title Manage workspaces + esc + filter; rows sorted name: name or Delete name? Press delete again / Deleting... + footer type + details directory when expanded + gutter green/red dot
+  2. Footer actions delete/details/remove
+  Create: DialogSelect steps: none/new/existing-list -> adapter list -> name prompt -> selection; helpers recentConnectedWorkspaces(3), warpReminderText(dir) system-reminder, warpWorkspaceSession(), openWorkspaceSelect()
+  FileChanges: DialogSelect/table of changed files with copy/restore actions
+  Unavailable: Alert-style panel with Restore action (opens workspace select)
+  Move: same pattern for project dir move with progress bar in prompt area
+Key interactive elements / keybindings:
+  - Standard select nav/filter/submit; delete two-press; expanded toggle for directory; onSelect sets project.workspace.current or warps session via sdk.client.experimental.workspace.* ; Flag.OPENCODE_EXPERIMENTAL_WORKSPACES gates workspace.list/set commands (/warp, /workspaces, /move)
+What data it displays and where from:
+  - project.workspace.list/get/status/current/sync, sync.path.directory/sdk.directory, sdk.client.experimental.workspace.adapter.create/remove; route session workspaceID; toast/errorMessage; dialog.replace chaining.
+
+=== SCREEN: Session Delete Failed (Recovery) ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\dialog-session-delete-failed.tsx
+Purpose in one line: Recovery options when delete fails due to detached workspace.
+Layout top-to-bottom:
+  1. Alert-style: title + session name + workspace name + explanation
+  2. Footer buttons: Restore (warp select) / Delete workspace / Done
+Key interactive elements / keybindings:
+  - Standard dialog esc/return + button clicks; callbacks onDone/onDelete/onRestore returning bool to stay open
+What data it displays and where from:
+  - Props {session,workspace}; sdk.client.experimental.workspace.remove; project.workspace.sync; sync.session.refresh; route home if current workspace matches.
+
+=== SCREEN: Startup Loading + Error Fallback ===
+File path(s):
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\startup-loading.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\error-component.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\plugin-route-missing.tsx
+  D:\Projects\dev\incubator\opencode\packages\tui\src\component\logo.tsx, spinner.tsx, bg-pulse.tsx
+Purpose in one line: Transient boot indicator and crash fallbacks.
+Layout top-to-bottom:
+  1. StartupLoading absolute bottom-centered zIndex 5000: backgroundPanel pill with Spinner + Loading plugins... (after 500ms delay) or Finishing startup... (holds min 3000ms)
+  2. ErrorComponent full-screen: error title + message + reset hint (ErrorBoundary fallback in app.tsx)
+  3. PluginRouteMissing: unknown plugin id + OnHome button
+Key interactive elements / keybindings:
+  - No inputs except error reset / home navigation
+What data it displays and where from:
+  - props.ready() pluginHost.start promise; TuiStartup skipInitialLoading; startup minimum-time gate; error object from ErrorBoundary; pluginRuntime.routes map.
+
+END OF INVENTORY

@@ -85,6 +85,14 @@ type Runner struct {
 	// optional.
 	OnStep  func(subID string, step int, msg llm.Message)
 	OnEvent func(format string, args ...any)
+
+	// OnToolResult mirrors agent.Config.OnToolResult for worker tool
+	// results. Optional; nil keeps workers silent as before.
+	OnToolResult func(callID, result string)
+
+	// OnUsage mirrors agent.Config.OnUsage for worker token counts.
+	// Optional.
+	OnUsage func(step int, usage llm.Usage)
 }
 
 func (r *Runner) event(format string, args ...any) {
@@ -586,6 +594,8 @@ func (r *Runner) env() roles.Env {
 		ContextLimit: r.ContextLimit,
 		StateDir:     filepath.Join(r.Dir, "workers"),
 		OnStep:       r.OnStep,
+		OnToolResult: r.OnToolResult,
+		OnUsage:      r.OnUsage,
 	}
 }
 

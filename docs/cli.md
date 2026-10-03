@@ -60,6 +60,7 @@ secrets) gated to ask. See `SECURITY.md` for the trust boundary.
 |---|---|---|
 | `-mode MODE` | `print` | `print` (human-readable) or `json` (one JSON object per line on stdout; human chatter goes to stderr so the stream pipes cleanly) |
 | `-serve` | `false` | Serve JSON-RPC over stdio instead of running one task: methods `run`/`respond`/`cancel`, events on stdout. See `docs/rpc.md` |
+| `-tui` | `false` | Fullscreen terminal UI instead of print mode: live transcript, status bar, inline gate prompts. Fresh direct tasks only (no `-plan`, `-resume`, `-fork`, `-mission` with it) |
 | `-stream` | `false` | Stream response tokens live. OpenAI/llama backends only; koboldcpp falls back to unary |
 | `-debug` | `false` | Log raw request/response JSON plus per-call token usage to `agent-debug.log` |
 | `-log-max N` | `300` | Max characters per line in step console output. `0` means no limit. The final answer always prints whole |

@@ -6,6 +6,7 @@
 package permission
 
 import (
+	"fmt"
 	"path"
 	"strings"
 )
@@ -120,4 +121,32 @@ func baseName(s string) string {
 		return s[i+1:]
 	}
 	return s
+}
+
+// Decide maps an operator answer to an effect: y(es) and a(lways) allow,
+// anything else denies. Shared by every front end (CLI gate, TUI,
+// future RPC clients) so "n" can never mean allow in one UI and deny in
+// another. Callers add context to the denial.
+//
+// A "n: <note>" (or "no:"/"deny:") answer denies with the note attached,
+// so the refusal fed back to the model carries the operator's redirect.
+// The note only survives where the caller returns Decide's own error
+// (the TUI does; the CLI wraps it in its own wording).
+func Decide(answer string) (Effect, error) {
+	text := strings.TrimSpace(answer)
+	if head, tail, ok := strings.Cut(text, ":"); ok {
+		switch strings.ToLower(strings.TrimSpace(head)) {
+		case "n", "no", "deny":
+			if note := strings.TrimSpace(tail); note != "" {
+				return Deny, fmt.Errorf("blocked by operator: %s", note)
+			}
+			return Deny, fmt.Errorf("blocked by operator")
+		}
+	}
+	switch strings.ToLower(text) {
+	case "y", "yes", "a", "always":
+		return Allow, nil
+	default:
+		return Deny, fmt.Errorf("blocked by operator")
+	}
 }

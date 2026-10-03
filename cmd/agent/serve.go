@@ -55,73 +55,6 @@ type serveDeps struct {
 	mcpTools     []agent.Tool
 }
 
-// gateHub routes one suspension at a time from the run goroutine to the
-// dispatcher goroutine feeding it respond replies.
-type gateHub struct {
-	mu      sync.Mutex
-	pending bool
-	replyCh chan agent.SuspendReply
-	emitter *events.Emitter
-}
-
-func newGateHub(emitter *events.Emitter) *gateHub {
-	return &gateHub{emitter: emitter}
-}
-
-func (h *gateHub) suspender() agent.Suspender {
-	return func(ctx context.Context, req agent.SuspendRequest) (agent.SuspendReply, error) {
-		h.mu.Lock()
-		if h.pending {
-			h.mu.Unlock()
-			return agent.SuspendReply{}, fmt.Errorf("gate already pending")
-		}
-		h.pending = true
-		ch := make(chan agent.SuspendReply, 1)
-		h.replyCh = ch
-		h.mu.Unlock()
-		if h.emitter != nil {
-			h.emitter.Emit("awaiting_input", map[string]any{"kind": string(req.Kind), "id": req.ID})
-		}
-		select {
-		case <-ctx.Done():
-			h.clear()
-			return agent.SuspendReply{}, ctx.Err()
-		case rep := <-ch:
-			h.clear()
-			if h.emitter != nil {
-				h.emitter.Emit("input_answered", map[string]any{"kind": string(req.Kind), "id": req.ID})
-			}
-			return rep, nil
-		}
-	}
-}
-
-func (h *gateHub) clear() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.pending = false
-}
-
-// hasPending reports whether a gate is currently suspended awaiting an
-// answer. Used at shutdown: a pending gate with closed stdin can never
-// be answered, so the run is unblocked by cancelling instead of draining.
-func (h *gateHub) hasPending() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pending
-}
-
-func (h *gateHub) respond(answer string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.pending {
-		return fmt.Errorf("no gate pending")
-	}
-	h.pending = false
-	h.replyCh <- agent.SuspendReply{Answer: answer}
-	return nil
-}
-
 type rpcRequest struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -177,7 +110,9 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 	}
 
 	emitter := events.New(&lockedWriter{mu: &wmu, w: out})
-	hub := newGateHub(emitter)
+	hub := api.NewGateHub(func(name string, fields map[string]any) {
+		emitter.Emit(name, fields)
+	})
 
 	var runMu sync.Mutex
 	var cancel context.CancelFunc
@@ -241,7 +176,7 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 				respond(req.ID, nil, fmt.Errorf("bad respond params: %w", err))
 				continue
 			}
-			if err := hub.respond(params.Answer); err != nil {
+			if err := hub.Respond(params.Answer); err != nil {
 				respond(req.ID, nil, err)
 				continue
 			}
@@ -267,7 +202,7 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 	// on a gate can never proceed — its answer was going to arrive on
 	// the stdin that just closed — so cancel it instead of hanging.
 	// Ctrl+C aborts everything immediately via the signal handler.
-	if hub.hasPending() {
+	if hub.HasPending() {
 		runMu.Lock()
 		if cancel != nil {
 			cancel()
@@ -290,8 +225,8 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 
 // serveRun executes one request: fresh task dir, snapshot, then direct
 // session or mission pipeline, both gated through the hub suspender.
-//onEvent carries session step events to the client.
-func serveRun(ctx context.Context, d serveDeps, hub *gateHub, emitter *events.Emitter, noteW io.Writer, onEvent func(api.Event), task string, isMission bool) (string, error) {
+// onEvent carries session step events to the client.
+func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *events.Emitter, noteW io.Writer, onEvent func(api.Event), task string, isMission bool) (string, error) {
 	if task == "" {
 		return "", fmt.Errorf("run needs a task")
 	}
@@ -304,7 +239,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *gateHub, emitter *events.Em
 		fmt.Fprintf(noteW, "snapshot: %s\n", snap.Path)
 	}
 
-	suspend := hub.suspender()
+	suspend := hub.Suspender()
 	env := roles.Env{
 		Client:          d.client,
 		WS:              d.ws,
@@ -312,7 +247,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *gateHub, emitter *events.Em
 		MaxTokens:       d.maxTokens,
 		ContextLimit:    d.contextLimit,
 		Policy:          buildPolicy(d.pure, d.allow, d.deny),
-		Gate:            permissionGate(d.autoDeny, suspend),
+		Gate:            permissionGate(d.autoDeny, suspend, d.ws),
 		BackendKind:     d.backendKind,
 		Stream:          d.stream,
 		MCPTools:        d.mcpTools,

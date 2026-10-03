@@ -32,6 +32,7 @@ import (
 	"github.com/keshon/tars/internal/session"
 	"github.com/keshon/tars/internal/snapshot"
 	"github.com/keshon/tars/internal/tools"
+	"github.com/keshon/tars/internal/tui"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -89,10 +90,11 @@ func main() {
 	planFlag := flag.Bool("plan", false, "plan mode: read-only tools, propose a plan and change nothing")
 	modeFlag := flag.String("mode", "print", "output mode: print (human-readable) or json (one JSON object per line)")
 	serveFlag := flag.Bool("serve", false, "serve JSON-RPC over stdio instead of running one task: methods run/respond/cancel, events on stdout. See docs/rpc.md")
+	tuiFlag := flag.Bool("tui", false, "fullscreen terminal UI instead of print mode: live transcript, status, and gate prompts")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
-	if task == "" && *resume == "" && *forkFlag == "" && !*serveFlag {
+	if task == "" && *resume == "" && *forkFlag == "" && !*serveFlag && !*tuiFlag {
 		log.Fatal(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
 	}
 
@@ -128,9 +130,13 @@ func main() {
 
 	// Auto-mission for multi-file tasks — the cheap alternative to hoping
 	// the reactive loop (or spontaneous delegate_task) holds a plan.
-	if !*missionMode && !*direct && task != "" && mission.SuggestMission(task) {
+	// Never under -tui: the TUI is direct-runs only in this version.
+	if !*missionMode && !*direct && !*tuiFlag && task != "" && mission.SuggestMission(task) {
 		*missionMode = true
 		note("auto-mission: task names multiple deliverable files (use -direct to skip)")
+	}
+	if *tuiFlag && *missionMode {
+		log.Fatal("-tui runs fresh direct tasks in this version (no -mission with it)")
 	}
 
 	// A -resume target whose directory holds mission.json is a mission
@@ -296,16 +302,21 @@ func main() {
 	if missionDir != "" {
 		resumeHint = fmt.Sprintf("agent -resume %s", missionDir)
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigs
-		fmt.Fprintln(os.Stderr, "\ninterrupted")
-		stop() // aborts the in-flight request and any running tool
-		bgProcs.StopAll()
-		fmt.Fprintf(os.Stderr, "resume with: %s\n", resumeHint)
-		os.Exit(130) // 128 + SIGINT, the shell convention
-	}()
+	// Not in TUI mode: bubbletea owns the terminal there, and this
+	// handler's os.Exit would skip its restore and leave the terminal
+	// in raw mode. The TUI converts Ctrl+C into run cancellation itself.
+	if !*tuiFlag {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigs
+			fmt.Fprintln(os.Stderr, "\ninterrupted")
+			stop() // aborts the in-flight request and any running tool
+			bgProcs.StopAll()
+			fmt.Fprintf(os.Stderr, "resume with: %s\n", resumeHint)
+			os.Exit(130) // 128 + SIGINT, the shell convention
+		}()
+	}
 
 	if missionDir != "" {
 		if err := runMission(ctx, missionParams{
@@ -400,13 +411,15 @@ func main() {
 		MaxTokens:       *maxTokens,
 		ContextLimit:    contextLimit,
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
-		Gate:            permissionGate(*yes, suspend),
+		Gate:            permissionGate(*yes, suspend, ws),
 		BackendKind:     *backendKind,
 		Stream:          *streamFlag && *modeFlag != "json",
 		MCPTools:        mcpTools,
 		ReasoningBudget: *thinkBudget,
 		OnDelta:         func(chunk string) { fmt.Print(chunk) },
 		OnStep:          stepPrinter(*modeFlag, emitter, *logMax),
+		OnToolResult:    toolResultPrinter(*modeFlag, emitter),
+		OnUsage:         usagePrinter(*modeFlag, emitter),
 	}
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})
@@ -419,6 +432,28 @@ func main() {
 	// dead configuration: a subagent sets SkipVerify with no
 	// VerifyOnZeroWrites, so verifyWanted is never true and the hook could
 	// not fire. Dropping it changes nothing at runtime.
+	//
+	// -tui runs the same direct task under the fullscreen renderer
+	// instead of print mode. Mission and resume stay on the CLI and
+	// -serve: the TUI is v1 and owns neither the planner pipeline nor
+	// saved transcripts yet.
+	if *tuiFlag {
+		if *planFlag || *resume != "" || len(forkHistory) > 0 {
+			log.Fatal("-tui runs fresh direct tasks in this version (no -plan, -resume or -fork with it)")
+		}
+		answer, err := tui.Run(ctx, tui.Config{
+			Env:       env,
+			Task:      task,
+			StateFile: stateFile,
+			Verify:    verify,
+		})
+		if err != nil {
+			log.Fatalf("agent failed: %v", err)
+		}
+		fmt.Println("\n=== result ===")
+		fmt.Println(answer)
+		return
+	}
 	var a *agent.Agent
 	if *planFlag {
 		a = roles.Planner(env, "plan", stateFile)
@@ -570,6 +605,12 @@ func runMission(ctx context.Context, p missionParams) error {
 			}
 			fmt.Fprintf(p.noteW, "[mission] "+format+"\n", args...)
 		},
+		OnToolResult: func(callID, result string) {
+			api.EmitToolResult(p.emitter, callID, result)
+		},
+		OnUsage: func(step int, usage llm.Usage) {
+			api.EmitUsage(p.emitter, step, usage)
+		},
 	}
 
 	report, err := runner.Run(ctx, m)
@@ -623,26 +664,31 @@ func parseRuleSpecs(spec string, eff permission.Effect) []permission.Rule {
 // permissionGate answers Ask-gated calls through the shared suspender.
 // -yes auto-denies without suspending (fail-closed for unattended runs).
 // The y/a/n mapping lives here, not in the transport: a channel-backed
-// run answers the same question from its own UI.
-func permissionGate(autoDeny bool, suspend agent.Suspender) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+// run answers the same question from its own UI. Mutating calls carry a
+// preview of what they would do, rendered from the call's own arguments
+// against the workspace as it is right now.
+func permissionGate(autoDeny bool, suspend agent.Suspender, ws *workspace.Workspace) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
 	return func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
 		if autoDeny {
 			return permission.Deny, nil
+		}
+		prompt := fmt.Sprintf("\n[permission] %s on %q - allow? [y]es once / [a]lways / [n]o", tool, resource)
+		if preview := tools.PreviewArgs(ws, tool, args); preview != "" {
+			prompt += "\n" + preview
 		}
 		rep, err := suspend(context.Background(), agent.SuspendRequest{
 			Kind:     agent.SuspendPermission,
 			Tool:     tool,
 			Resource: resource,
-			Prompt:   fmt.Sprintf("\n[permission] %s on %q - allow? [y]es once / [a]lways / [n]o", tool, resource),
+			Prompt:   prompt,
 		})
 		if err != nil {
 			return permission.Deny, err
 		}
-		switch strings.ToLower(strings.TrimSpace(rep.Answer)) {
-		case "y", "yes", "a", "always":
-			return permission.Allow, nil
-		default:
+		if eff, derr := permission.Decide(rep.Answer); derr != nil {
 			return permission.Deny, fmt.Errorf("blocked by operator (%s on %s)", tool, resource)
+		} else {
+			return eff, nil
 		}
 	}
 }
@@ -681,6 +727,24 @@ func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, 
 		}
 	}
 	return func(label string, step int, msg llm.Message) { printStep(label, step, msg, logMax) }
+}
+
+// toolResultPrinter mirrors stepPrinter for completed tool calls: JSON
+// events in json mode, historical silence in print mode.
+func toolResultPrinter(mode string, emitter *events.Emitter) func(string, string) {
+	if mode == "json" && emitter != nil {
+		return func(callID, result string) { api.EmitToolResult(emitter, callID, result) }
+	}
+	return nil
+}
+
+// usagePrinter mirrors stepPrinter for token counts: JSON events in
+// json mode, nothing in print mode (the debug log already records them).
+func usagePrinter(mode string, emitter *events.Emitter) func(int, llm.Usage) {
+	if mode == "json" && emitter != nil {
+		return func(step int, usage llm.Usage) { api.EmitUsage(emitter, step, usage) }
+	}
+	return nil
 }
 
 // discoverMCP starts each -mcp server and returns its tools and clients.

@@ -85,6 +85,21 @@ type Config struct {
 	// logging/debugging without baking observability into the loop.
 	OnStep func(step int, msg llm.Message)
 
+	// OnUsage, if set, is called with the backend-reported token counts
+	// for every model response. Separate from OnStep so existing callers
+	// keep working; observers that meter context (TUIs, JSON streams)
+	// wire this.
+	OnUsage func(step int, usage llm.Usage)
+
+	// OnToolResult, if set, is called for every completed tool call with
+	// its result text (or "error: ..." on failure). Calls in one step run
+	// concurrently when their mode allows, so this may fire from several
+	// goroutines at once — implementations must synchronize. Nil means
+	// silent, which is also the historical console behavior — tool results
+	// never printed there. Observers that render transcripts (JSON event
+	// streams, TUIs) wire this; the loop itself never prints.
+	OnToolResult func(callID, result string)
+
 	// StateFile, if set, gets the full message history written to it
 	// (as JSON) after every step. If the process dies or the run hits
 	// MaxSteps, the file on disk reflects the last completed step —
@@ -506,6 +521,12 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		if a.cfg.OnStep != nil {
 			a.cfg.OnStep(step, resp.Message)
 		}
+		// Usage rides alongside OnStep rather than inside it: changing
+		// OnStep's signature would break every caller (roles, mission,
+		// eval, CLI) for data only some observers want.
+		if a.cfg.OnUsage != nil {
+			a.cfg.OnUsage(step, resp.Usage)
+		}
 		history = append(history, resp.Message)
 		budgetNudge := a.budgetWarning(resp.Usage, &st.warnedThreshold)
 		if resp.Usage.PromptTokens > 0 {
@@ -857,6 +878,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 				ToolCallID: call.ID,
 				Content:    content,
 			})
+			if a.cfg.OnToolResult != nil {
+				a.cfg.OnToolResult(call.ID, content)
+			}
 		}
 
 		// Anything that mutated (an Exclusive call — write/patch/shell — or

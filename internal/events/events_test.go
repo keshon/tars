@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestEmit_JSONLines(t *testing.T) {
@@ -37,12 +38,28 @@ func TestNilEmitter_Drops(t *testing.T) {
 }
 
 func TestMessage_Truncates(t *testing.T) {
-	long := strings.Repeat("x", 500)
+	long := strings.Repeat("x", 5000)
 	got := Message(long)
-	if len([]rune(got)) > 401 {
-		t.Fatalf("not truncated: %d", len([]rune(got)))
+	if n := len([]rune(got)); n > messageMaxRunes+1 {
+		t.Fatalf("not truncated: %d runes", n)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatal("cut needs its marker")
 	}
 	if Message("short") != "short" {
 		t.Fatal("short text altered")
+	}
+}
+
+func TestMessage_RuneSafe(t *testing.T) {
+	// A byte cut would split the em-dash (3 bytes in UTF-8) mid-rune.
+	long := strings.Repeat("—", 5000)
+	got := Message(long)
+	body := strings.TrimSuffix(got, "…")
+	if !utf8.ValidString(body) {
+		t.Fatal("cut split a multi-byte rune")
+	}
+	if len([]rune(body)) != messageMaxRunes {
+		t.Fatalf("cut %d runes, want %d", len([]rune(body)), messageMaxRunes)
 	}
 }

@@ -38,13 +38,20 @@ The same vocabulary as `-mode json`, so one parser serves both:
 ```json
 {"seq": 1, "event": "run_start", "task": "...", "mission": false}
 {"seq": 2, "event": "step", "label": "", "step": 0, "tool_calls": [{"name": "read_file", "args": "{...}"}]}
-{"seq": 3, "event": "awaiting_input", "kind": "permission", "id": ""}
-{"seq": 4, "event": "input_answered", "kind": "permission", "id": ""}
-{"seq": 5, "event": "mission", "text": "subtask s1: check PASSED"}
-{"seq": 6, "event": "result", "answer": "..."}
+{"seq": 3, "event": "tool_result", "call_id": "call_1", "text": "..."}
+{"seq": 4, "event": "usage", "step": 0, "prompt": 2100, "completion": 120, "cached": 0}
+{"seq": 5, "event": "awaiting_input", "kind": "permission", "id": "", "tool": "read_file", "resource": ".env", "prompt": "[permission] read_file on \".env\""}
+{"seq": 6, "event": "input_answered", "kind": "permission", "id": ""}
+{"seq": 7, "event": "mission", "text": "subtask s1: check PASSED"}
+{"seq": 8, "event": "result", "answer": "..."}
 ```
 
-`kind` is `ask_user`, `permission`, or `plan_approval`. All flags that
+`kind` is `ask_user`, `permission`, or `plan_approval`. Permission gates
+also carry `tool`, `resource`, and the operator-facing `prompt` (ask
+gates carry `prompt` only), so a client can name the gated call
+without keeping gate state. A `respond` answer of `n: <note>` denies
+with the note attached: the refusal the model sees carries the
+operator's redirect. All flags that
 shape a CLI run (`-backend`, `-workspace`, `-allow`, `-mcp`, `-yes`,
 `-reasoning-budget`, …) shape `-serve` identically — it is the same
 harness behind a different front door.

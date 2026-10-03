@@ -1,0 +1,186 @@
+TUI SCREEN INVENTORY - pi (packages/tui/src + packages/coding-agent/src/modes/interactive)
+Generated from code inspection 2026-10-03. All paths absolute under D:\Projects\dev\incubator\pi\.
+
+=== SCREEN: Main Screen (regular / scrollback mode) ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\tui-main-screen.ts, D:\Projects\dev\incubator\pi\packages\tui\src\tui.ts (TuiBase, OverlayStack, Container)
+Purpose: Default chat UI that streams into terminal scrollback with differential re-render.
+Layout top-to-bottom: documentContainer (headerContainer + loadedResourcesContainer + chatContainer) / pendingMessagesContainer / statusContainer / widgetContainerAbove / editorContainer / widgetContainerBelow / footerContainer; overlays composited on top via compositeOverlays().
+Key elements/bindings: Focus is the editor (CustomEditor). Global debug key shift+ctrl+d calls TUI.onDebug. Mouse: main screen has no viewport selection/scrollbar; Container.handleMouse forwards click to children (e.g. thinking toggle, tool expand). Resize triggers fullRender(true); shrink behavior gated by getClearOnShrink().
+Data: chatContainer children built by InteractiveMode from AgentSession state (messages, tool calls, status); header from BuiltInHeader; footer from FooterComponent; overlays from TuiBase.showOverlay stack. Render state snapshot via captureRenderState()/restoreRenderState() when switching modes.
+
+=== SCREEN: Alt/Fullscreen Screen + Chat Viewport ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\tui-alt-screen.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\chat-viewport.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\tui-renderer.ts
+Purpose: Fullscreen app-owned viewport (ENTER_ALT_SCREEN 1049h) with scrollable transcript and pinned input dock.
+Layout top-to-bottom: root VStack [ transcript ScrollView (documentContainer, primary:true, follow:end, overscroll:chain) / dock VStack (pendingMessages, status, widgetsAbove, editor minSize 3, widgetsBelow, footer) ]; flash stack (AltScreenFlashContainer) and overlay layer on top; scrollbar gutter + scrollToEndIndicator ("Jump to latest message") on last row when unfollowed.
+Key elements/bindings: tui.altScreen.pageUp/pageDown (pageUp/pageDown, page minus 4 overlap), halfPageUp/halfPageDown, lineUp/lineDown, previousPrompt/nextPrompt (ctrl+up/down, OSC133 prompt zones), top/bottom (home/end), search (ctrl+shift+f), searchNext (enter/ctrl+g), searchPrevious (shift+enter/ctrl+shift+g), searchClose (escape). Mouse: wheel (x5 with Alt), drag text selection (1/2/3-click char/word/line, auto-scroll at edges), scrollbar drag/hover, OSC8 link click, right-click paste on win32, copyOnSelect via OSC52 or copySelection callback. switchTuiMode() in interactive-mode.ts moves same component tree between TuiMainScreen/TuiAltScreen.
+Data: Same containers as main screen; transcript ScrollView holds full document lines + layout boxes (getScrollViewBox/getLayoutBoxesAt); scroll state in ScrollView.scrollTop/isFollowingEnd; indicator label from tui-renderer.ts scrollToEndIndicator.
+
+=== SCREEN: Editor / Input Area ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\components\editor.ts, D:\Projects\dev\incubator\pi\packages\tui\src\editor-component.ts (EditorComponent interface), D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\custom-editor.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-editor.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-input.ts
+Purpose: Multiline prompt box with history, autocomplete, vim/emacs-ish editing, and embedded working status.
+Layout top-to-bottom: top border (CustomEditor.renderTopBorder embeds WorkingStatusIndicator + "N more" overflow label when embedWorkingStatus) / text lines with CURSOR_MARKER + hardware cursor for IME / autocomplete dropdown below cursor / bottom border.
+Key elements/bindings: tui.editor.* (cursorUp/Down/Left/Right, word left/right alt+left/right, line start/end home/end/ctrl+a/e, jump ctrl+], pageUp/pageDown, delete backspace/delete/ctrl+w/alt+d/ctrl+u/ctrl+k, yank ctrl+y, yankPop alt+y, undo ctrl+-), tui.input.newLine (shift+enter/ctrl+j), submit (enter), tab (tab), history previous/next; app.* via CustomEditor.actionHandlers: app.interrupt (escape), app.exit (ctrl+d when empty), app.tools.expand, app.thinking.toggle/cycle, app.editor.external, app.message.followUp/dequeue, app.clipboard.pasteImage, extension shortcuts via onExtensionShortcut. Mouse click focuses editor.
+Data: Text from Editor buffer + kill-ring/undo-stack; history via addToHistory(); autocomplete from CombinedAutocompleteProvider (slashCommands + templates + extension commands + skill: commands, fd for files); working indicator via setWorkingStatusIndicator(StatusIndicator); border color via getEditorTheme()/updateEditorBorderColor.
+
+=== SCREEN: Autocomplete Popup ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\autocomplete.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\editor.ts (dropdown render), D:\Projects\dev\incubator\pi\packages\tui\src\fuzzy.ts
+Purpose: Slash-command / file / model / provider completion dropdown anchored to editor cursor.
+Layout top-to-bottom: single floating list under cursor, max N rows (settings autocompleteMaxVisible), each row label + description + source tag ([u/p/t], [u:npm:...]).
+Key elements/bindings: tab cycles/completes, up/down moves, enter submits (tui.input.tab/submit, tui.select.*); trigger chars "/" and "@" plus extension triggerCharacters.
+Data: Items from CombinedAutocompleteProvider + getArgumentCompletions (model list via getModelSearchText, thinking levels, login providers); filtered by fuzzyFilter; source tags from getAutocompleteSourceTag()/prefixAutocompleteDescription() in interactive-mode.ts.
+
+=== SCREEN: Overlay System (generic modal layer) ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\tui.ts (showOverlay/hideOverlay, OverlayOptions, OverlayHandle, compositeTuiLine/compositeOverlays)
+Purpose: Centered/top-right/etc. modal stacking for all selectors and dialogs.
+Layout: base lines + per-overlay layout from OverlayOptions {width/minWidth/maxHeight, anchor center/top-right/etc., row/col, offsetX/Y, margin, visible(termW,termH), nonCapturing}; sorted by focusOrder, composited with SEGMENT_RESET separators; bounds stored for mouse hit-testing (dispatchMouseToOverlay).
+Key elements/bindings: Focus moves to overlay on show, restored to preFocus on hide; Escape / ctrl+c (tui.select.cancel) closes top overlay; switchTuiMode refuses while hasOverlayEntries. Mouse clicks outside vs inside routed by renderedOverlayLayouts.
+Data: Any Component pushed by InteractiveMode (selectors, login dialog, extension UI, search box). Focus state in TuiBase.focusedComponent + overlayFocusRestore machine.
+
+=== SCREEN: Search Overlay (alt-screen transcript find) ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\alt-screen-search.ts, D:\Projects\dev\incubator\pi\packages\tui\src\tui-alt-screen.ts (toggleSearch/navigateSearch/refreshSearch)
+Purpose: Find-in-transcript box pinned top-right in fullscreen only.
+Layout top-to-bottom: 3-row bordered box: row1 top rule, row2 Input ("Find in transcript" placeholder) + dim "n/m" or "No matches", row3 bottom rule with clickable prev/next buttons ("Up <key>" / "Down <key>", collapses to arrows when narrow).
+Key elements/bindings: toggled by tui.altScreen.search; while focused: searchNext/searchPrevious navigate, searchClose closes; buttons clickable via mouse (getNavigationDirectionAt/setHoveredNavigationDirection); typing updates query live.
+Data: AltScreenSearchIndex caches corpus (stripped transcript lines, ASCII fast path + grapheme fallback) and regex matches; current match styled by searchMatchStyle/searchCurrentMatchStyle from tui-renderer.ts; scrolls primary ScrollView to reveal selection (1/3 viewport offset).
+
+=== SCREEN: Footer Status Bar ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\footer.ts
+Purpose: 2-3 line always-visible status: cwd/branch/session + usage/cost/context + extension statuses.
+Layout top-to-bottom: line1 truncated "cwd (branch) - sessionName" (home shortened to ~); line2 left stats + right-aligned model ("up/down/R/W/CH%/cost/context% (auto) ..." left, "(provider) model - thinking - routed->model" right); line3 optional sorted extension statuses joined by space.
+Key elements/bindings: No input; read-only, truncated via truncateToWidth; colors: dim base, error>90% / warning>70% context, xp badge when experimental.
+Data: Session from AgentSession.state + sessionManager entries (usage totals via createUsageTotals/addUsageToTotals, context via session.getContextUsage(), model/thinking/routedModel), git branch + provider count + extension statuses from ReadonlyFooterDataProvider/FooterDataProvider; auto-compact flag via setAutoCompactEnabled.
+
+=== SCREEN: Diff Rendering (inline in transcript/tools) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\diff.ts
+Purpose: Pure function rendering unified diff text with intra-line highlighting; used inside tool result renderers.
+Layout: one output line per diff line, in order: context " nnn text", removed "-nnn text", added "+nnn text"; consecutive -/+ pairs with 1:1 pairing get word-level inverse segments.
+Key elements/bindings: No input; tabs expanded to 3 spaces; colors via theme.fg toolDiffContext/Removed/Added + theme.inverse for changed words.
+Data: Input diffText string from edit/write tool renderers (core/tools/renderers); parsed by parseDiffLine() regex; word diff via diff package diffWords().
+
+=== SCREEN: Tool Execution Display ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\tool-execution.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\box.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\image.ts
+Purpose: Per-tool-call card in transcript showing call args then streaming/final result, expandable.
+Layout top-to-bottom: Spacer(1) / Box or self-render container (call renderer output + result renderer output, each wrapped in clickable MouseRegion) / Spacer + Image blocks (kitty/iterm, maxWidthCells 60) below.
+Key elements/bindings: Left-click result region toggles expanded (setExpanded); app.tools.expand toggles all (InteractiveMode); fallback preview shows FALLBACK_PREVIEW_LINES=10 + "... (N more lines, <key> to expand)".
+Data: Args/result from AgentSession tool events (pendingTools map toolCallId->component); renderers from ToolDefinition.renderCall/renderResult (withBuiltInRenderers) + ToolRenderContext {args, cwd, executionStarted, argsComplete, isPartial, expanded, showImages, isError}; bg color toolPendingBg/toolErrorBg/toolSuccessBg; text fallback via formatToolCallWithArgs/getRenderedTextOutput.
+
+=== SCREEN: Bash Execution Display (! and !! mode) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\bash-execution.ts
+Purpose: Streaming shell output card for `!`/`!!` editor bash mode, kept in pending area then moved to chat.
+Layout top-to-bottom: Spacer / DynamicBorder top / contentContainer ($ command header + live output lines + Loader "Running... (esc to cancel)" or final status) / DynamicBorder bottom.
+Key elements/bindings: tui.select.cancel cancels running command; app.tools.expand toggles PREVIEW_LINES=20 visual truncation (truncateToVisualLines width-aware); no other keys.
+Data: Command + chunks from tui-renderer/executeBashCommand (ANSI stripped, binary sanitized); truncation via truncateTail (DEFAULT_MAX_LINES/MAX_BYTES) + fullOutputPath notice; exitCode/cancelled/error status; border color bashMode vs dim when excludeFromContext (!!).
+
+=== SCREEN: Trust / Permission Selector ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\trust-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-selector.ts (generic permission/confirm dialogs with timeout)
+Purpose: Project-trust gate ("Project trust" prompt) and timed yes/no permission prompts. No file named permission-selector exists; these two cover it.
+Layout (trust): DynamicBorder / "Project trust" title / cwd muted / "Saved decision: ..." / "Current session: ..." / option list (prefix -> selected, check saved) / hints / DynamicBorder. Layout (extension/generic): DynamicBorder / title (+countdown "(Ns)") / optional description / option list / hints / DynamicBorder.
+Key elements/bindings: trust: up/down or k/j navigate, tui.select.confirm/enter save, tui.select.cancel cancel. Extension selector: up/down navigate, enter select, esc cancel, optional app.tools.expand hook; CountdownTimer auto-cancels on timeout.
+Data: Trust options from getProjectTrustOptions(cwd) + ProjectTrustStore entry {decision,path}; callbacks onSelect({trusted,updates})/onCancel. Extension selector options+callbacks supplied by AgentSession/extension host.
+
+=== SCREEN: Model Selector (+ scoped variant) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\model-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\scoped-models-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\model-search.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\model-catalog-refresh.ts
+Purpose: Fuzzy model picker with all/scoped scope toggle and background catalog refresh.
+Layout top-to-bottom: DynamicBorder / scope line ("Scope: all | scoped", or warning "Only showing models from configured providers...") + scope hint / Spacer / search Input / Spacer / list (max 10, cursor ->, current check, "id [provider] - default", detail "Model Name:" + refresh status) / hints ("enter select - <key> set default - esc cancel") / DynamicBorder.
+Key elements/bindings: tui.input.tab toggles all/scoped; up/down wraps; enter selects (or first filtered via search submit); esc cancels; app.models.save selects-as-default; other keys go to search Input (fuzzyFilter via getModelSelectorSearchText).
+Data: Snapshot from ModelRuntime.getAvailableSnapshot() sorted current-first/default-second/provider; scopedModels prop; default model ref; refresh via refreshModelCatalogs() with 15s abort + errors shown inline.
+
+=== SCREEN: Session Selector (resume/fork list) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\session-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\session-selector-search.ts
+Purpose: Resume/switch sessions with scope/sort/name filters, delete, rename.
+Layout top-to-bottom: Spacer / accent DynamicBorder / Spacer / header (title "Resume Session (Current Folder|All)" left, scope + Name + Sort right; hint lines: tab/regex/"phrase" + sort/named/delete/path/rename or delete-confirm/error status) / search Input + blank / session rows (cursor >, tree prefix |-/L-, name/firstMessage, right "cwd count age", selectedBg highlight) + "(n/m)" scroller / Spacer / accent DynamicBorder. Rename mode swaps body for "Rename Session" + Input + save/cancel hints.
+Key elements/bindings: tab toggle scope current/all; app.session.toggleSort cycles threaded/recent/relevance; app.session.toggleNamedFilter all/named; app.session.delete (ctrl+d alias) + enter confirm / esc cancel delete; app.session.togglePath toggles path column; app.session.rename opens rename Input (enter save, esc cancel); up/down + pageUp/pageDown move; enter selects; esc cancels; typing filters (regex re:, "exact").
+Data: SessionInfo[] from current/all SessionsLoader callbacks with progress (loaded/total) + abort; tree built by buildSessionTree/flattenSessionTree on parentSessionPath; current session highlighted, protected from delete; delete via trash CLI fallback unlink.
+
+=== SCREEN: Settings Selector + Submenus ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\settings-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\settings-submenu.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\settings-list.ts
+Purpose: Scrollable settings list with inline cycling and drill-in submenus (theme auto/single, per-model thinking, warnings).
+Layout top-to-bottom: DynamicBorder / SettingsList rows (label + currentValue + description, 10 visible, searchable via enableSearch) / DynamicBorder; submenu replaces content (SelectSubmenu single list; SteppedSubmenu model->level wizard; ThemeSubmenu single/automatic with light/dark pickers; WarningSettingsSubmenu toggles).
+Key elements/bindings: up/down + pageUp/pageDown move, left/right or enter cycle/open submenu, esc backs out/cancels (handled by SettingsList/SelectSubmenu/SteppedSubmenu); theme preview fires onSelectionChange.
+Data: SettingsConfig snapshot (autoCompact, images, skill commands, steering/followUp, transport, timeouts, thinking, theme, paddings, tuiMode, fullscreen opts, warnings...) + SettingsCallbacks onXChange; theme lists from getAvailableThemes(); thinking levels via getSupportedThinkingLevels(); timeout choices HTTP_IDLE_TIMEOUT_CHOICES.
+
+=== SCREEN: Session Tree Selector (/tree) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\tree-selector.ts
+Purpose: ASCII branch navigator over session entry DAG with filters, fold, search, labels, copy.
+Layout top-to-bottom: Spacer / DynamicBorder / "Session Tree" title / wrapped help line (move/page/branch/copy/label/filters/cycle) / "Type to search: query" line / DynamicBorder / Spacer / tree rows (cursor >, gutter | + connectors |-/L- with fold [+]/[-], active-path -, [label] + timestamp, "user:/assistant:/[read:]/[bash:]/[compaction:]" colored content, selectedBg) + "(n/m) [filter]" / label Input when editing ("Label (empty to remove):" + Input + save/cancel) / Spacer / DynamicBorder.
+Key elements/bindings: up/down move (wrap), left/right page, app.tree.foldOrUp/unfoldOrDown fold or jump to branch segment start, app.message.copy copies entry text, app.tree.editLabel opens LabelInput (enter save/esc cancel), app.tree.toggleLabelTimestamp, filters app.tree.filter.default/noTools/userOnly/labeledOnly/all + cycleForward/Backward (default/no-tools/user-only/labeled-only/all), backspace deletes search char, esc clears search then cancels; typing appends searchQuery.
+Data: SessionTreeNode[] from sessionManager tree + currentLeafId; active path set; tool names resolved via toolCallMap from assistant blocks; entry text via extractContent (200-char preview) / getEntryCopyText full.
+
+=== SCREEN: Config/Resources Selector (/config) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\config-selector.ts
+Purpose: Enable/disable extensions/skills/prompts/themes in global vs project scope with search.
+Layout top-to-bottom: Spacer / DynamicBorder / Spacer / header (title "Global|Project Local Resources" + hints "tab switch mode - space toggle/cycle - esc close" + scope path line) / search Input + blank / grouped rows (group header bold/accent, subgroup muted, items ">     [x]/[ ]/[+]/[-] name + suffix") + "(n/m)" / Spacer / DynamicBorder.
+Key elements/bindings: up/down (items only), pageUp/pageDown, tab switch global/project, space or enter toggles (project cycles inherit/load/unload), esc closes (tui.select.cancel), ctrl+c exits; typing filters by name/type/path.
+Data: ScopedResolvedPaths {global,project} grouped by origin/scope/source via buildGroups(); writes via SettingsManager setExtensionPaths/setProject* / setPackages; inherited dimming from global map.
+
+=== SCREEN: Thinking Level Selector ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\thinking-selector.ts
+Purpose: Pick session thinking level with fuzzy search.
+Layout top-to-bottom: DynamicBorder / Spacer / "Thinking Level" / Spacer / cycle hint / Spacer / search Input / Spacer / SelectList (check current, "level + description - default") / Spacer / hints ("enter select - <key> set default - esc cancel") / DynamicBorder.
+Key elements/bindings: up/down/enter/esc via SelectList (tui.select.*); app.thinking.save saves-as-default; other keys filter via fuzzyFilter on "value description".
+Data: availableLevels + currentLevel + defaultThinkingLevel from session; descriptions off/minimal/low/medium/high/xhigh/max with token hints; callbacks onSelect/onSelectAsDefault/onCancel.
+
+=== SCREEN: Theme Selector (quick) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\theme-selector.ts
+Purpose: Lightweight theme picker with live preview (full theme UI lives in Settings submenu).
+Layout top-to-bottom: DynamicBorder / SelectList (theme names, "(current)" description, 10 visible) / DynamicBorder.
+Key elements/bindings: SelectList up/down/pageUp/pageDown/enter/esc; highlight change fires onPreview.
+Data: getAvailableThemes() + currentTheme; onSelect/onCancel/onPreview callbacks; theme applied via InteractiveThemeController.
+
+=== SCREEN: Auth Flow (provider selector + login dialog + URL) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\oauth-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\login-dialog.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\auth-url.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\radius-login-selector.ts
+Purpose: /login and /logout: choose provider/auth-type, then complete OAuth/API-key steps.
+Layout (selector): DynamicBorder / Spacer / "Select provider to configure/logout:" / Spacer / search Input / Spacer / provider rows (-> selected accent, "name [subscription|account|API key] check configured/env:.../not configured") + "(n/m)" / Spacer / DynamicBorder. Layout (dialog): DynamicBorder / "Login to X" title / contentContainer (AuthUrl link + instructions | device-code URL + code | prompt text + Input + hints | progress/waiting lines) / DynamicBorder.
+Key elements/bindings: selector: up/down, enter select, esc cancel, typing fuzzy-filters. Dialog: esc cancels (aborts AbortController, rejects pending promise), enter submits Input, app.message.copy copies auth URL.
+Data: AuthSelectorProvider[] {id,name,authType,method,status,subscription} from model runtime/auth checks; login callbacks onSelect(providerId,authType)/onComplete; browser opened via openBrowser(); manual/device-code/prompt flows via showAuth/showDeviceCode/showManualInput/showPrompt/showWaiting/showProgress/showInfo/showDetails.
+
+=== SCREEN: Transcript Message Views (user / assistant / thinking / extras) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\user-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\assistant-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\skill-invocation-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\compaction-summary-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\branch-summary-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\custom-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\mermaid.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\markdown-transform.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\markdown.ts
+Purpose: Rendered chat bubbles: user (bg tint), assistant (plain markdown + collapsible italic thinking), plus skill/compaction/branch/custom notices.
+Layout top-to-bottom (in chatContainer order): Spacer(1) / Markdown body (userMessageBg/userMessageText; assistant no bg; thinking italic thinkingText or collapsed "Thinking..." Text) / error/aborted notice Text when stopReason error/aborted/length. OSC133 zone markers (A/B/C) wrap first/last lines for prompt jumping.
+Key elements/bindings: Left-click thinking block toggles hidden/shown (MouseRegion); app.thinking.toggle toggles globally; app.tools.expand toggles tool cards (not text). No scrolling inside; scroll via viewport.
+Data: AgentMessage content blocks {text, thinking, toolCall} from AgentSession streaming (streamingComponent.updateContent); hideThinkingBlock + hiddenThinkingLabel + outputPad from settings; markdown theme from getMarkdownTheme(); mermaid blocks transformed by createMermaidMarkdownTransformer per mermaidRenderingMode.
+
+=== SCREEN: Status / Working / Retry / Compaction Indicators ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\status-indicator.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\loader.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\cancellable-loader.ts, D:\Projects\dev\incubator\pi\packages\tui\src\components\bordered-loader.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\countdown-timer.ts
+Purpose: statusContainer line + editor-border spinner showing working/retry/compaction/branch activity.
+Layout: statusContainer row (Loader spinner + message) or IdleStatus (two blank lines); when embedded, same text rendered inside editor top border via renderInBorder()/renderSpinnerInBorder().
+Key elements/bindings: No direct keys; cancel hint shows app.interrupt key text ("(esc to cancel)"); Loader ticks via ui.requestRender; CountdownTimer drives retry countdown + auto-cancel dialogs.
+Data: StatusIndicator kind working/retry/compaction/branchSummary from AgentSession events (isStreaming/isCompacting, retry attempt/max/delayMs, compaction reason manual/threshold/overflow); WorkingIndicatorOptions custom spinner; IdleStatus when idle.
+
+=== SCREEN: Fork-from-message Selector ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\user-message-selector.ts
+Purpose: Choose a past user message to fork/branch a new session from.
+Layout top-to-bottom: Spacer / "Fork from Message" bold / muted explainer / Spacer / DynamicBorder / Spacer / message rows (cursor > + single-line truncated text + "Message n of m" muted + blank separator) + "(n/m)" / Spacer / DynamicBorder.
+Key elements/bindings: up/down wraps, enter selects (branch), esc cancels (tui.select.*); auto-cancels after 100ms if empty.
+Data: UserMessageItem[] {id,text} from session entries; onSelect(entryId)/onCancel callbacks.
+
+=== SCREEN: First-Time Setup Wizard ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\first-time-setup.ts
+Purpose: Two-step onboarding overlay on first run: theme then analytics.
+Layout top-to-bottom: DynamicBorder / Spacer / logo lines / Spacer / "Welcome to pi..." / Spacer / step body ("Pick a theme." + 3 options | analytics question + explainer + 2 options) / Spacer / hints (up/down navigate - enter continue/finish - esc skip) / Spacer / DynamicBorder.
+Key elements/bindings: up/down or k/j move, enter advances/submits, esc skips (tui.select.up/down/confirm/cancel).
+Data: THEME_OPTIONS (system/dark/light) + ANALYTICS_OPTIONS; onThemePreview per move; onSubmit({theme,shareAnalytics})/onCancel.
+
+=== SCREEN: Extension / Custom UI Slots ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-selector.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-input.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\extension-editor.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\custom-entry.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\custom-message.ts, D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\components\show-images-selector.ts
+Purpose: Extension-hosted dialogs/widgets above/below editor + custom transcript entries and image toggles.
+Layout: widgets in widgetContainerAbove/Below; dialogs as overlays (same DynamicBorder/Spacer/Title/Input/List/Hints chrome as ExtensionSelector); custom entries render inline like assistant messages.
+Key elements/bindings: Same as generic selector (up/down/enter/esc, optional timeout countdown in title, optional onToggleToolsExpanded); inputs delegate to wrapped Input/Editor handleInput.
+Data: Title/options/description/timeout + onSelect/onCancel from ExtensionUIContext (dialogs) and widget Components from extensions; custom entries from session custom entry types.
+
+=== SCREEN: External Editor Handoff (not a TUI screen) ===
+Files: D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\external-editor.ts
+Purpose: Suspends TUI, shells out to $EDITOR on a temp prompt.md file, then restores text.
+Layout: TUI stopped; stdout prints "Launching external editor: <cmd> / Pi will resume when the editor exits."; editor runs with stdio inherit; temp dir pi-editor-*/prompt.md removed afterwards.
+Key elements/bindings: Triggered by app.editor.external key; all keys go to external program until exit; non-zero exit = failed (keep old text).
+Data: Current editor content in, file content out (BOM stripped, trailing newline trimmed).
+
+=== SCREEN: Debug / Crash Views ===
+Files: D:\Projects\dev\incubator\pi\packages\tui\src\tui.ts (TUI.onDebug, shift+ctrl+d), D:\Projects\dev\incubator\pi\packages\tui\src\tui-main-screen.ts (PI_TUI_DEBUG, PI_TUI_DEBUG_REDRAW, pi-tui-crash.log, pi-tui-debug.log), D:\Projects\dev\incubator\pi\packages\coding-agent\src\modes\interactive\bug-report.ts
+Purpose: Developer diagnostics: render logging, width-overflow crash dumps, and /bug reporter.
+Layout: No dedicated screen; onDebug callback hook (InteractiveMode preserves it across switchTuiMode); file outputs: /tmp/tui/render-<ts>.log per frame (firstChanged/viewport/cursor/newLines), <logDir>/pi-tui-debug.log fullRender reasons, <logDir>/pi-tui-crash.log all lines when a rendered line exceeds width (then throws with truncation guidance).
+Key elements/bindings: shift+ctrl+d fires onDebug before focused-component input; env PI_TUI_DEBUG=1 enables per-frame dumps, PI_TUI_DEBUG_REDRAW=1 enables redraw log.
+Data: Width/height, previousLines/newLines, cursorPos, viewportTop from renderer internals; crash hint names extension frames via formatCrashExtensionHint(); bug report attaches takeUnnotifiedCrash() payload.
+
+END OF INVENTORY

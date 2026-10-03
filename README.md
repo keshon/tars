@@ -7,7 +7,9 @@ verified by running a command or reading a file, repeats are refused as
 errors rather than nudged, and step budgets bound every run.
 
 Dependencies are the standard library plus `golang.org/x/sys` (Windows job
-objects have no standard-library equivalent). See `go.mod`.
+objects have no standard-library equivalent) and, for `-tui` only, the
+Charm terminal stack (Bubble Tea, Lipgloss, Bubbles — pure Go, no cgo).
+The agent loop, tools, and backends stay dependency-free. See `go.mod`.
 
 ## Requirements
 
@@ -25,7 +27,8 @@ Direct mode handles single-file and question-shaped tasks. Bigger work gets
 `-mission`: an upfront plan you approve, then one fresh-context worker per
 subtask, each verified mechanically. Mission auto-enables when the task
 names two or more deliverable files. `-plan` proposes without touching
-anything; `-mode json` emits machine-readable step events.
+anything; `-mode json` emits machine-readable step events; `-tui` renders
+the same run fullscreen with live transcript and inline gate prompts.
 
 All flags are in [docs/cli.md](docs/cli.md). Remote-provider keys resolve
 from `-api-key`, `-api-key-env`, or environment (`TARS_API_KEY`,

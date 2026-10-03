@@ -77,6 +77,14 @@ type Env struct {
 	// each wrapped it slightly differently.
 	OnStep func(label string, step int, msg llm.Message)
 
+	// OnToolResult, if set, receives every completed tool call result.
+	// See agent.Config.OnToolResult. Nil keeps the historical silence.
+	OnToolResult func(callID, result string)
+
+	// OnUsage, if set, receives backend token counts per step.
+	// See agent.Config.OnUsage.
+	OnUsage func(step int, usage llm.Usage)
+
 	// StateDir, when set, is where transcripts go; a role's stateFile
 	// argument is resolved against it. Empty means the caller passes
 	// whole paths, or none at all.
@@ -127,6 +135,8 @@ func Planner(e Env, label, stateFile string) *agent.Agent {
 		StateFile:       e.statePath(stateFile),
 		SkipVerify:      true,
 		OnStep:          e.onStep(label),
+		OnToolResult:    e.OnToolResult,
+		OnUsage:         e.OnUsage,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 	})
@@ -159,6 +169,8 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 		SkipVerify:      true,
 		StateFile:       e.statePath(stateFile),
 		OnStep:          e.onStep(label),
+		OnToolResult:    e.OnToolResult,
+		OnUsage:         e.OnUsage,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 	})
@@ -179,6 +191,8 @@ func Subagent(e Env, role string) *agent.Agent {
 		SkipVerify:      true,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
+		OnToolResult:    e.OnToolResult,
+		OnUsage:         e.OnUsage,
 	})
 }
 
@@ -202,6 +216,8 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 		VerifyOnZeroWrites: expectsWrites,
 		StateFile:          e.statePath(stateFile),
 		OnStep:             e.onStep(label),
+		OnToolResult:       e.OnToolResult,
+		OnUsage:            e.OnUsage,
 		Policy:             e.policy(),
 		BeforeToolCall:     e.gate(),
 	})
@@ -241,6 +257,8 @@ func Interactive(e Env, label, stateFile string,
 		StateFile:       e.statePath(stateFile),
 		Verify:          verify,
 		OnStep:          e.onStep(label),
+		OnToolResult:    e.OnToolResult,
+		OnUsage:         e.OnUsage,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
 		Stream:          e.Stream,

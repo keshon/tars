@@ -65,17 +65,26 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 	if out != "done" {
 		t.Fatalf("result = %q", out)
 	}
-	// Framing is the transport's job: Session streams steps only. (The
-	// stub answers "done" to everything including the verify round, so
-	// more than one step event is normal here.)
+	// Framing is the transport's job: Session streams steps, results,
+	// and usage — nothing else. (The stub answers "done" to everything
+	// including the verify round, so more than one step event is normal
+	// here. The stub reports zero usage, so usage events carry zeros.)
+	seenStep, seenUsage := false, false
 	for _, ev := range events {
-		if ev.Name != "step" {
-			t.Fatalf("events = %+v, want steps only", events)
+		switch ev.Name {
+		case "step":
+			seenStep = true
+		case "usage":
+			seenUsage = true
+			if _, ok := ev.Fields["prompt"]; !ok {
+				t.Fatalf("usage without prompt: %+v", ev)
+			}
+		default:
+			t.Fatalf("events = %+v, want steps and usage only", events)
 		}
 	}
-	last := events[len(events)-1]
-	if last.Fields["text"] != "done" {
-		t.Fatalf("fields = %+v", last.Fields)
+	if !seenStep || !seenUsage {
+		t.Fatalf("steps and usage both expected: %+v", events)
 	}
 }
 
@@ -180,5 +189,24 @@ func TestEmitStep_MatchesEmitterEncoding(t *testing.T) {
 	call, ok := calls[0].(map[string]any)
 	if !ok || call["name"] != "read_file" {
 		t.Fatalf("call = %v", calls[0])
+	}
+}
+
+func TestEmitUsage_RoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	EmitUsage(events.New(&buf), 4, llm.Usage{PromptTokens: 12400, CompletionTokens: 300, CachedTokens: 2000})
+
+	var got []Event
+	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "usage" {
+		t.Fatalf("events = %+v", got)
+	}
+	fields := got[0].Fields
+	if fields["step"] != float64(4) || fields["prompt"] != float64(12400) ||
+		fields["completion"] != float64(300) || fields["cached"] != float64(2000) {
+		t.Fatalf("fields = %+v", fields)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
@@ -252,48 +251,6 @@ type hangForever struct{}
 func (hangForever) Chat(ctx context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
 	<-ctx.Done()
 	return llm.ChatResponse{}, ctx.Err()
-}
-
-func TestGateHub_SingleFlight(t *testing.T) {
-	hub := newGateHub(nil)
-	got := make(chan agent.SuspendReply, 1)
-	go func() {
-		rep, err := hub.suspender()(context.Background(), agent.SuspendRequest{Kind: agent.SuspendAsk})
-		if err != nil {
-			return
-		}
-		got <- rep
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		hub.mu.Lock()
-		pending := hub.pending
-		hub.mu.Unlock()
-		if pending || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// A second suspension while one is open is a bug, not a queue.
-	if _, err := hub.suspender()(context.Background(), agent.SuspendRequest{}); err == nil {
-		t.Fatal("expected double-suspend error")
-	}
-	// No gate pending without a suspender waiting.
-	fresh := newGateHub(nil)
-	if err := fresh.respond("x"); err == nil {
-		t.Fatal("expected no-gate-pending error")
-	}
-	if err := hub.respond("answer"); err != nil {
-		t.Fatalf("respond: %v", err)
-	}
-	select {
-	case rep := <-got:
-		if rep.Answer != "answer" {
-			t.Fatalf("reply = %+v", rep)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("suspender never woke")
-	}
 }
 
 func TestServe_EOFCancelsGatedRun(t *testing.T) {
