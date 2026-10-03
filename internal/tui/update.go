@@ -186,6 +186,14 @@ func (m *model) handleEvent(ev api.Event) {
 		if !m.attachResult(callID, text) {
 			m.appendBlock(resultBlock(text))
 		}
+	case "finding":
+		rule, _ := ev.Fields["rule"].(string)
+		path, _ := ev.Fields["path"].(string)
+		line, _ := ev.Fields["line"].(float64)
+		summary, _ := ev.Fields["summary"].(string)
+		if rule != "" {
+			m.appendBlock(findingBlock(rule, path, int(line), summary))
+		}
 	case "usage":
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {
 			m.tokens = int(p)
@@ -244,9 +252,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Type == tea.KeyCtrlG {
-		// Global: thinking expand/collapse works in every state and
-		// never reaches the input (the textarea binds no ctrl+g).
-		m.showThink = !m.showThink
+		// Global: compact/full view works in every state and never
+		// reaches the input (the textarea binds no ctrl+g). Collapses
+		// thinking summaries and long tool results alike.
+		m.compact = !m.compact
 		m.refreshContent()
 		return m, nil
 	}

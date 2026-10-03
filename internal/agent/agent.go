@@ -193,6 +193,12 @@ type Agent struct {
 	report RunReport
 }
 
+// MutatedPaths returns the workspace paths mutated by the last run,
+// for session-end sweeps. Empty when nothing mutated.
+func (a *Agent) MutatedPaths() []string {
+	return a.report.MutatedPaths
+}
+
 // RunReport is what a harness can learn about a finished run without
 // trusting anything the model said about itself: which files its own
 // mutating tool calls actually touched, how many steps it took, what the

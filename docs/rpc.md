@@ -44,6 +44,7 @@ The same vocabulary as `-mode json`, so one parser serves both:
 {"seq": 6, "event": "input_answered", "kind": "permission", "id": ""}
 {"seq": 7, "event": "mission", "text": "subtask s1: check PASSED"}
 {"seq": 8, "event": "result", "answer": "..."}
+{"seq": 9, "event": "finding", "scope": "per-edit", "rule": "gofmt", "path": "a.go", "line": 3, "summary": "not gofmt-clean"}
 ```
 
 `kind` is `ask_user`, `permission`, or `plan_approval`. Permission gates
@@ -51,7 +52,9 @@ also carry `tool`, `resource`, and the operator-facing `prompt` (ask
 gates carry `prompt` only), so a client can name the gated call
 without keeping gate state. A `respond` answer of `n: <note>` denies
 with the note attached: the refusal the model sees carries the
-operator's redirect. All flags that
+operator's redirect. Deterministic post-write checks surface as
+`finding` events (`scope` per-edit or session-end); they are
+report-only, never gates. All flags that
 shape a CLI run (`-backend`, `-workspace`, `-allow`, `-mcp`, `-yes`,
 `-reasoning-budget`, …) shape `-serve` identically — it is the same
 harness behind a different front door.

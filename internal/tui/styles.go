@@ -14,6 +14,7 @@ type styles struct {
 	user   lipgloss.Style
 	think  lipgloss.Style
 	err    lipgloss.Style
+	warn   lipgloss.Style
 }
 
 func defaultStyles() styles {
@@ -27,5 +28,6 @@ func defaultStyles() styles {
 		user:   lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true),
 		think:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true),
 		err:    lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
+		warn:   lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 	}
 }

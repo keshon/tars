@@ -138,6 +138,8 @@ func threadGlyph(r role, st styles) string {
 		return st.dim.Render("-")
 	case roleError:
 		return st.err.Render("!")
+	case roleWarning:
+		return st.warn.Render("»")
 	default:
 		return " "
 	}

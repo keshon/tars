@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +212,75 @@ func TestEmitStep_IncludesCallID(t *testing.T) {
 	if !ok || call["id"] != "c9" {
 		t.Fatalf("call = %v", calls[0])
 	}
+}
+
+func TestFindingDrain_DedupesAcrossTiers(t *testing.T) {
+	var buf bytes.Buffer
+	em := events.New(&buf)
+	prev := 0
+	drain := newFindingDrain(em, func(string, string, int, string) { prev++ })
+	drain.reportPerEdit("gofmt", "a.go", 3, "not gofmt-clean")
+	dir := t.TempDir()
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\nfunc A()  {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The session-end sweep sees the same dirty file: reported once.
+	drain.sweep(ws, []string{"a.go"})
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("not json: %v", err)
+		}
+		if rec["event"] == "finding" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d finding events, want exactly 1 (cross-tier dedupe)", n)
+	}
+	if prev != 1 {
+		t.Fatalf("prev chained %d times, want 1", prev)
+	}
+}
+
+func TestFindingDrain_SweepBound(t *testing.T) {
+	var buf bytes.Buffer
+	drain := newFindingDrain(events.New(&buf), nil)
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, 70)
+	for i := 0; i < 70; i++ {
+		paths = append(paths, "f.go")
+	}
+	drain.sweep(ws, paths)
+	if !strings.Contains(buf.String(), "sweep-skipped") {
+		t.Fatalf("bound must announce itself: %s", buf.String())
+	}
+}
+
+func TestEmitFinding_RoundTrips(t *testing.T) {
+	var buf bytes.Buffer
+	EmitFinding(events.New(&buf), "per-edit", "gofmt", "a.go", 3, "not gofmt-clean")
+	var got []Event
+	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "finding" {
+		t.Fatalf("events = %+v", got)
+	}
+	fields := got[0].Fields
+	if fields["scope"] != "per-edit" || fields["rule"] != "gofmt" || fields["line"] != float64(3) {
+		t.Fatalf("fields = %v", fields)
+	}
+	EmitFinding(nil, "x", "y", "z", 0, "w") // nil-safe
 }
 
 func TestEmitUsage_RoundTrips(t *testing.T) {

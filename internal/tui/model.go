@@ -108,10 +108,11 @@ type model struct {
 	// while the user hasn't scrolled away. Any manual scroll re-arms
 	// on reaching the bottom; End always re-arms.
 	follow bool
-	// showThink expands collapsed thinking blocks. Toggled by the
-	// think key (see thinkToggleHint); render-only, history keeps
-	// the full text either way.
-	showThink bool
+	// compact collapses verbose blocks: thinking summaries and long
+	// tool results (10-line preview). Toggled by the think key (see
+	// thinkToggleHint); render-only, history keeps everything either
+	// way. On by default: details on demand, never a flood.
+	compact bool
 	// overlays is the overlay stack (overlay.go); gates are its first
 	// client. gstage/gateTool/gateResource describe the open permission
 	// gate; note is the reject-note input; always remembers run-local
@@ -150,15 +151,17 @@ func gateEvent(name string, fields map[string]any) api.Event {
 }
 
 // withoutPrintHooks strips the CLI print hooks from Env for fullscreen
-// runs: stepPrinter-style callbacks write to stdout, racing the
-// alt-screen renderer (stale status rows plus leaked "[step N]" lines
-// that heal only on resize). The TUI reads the event stream, never the
-// hooks; no-ops keep every call site safe without auditing each one.
+// runs: stepPrinter-style callbacks (and the finding printer) write to
+// stdout, racing the alt-screen renderer (stale status rows plus leaked
+// "[step N]" lines that heal only on resize). The TUI reads the event
+// stream, never the hooks; no-ops keep every call site safe without
+// auditing each one.
 func withoutPrintHooks(env roles.Env) roles.Env {
 	env.OnDelta = func(string) {}
 	env.OnStep = func(string, int, llm.Message) {}
 	env.OnToolResult = func(string, string) {}
 	env.OnUsage = func(int, llm.Usage) {}
+	env.OnFinding = nil
 	return env
 }
 
@@ -181,6 +184,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		styles:    defaultStyles(),
 		limit:     cfg.Env.ContextLimit,
 		follow:    true,
+		compact:   true,
 		stateFile: cfg.StateFile,
 		note:      newNote(),
 		always:    map[[2]string]bool{},

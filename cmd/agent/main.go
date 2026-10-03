@@ -424,6 +424,7 @@ func main() {
 		OnStep:          stepPrinter(*modeFlag, emitter, *logMax),
 		OnToolResult:    toolResultPrinter(*modeFlag, emitter),
 		OnUsage:         usagePrinter(*modeFlag, emitter),
+		OnFinding:       findingPrinter(*modeFlag),
 	}
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})
@@ -749,6 +750,17 @@ func usagePrinter(mode string, emitter *events.Emitter) func(int, llm.Usage) {
 		return func(step int, usage llm.Usage) { api.EmitUsage(emitter, step, usage) }
 	}
 	return nil
+}
+
+// findingPrinter shows post-write check findings in print mode; json
+// mode carries them as finding events via the session emitter.
+func findingPrinter(mode string) func(rule, path string, line int, summary string) {
+	if mode == "json" {
+		return nil
+	}
+	return func(rule, path string, line int, summary string) {
+		fmt.Printf("check %s %s:%d %s\n", rule, path, line, summary)
+	}
 }
 
 // discoverMCP starts each -mcp server and returns its tools and clients.

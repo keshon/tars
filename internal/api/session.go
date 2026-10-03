@@ -13,12 +13,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/checks"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/roles"
+	"github.com/keshon/tars/internal/workspace"
 )
 
 // Event is one decoded JSONL event: the name plus its fields, including
@@ -110,8 +113,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			prevOnUsage(step, usage)
 		}
 	}
+	drain := newFindingDrain(emitter, env.OnFinding)
+	env.OnFinding = drain.reportPerEdit
 	a := roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
-	return a.Run(ctx, s.cfg.Task)
+	ans, err := a.Run(ctx, s.cfg.Task)
+	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
+	return ans, err
 }
 
 // asker builds the ask_user implementation over the session suspender,
@@ -161,8 +168,12 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 			prevOnUsage(step, usage)
 		}
 	}
+	drain := newFindingDrain(emitter, env.OnFinding)
+	env.OnFinding = drain.reportPerEdit
 	a := roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
-	return a.Resume(ctx, history, note)
+	ans, err := a.Resume(ctx, history, note)
+	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
+	return ans, err
 }
 
 // callbackWriter decodes each JSONL line back into an OnEvent call,
@@ -237,6 +248,91 @@ func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message) 
 		ev["tool_calls"] = calls
 	}
 	emitter.Emit("step", ev)
+}
+
+// EmitFinding writes one deterministic-check finding as a JSONL event.
+// Scope is "per-edit" (post-write scan) or "session-end" (deep sweep).
+func EmitFinding(emitter *events.Emitter, scope, rule, path string, line int, summary string) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit("finding", map[string]any{
+		"scope": scope, "rule": rule, "path": path, "line": line, "summary": summary,
+	})
+}
+
+// maxSweepFiles bounds the session-end deep pass; maxSweepFindings
+// bounds its noise. Both overflow as named marker findings, never
+// silent drops.
+const (
+	maxSweepFiles    = 64
+	maxSweepFindings = 20
+)
+
+// findingDrain funnels deterministic-check findings into finding events
+// with cross-tier dedupe: per-edit scans and the session-end sweep
+// share one cache, so a file dirty throughout is reported once, not
+// once per phase that noticed it.
+type findingDrain struct {
+	emit  *events.Emitter
+	cache *checks.Cache
+	prev  func(rule, path string, line int, summary string)
+}
+
+func newFindingDrain(emitter *events.Emitter, prev func(rule, path string, line int, summary string)) *findingDrain {
+	return &findingDrain{emit: emitter, cache: &checks.Cache{}, prev: prev}
+}
+
+// reportPerEdit records one post-tool finding, emitted once.
+func (d *findingDrain) reportPerEdit(rule, path string, line int, summary string) {
+	d.report("per-edit", rule, path, line, summary)
+}
+
+// report emits one finding unless already reported, then chains the
+// previous sink (CLI printer) for emitted findings only: suppressed
+// stays silent everywhere, not just in events.
+func (d *findingDrain) report(scope, rule, path string, line int, summary string) {
+	kept := d.cache.Filter([]checks.Finding{{Rule: rule, Path: path, Line: line, Summary: summary}})
+	for _, f := range kept {
+		EmitFinding(d.emit, scope, f.Rule, f.Path, f.Line, f.Summary)
+	}
+	if len(kept) > 0 && d.prev != nil {
+		d.prev(rule, path, line, summary)
+	}
+}
+
+// sweep runs the session-end deep pass over mutated paths: files the
+// run changed through any tool, including shell redirections, MCP
+// writes, and background jobs, which per-edit scans never see
+// (they only scan tool-written content addressed by "path").
+func (d *findingDrain) sweep(ws *workspace.Workspace, paths []string) {
+	if ws == nil || len(paths) == 0 {
+		return
+	}
+	if len(paths) > maxSweepFiles {
+		d.report("session-end", "sweep-skipped", "", 0, fmt.Sprintf("%d files changed; sweep bound at %d", len(paths), maxSweepFiles))
+		return
+	}
+	var all []checks.Finding
+	for _, p := range paths {
+		full, err := ws.Resolve(p)
+		if err != nil {
+			continue // deleted or escaped since: nothing to scan
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		all = append(all, checks.ScanFile(p, data)...)
+	}
+	kept := d.cache.Filter(all)
+	capped, dropped := checks.Clamp(kept, maxSweepFindings)
+	for _, f := range capped {
+		d.report("session-end", f.Rule, f.Path, f.Line, f.Summary)
+	}
+	if dropped > 0 {
+		d.report("session-end", "sweep-truncated", "", 0, fmt.Sprintf("and %d more findings withheld", dropped))
+	}
 }
 
 // EmitToolResult writes one completed tool call as a JSONL event.

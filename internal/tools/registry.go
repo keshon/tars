@@ -7,13 +7,15 @@ import (
 
 // Base returns the standard tool set shared by the main agent and
 // subagents. Pass extra tools (ask_user, delegate_task, todo) for the main
-// agent only.
-func Base(ws *workspace.Workspace, procs *BackgroundProcesses, extra ...agent.Tool) *agent.Registry {
+// agent only. File-mutating tools run post-write deterministic checks
+// (gofmt, secret scan) reporting to sink; nil sink builds unwrapped.
+func Base(ws *workspace.Workspace, procs *BackgroundProcesses, report FindingSink, extra ...agent.Tool) *agent.Registry {
+	scan := func(t agent.Tool) agent.Tool { return Checked(t, ws, report) }
 	tools := []agent.Tool{
 		ReadFile{WS: ws},
-		WriteFile{WS: ws},
-		PatchFile{WS: ws},
-		PatchLines{WS: ws},
+		scan(WriteFile{WS: ws}),
+		scan(PatchFile{WS: ws}),
+		scan(PatchLines{WS: ws}),
 		ListFiles{WS: ws},
 		MoveFile{WS: ws},
 		RunShell{WS: ws},

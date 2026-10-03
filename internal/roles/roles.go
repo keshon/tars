@@ -86,6 +86,11 @@ type Env struct {
 	// See agent.Config.OnToolResult. Nil keeps the historical silence.
 	OnToolResult func(callID, result string)
 
+	// OnFinding receives deterministic post-write check findings
+	// (gofmt, secret scan) from wrapped file tools. Nil disables
+	// scanning: tools run unwrapped, identical to uninstrumented.
+	OnFinding func(rule, path string, line int, summary string)
+
 	// OnUsage, if set, receives backend token counts per step.
 	// See agent.Config.OnUsage.
 	OnUsage func(step int, usage llm.Usage)
@@ -187,7 +192,7 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:          e.Client,
-		Tools:           tools.Base(e.WS, e.Procs, e.MCPTools...),
+		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
 		System:          prompts.WithRole(role),
 		MaxSteps:        subagentSteps,
 		MaxTokens:       e.MaxTokens,
@@ -211,7 +216,7 @@ func Subagent(e Env, role string) *agent.Agent {
 func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites bool) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:             e.Client,
-		Tools:              tools.Base(e.WS, e.Procs, e.MCPTools...),
+		Tools:              tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
 		System:             system,
 		MaxSteps:           maxSteps,
 		MaxTokens:          e.MaxTokens,
@@ -254,7 +259,7 @@ func Interactive(e Env, label, stateFile string,
 
 	return agent.New(agent.Config{
 		Client:          e.Client,
-		Tools:           tools.Base(e.WS, e.Procs, extra...),
+		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, extra...),
 		System:          interactiveSystem(e.BackendKind),
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,

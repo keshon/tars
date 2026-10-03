@@ -106,7 +106,7 @@ func helpSections() []helpSection {
 			{"enter", "submits"},
 			{"ctrl+o", "newline"},
 			{"up / down", "history"},
-			{"ctrl+g", "thinking"},
+			{"ctrl+g", "compact history"},
 			{"pgup / pgdn + wheel", "scroll"},
 			{"end", "back to live"},
 		}},
@@ -157,9 +157,9 @@ func (m *model) statusLines() []string {
 	if m.stateFile != "" {
 		taskDir = filepath.Dir(m.stateFile)
 	}
-	think := "collapsed"
-	if m.showThink {
-		think = "expanded"
+	think := "compact"
+	if !m.compact {
+		think = "full"
 	}
 	// Zero means the loop's default; the TUI must not print "0".
 	budget := strconv.Itoa(m.thinkBudget)

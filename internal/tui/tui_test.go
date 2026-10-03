@@ -34,6 +34,7 @@ func testModel() *model {
 		started: time.Now(),
 		styles:  defaultStyles(),
 		follow:  true,
+		compact: true,
 		note:    newNote(),
 		always:  map[[2]string]bool{},
 	}
@@ -773,16 +774,16 @@ func TestGutterFixedWidth(t *testing.T) {
 func TestThinkToggleKey(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	if m.showThink {
-		t.Fatal("thinking starts collapsed")
+	if !m.compact {
+		t.Fatal("history starts compact")
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
-	if mm := updated.(*model); !mm.showThink {
-		t.Fatal("ctrl+g must expand thinking")
+	if mm := updated.(*model); mm.compact {
+		t.Fatal("ctrl+g must open full view")
 	} else {
 		updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
-		if mm := updated.(*model); mm.showThink {
-			t.Fatal("ctrl+g again must collapse")
+		if mm := updated.(*model); !mm.compact {
+			t.Fatal("ctrl+g again must compact")
 		}
 	}
 	// A plain "t" types, never toggles.
@@ -790,8 +791,8 @@ func TestThinkToggleKey(t *testing.T) {
 	mm.state = stDone
 	mm.input.SetValue("ed")
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	if mm := updated.(*model); mm.showThink || mm.input.Value() != "edt" {
-		t.Fatalf("t must type, not toggle: showThink=%v value=%q", mm.showThink, mm.input.Value())
+	if mm := updated.(*model); !mm.compact || mm.input.Value() != "edt" {
+		t.Fatalf("t must type, not toggle: compact=%v value=%q", mm.compact, mm.input.Value())
 	}
 }
 
@@ -1487,6 +1488,28 @@ func TestToolCardAttachesResult(t *testing.T) {
 	}
 }
 
+func TestToolResultCollapsesLongOutput(t *testing.T) {
+	st := defaultStyles()
+	text := strings.TrimRight(strings.Repeat("abcdef\n", 25), "\n")
+	mk := func() block {
+		return block{role: roleTool, text: "run x", callID: "c1", result: text}
+	}
+	compact := renderBlock(mk(), st, false, 80)
+	if n := strings.Count(compact, "abcdef"); n != resultPreviewLines {
+		t.Fatalf("compact shows %d lines, want %d", n, resultPreviewLines)
+	}
+	if !strings.Contains(compact, "(15 more lines)") {
+		t.Fatalf("compact must count the rest: %q", compact)
+	}
+	full := renderBlock(mk(), st, true, 80)
+	if n := strings.Count(full, "abcdef"); n != 25 {
+		t.Fatalf("full view shows %d lines, want 25", n)
+	}
+	if strings.Contains(full, "more lines") {
+		t.Fatalf("full view must not mark: %q", full)
+	}
+}
+
 func TestToolCardFailedGlyph(t *testing.T) {
 	m := sizeModel(t, testModel())
 	updated, _ := m.Update(eventMsg(api.Event{
@@ -1509,6 +1532,29 @@ func TestToolCardFailedGlyph(t *testing.T) {
 	}
 }
 
+func TestFindingRendersWarning(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name: "finding",
+		Fields: map[string]any{
+			"scope": "per-edit", "rule": "gofmt", "path": "a.go",
+			"line": float64(3), "summary": "not gofmt-clean",
+		},
+	}))
+	mm := updated.(*model)
+	if len(mm.blocks) != 1 || mm.blocks[0].role != roleWarning {
+		t.Fatalf("finding must be a warning block: %+v", mm.blocks)
+	}
+	if view := mm.vp.View(); !strings.Contains(view, "»") || !strings.Contains(view, "a.go:3") {
+		t.Fatalf("warning missing rail/content: %q", view)
+	}
+	// Rule-less events append nothing, never a blank warning.
+	updated, _ = mm.Update(eventMsg(api.Event{Name: "finding", Fields: map[string]any{}}))
+	if mm := updated.(*model); len(mm.blocks) != 1 {
+		t.Fatal("malformed finding must not append")
+	}
+}
+
 func TestThinkLatestExpandsAlone(t *testing.T) {
 	m := sizeModel(t, testModel())
 	old := "old deliberation " + strings.Repeat("x", 200)
@@ -1516,10 +1562,10 @@ func TestThinkLatestExpandsAlone(t *testing.T) {
 	m.appendBlock(thinkBlock(old))
 	m.appendBlock(answerBlock("mid"))
 	m.appendBlock(thinkBlock(newer))
-	m.showThink = true
+	m.compact = false
 	m.refreshContent()
 	view := m.vp.View()
-	if !strings.Contains(view, newer) || !strings.Contains(view, "to collapse") {
+	if !strings.Contains(view, newer) || !strings.Contains(view, "for compact view") {
 		t.Fatalf("latest think must expand framed: %q", view)
 	}
 	if strings.Contains(view, strings.Repeat("x", 200)) {

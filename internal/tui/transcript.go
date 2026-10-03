@@ -27,6 +27,10 @@ const (
 	roleMission
 	roleMarker
 	roleError
+	// roleWarning is a deterministic-check finding (gofmt, secrets):
+	// report-only signal, never an error. Yellow, unbold (gate yellow
+	// is bold) with a "» " rail.
+	roleWarning
 )
 
 // block is one transcript entry: raw content plus its role. Styling
@@ -68,6 +72,16 @@ func gateBlock(s string) block    { return block{role: roleGate, text: s, at: ti
 func missionBlock(s string) block { return block{role: roleMission, text: s, at: time.Now()} }
 func markerBlock(s string) block  { return block{role: roleMarker, text: s, at: time.Now()} }
 func errorBlock(s string) block   { return block{role: roleError, text: s, at: time.Now()} }
+
+// findingBlock renders one deterministic-check finding as plain text;
+// the rule carries the meaning, the warning style the urgency.
+func findingBlock(rule, path string, line int, summary string) block {
+	text := "check " + rule
+	if path != "" {
+		text += fmt.Sprintf(" %s:%d", path, line)
+	}
+	return block{role: roleWarning, text: text + " " + summary, at: time.Now()}
+}
 
 // toolCardBlock opens a tool card: the call header renders immediately,
 // the result attaches when its tool_result event lands (matched by ID
@@ -119,6 +133,8 @@ func gutterGlyph(r role) string {
 		return "- "
 	case roleError:
 		return "! "
+	case roleWarning:
+		return "» "
 	default:
 		return "  "
 	}
@@ -137,6 +153,8 @@ func (st styles) gutter(r role) string {
 		color = st.gate
 	case roleError:
 		color = st.err
+	case roleWarning:
+		color = st.warn
 	}
 	return color.Render(gutterGlyph(r))
 }
@@ -156,7 +174,9 @@ func thinkSummary(s string) string {
 }
 
 // renderBlock styles one block and prefixes its role gutter on every
-// line. Thinking renders collapsed unless expanded. Answer, user, and
+// line. The expand flag (inverse of compact view) opens verbose
+// content: latest thinking in full, long tool results in full.
+// Thinking renders collapsed unless expanded. Answer, user, and
 // think roles run the markdown-lite path (fences/headers/spans);
 // tool args, diffs, gates, and markers stay raw so a glob `*.go` can
 // never toggle bold and diff prefixes survive styling. Lines reflow
@@ -167,11 +187,11 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	raw := b.text
 	if b.role == roleThink {
 		if !expandThink {
-			raw = "⋯ " + thinkSummary(b.text) + " (" + thinkToggleHint + " to expand)"
+			raw = "⋯ " + thinkSummary(b.text) + " (" + thinkToggleHint + " for full view)"
 		} else {
 			// Framed, never capped: the header orients a long
 			// expansion without hiding any of it.
-			raw = fmt.Sprintf("── thinking · %d chars · %s to collapse ──\n%s",
+			raw = fmt.Sprintf("── thinking · %d chars · %s for compact view ──\n%s",
 				len([]rune(b.text)), thinkToggleHint, b.text)
 		}
 	}
@@ -179,7 +199,7 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	var out []string
 	switch {
 	case b.role == roleTool:
-		out = renderToolCard(b, st, stamped, width)
+		out = renderToolCard(b, st, expandThink, stamped, width)
 	case isMdRole(b.role):
 		out = renderMdBlock(b, raw, st, stamped, width)
 	default:
@@ -203,12 +223,18 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	return strings.Join(out, "\n")
 }
 
+// resultPreviewLines caps collapsed tool results (pi parity:
+// FALLBACK_PREVIEW_LINES=10). The overflow note keeps the count, so
+// compacted output never silently loses lines.
+const resultPreviewLines = 10
+
 // renderToolCard draws one bordered-by-rail tool card: a header (status
 // glyph + call) plus attached result lines, or a pending rail while
 // open. The "│ " rail groups call with result without full-border
 // width math; continuations keep the rail so the card edge never
-// breaks (overriding the blank-gutter rule inside cards).
-func renderToolCard(b block, st styles, stamped bool, width int) []string {
+// breaks (overriding the blank-gutter rule inside cards). Compact view
+// previews long results; full view shows all.
+func renderToolCard(b block, st styles, expand, stamped bool, width int) []string {
 	glyph := st.add.Render("✓")
 	if b.open {
 		glyph = st.dim.Render("…")
@@ -222,6 +248,11 @@ func renderToolCard(b block, st styles, stamped bool, width int) []string {
 		return out
 	}
 	lines := strings.Split(b.result, "\n")
+	if !expand && len(lines) > resultPreviewLines {
+		kept := lines[:resultPreviewLines]
+		kept = append(kept, fmt.Sprintf("… (%d more lines)", len(lines)-resultPreviewLines))
+		lines = kept
+	}
 	for li, line := range lines {
 		w := width - gutterWidth - 2
 		if stamped && li == len(lines)-1 {
@@ -316,6 +347,8 @@ func applyRoleStyle(r role, origLine, frag string, st styles) string {
 		return st.dim.Render(frag)
 	case roleError:
 		return st.err.Render(frag)
+	case roleWarning:
+		return st.warn.Render(frag)
 	default:
 		return frag
 	}
@@ -389,7 +422,7 @@ func (m *model) refreshContent() {
 		if b.breakBefore && i > 0 && !m.blocks[i-1].breakBefore {
 			sb.WriteString(turnRule(m.vp.Width, m.styles) + "\n\n")
 		}
-		sb.WriteString(renderBlock(b, m.styles, m.showThink && (b.role != roleThink || i == lastThink), m.vp.Width))
+		sb.WriteString(renderBlock(b, m.styles, !m.compact && (b.role != roleThink || i == lastThink), m.vp.Width))
 	}
 	m.vp.SetContent(sb.String())
 	if m.follow {
@@ -436,5 +469,5 @@ func reflow(line string, width int) []string {
 // allRoles lists every role for exhaustive tests (gutter width, etc.).
 var allRoles = []role{
 	roleAnswer, roleUser, roleThink, roleTool, roleResult,
-	roleGate, roleMission, roleMarker, roleError,
+	roleGate, roleMission, roleMarker, roleError, roleWarning,
 }
