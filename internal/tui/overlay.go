@@ -19,6 +19,7 @@ type overlayKind int
 const (
 	ovNone overlayKind = iota
 	ovGate
+	ovDialog
 )
 
 type overlayFrame struct {

@@ -60,12 +60,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendBlock(markerBlock("— interrupted —"))
 		} else {
 			m.appendBlock(markerBlock("— run finished —"))
+			if msg.err != nil {
+				// Failures live in the transcript, not just the bottom
+				// bar: scrolled-up context keeps the error beside the
+				// turn that produced it. /retry re-runs this turn.
+				m.appendBlock(errorBlock("failed: " + msg.err.Error() + "\n/retry re-runs this turn"))
+			}
 		}
 		m.input.SetValue("")
 		m.fitBottom()
 		return m, m.input.Focus()
 
 	case tea.MouseMsg:
+		// A dialog freezes the background: scroll resumes on close.
+		if m.dialog != nil {
+			return m, nil
+		}
 		// The input never consumes mouse messages, so scroll works in
 		// every state: wheel in ask/done used to fall through and die.
 		return m.scrollViewport(msg)
@@ -97,6 +107,9 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 	m.fitBottom()
 	m.input.SetWidth(msg.Width - 4)
 	m.note.Width = max(msg.Width-10, 10)
+	// Render (or re-render): blocks appended before the first resize
+	// never reached the viewport, and reflow follows later resizes.
+	m.refreshContent()
 }
 
 // fitInput sizes the answer box to its content: one row for short
@@ -208,6 +221,22 @@ func (m *model) handleEvent(ev api.Event) {
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.dialog != nil {
+		// Takeover: the dialog eats every key but close and quit so
+		// typing can neither reach the input nor toggle state behind it.
+		// Close is esc/enter only: "q" must stay typable for dialogs
+		// with inputs tomorrow.
+		switch msg.String() {
+		case "esc", "enter":
+			m.closeDialog()
+			return m, nil
+		case "ctrl+c":
+			m.quit = true
+			m.cancel()
+			return m, tea.Quit
+		}
+		return m, nil
+	}
 	if msg.Type == tea.KeyCtrlG {
 		// Global: thinking expand/collapse works in every state and
 		// never reaches the input (the textarea binds no ctrl+g).
@@ -229,7 +258,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.hub.Respond(m.input.Value())
 			m.state = stRunning
 			return m, nil
-		case tea.KeyCtrlC:
+		case tea.KeyCtrlC, tea.KeyCtrlQ:
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
@@ -258,7 +287,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.scrollViewport(msg)
 		case tea.KeyEnter:
 			return m.followUp()
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC, tea.KeyEsc, tea.KeyCtrlQ:
+			// Quit lives on ctrl+q (and ctrl+c): a letter key must
+			// never quit, or words starting with q ("queen") become
+			// untypable on an empty box. Empty+enter still quits.
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
@@ -273,16 +305,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.fitInput()
 				m.fitBottom()
 				return m, nil
-			}
-		}
-		switch msg.String() {
-		case "q":
-			// Quit-on-a-letter only when the answer box is empty:
-			// typing "q" mid-word must never exit.
-			if m.inputEmpty() {
-				m.quit = true
-				m.cancel()
-				return m, tea.Quit
 			}
 		}
 		var cmd tea.Cmd

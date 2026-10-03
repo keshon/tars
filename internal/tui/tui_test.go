@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,14 +291,25 @@ func TestCommand_HelpAndUnknown(t *testing.T) {
 	if mm.quit || mm.state != stDone {
 		t.Fatalf("help must not quit or resume: quit=%v state=%v", mm.quit, mm.state)
 	}
-	found := false
-	for _, b := range mm.blocks {
-		if strings.Contains(b.text, "/quit") {
-			found = true
+	if mm.dialog == nil {
+		t.Fatal("help must open a dialog")
+	}
+	for _, want := range []string{"/quit", "/retry", "/status"} {
+		found := false
+		for _, ln := range mm.dialog.lines {
+			if strings.Contains(ln, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("help missing %q: %+v", want, mm.dialog.lines)
 		}
 	}
-	if !found {
-		t.Fatalf("help text missing: %v", mm.blocks)
+	// Enter closes, transcript untouched.
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm = updated.(*model)
+	if mm.dialog != nil || len(mm.blocks) != 0 || len(mm.overlays) != 0 {
+		t.Fatal("closing help must restore the transcript")
 	}
 
 	mm.input.SetValue("/nope")
@@ -394,8 +406,8 @@ func (stubDone) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, er
 	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}, nil
 }
 
-func TestRenderResultDiffColors(t *testing.T) {
-	out := renderResult("-old\n+new\n@@ h @@\nctx", defaultStyles())
+func TestResultBlockDiffColors(t *testing.T) {
+	out := renderBlock(resultBlock("-old\n+new\n@@ h @@\nctx"), defaultStyles(), false, 80)
 	for _, want := range []string{"-old", "+new", "@@ h @@", "ctx"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in %q", want, out)
@@ -542,24 +554,50 @@ func TestNewBlocksRespectUnfollow(t *testing.T) {
 	}
 }
 
-func TestQuitLetterNeedsEmptyBox(t *testing.T) {
+func TestQuitNeedsCtrlQ(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	m.input.SetValue("quit")
-	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
-	updated, _ := m.Update(q)
-	mm := updated.(*model)
-	if mm.quit {
-		t.Fatal("typing q into non-empty input must not quit")
+	// Typing a q-word never quits, first letter or not.
+	for _, r := range "queen" {
+		updated, _ := m.Update(keyRunes(r))
+		mm := updated.(*model)
+		if mm.quit {
+			t.Fatalf("typing %q quit", r)
+		}
+		m = mm
 	}
-	if mm.input.Value() != "quitq" {
-		t.Fatalf("keystroke must still reach the input, got %q", mm.input.Value())
+	if m.input.Value() != "queen" {
+		t.Fatalf("input = %q, want the typed word", m.input.Value())
 	}
-	// Empty (even whitespace-only) box: q quits.
-	mm.input.SetValue("   ")
-	updated, _ = mm.Update(q)
+	// A lone q on an empty box is still just typing.
+	m.input.SetValue("")
+	updated, _ := m.Update(keyRunes('q'))
+	if mm := updated.(*model); mm.quit || mm.input.Value() != "q" {
+		t.Fatal("q must type, never quit")
+	}
+	// Quit lives on ctrl+q, with or without a draft.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
 	if mm := updated.(*model); !mm.quit {
-		t.Fatal("q on empty input must quit")
+		t.Fatal("ctrl+q must quit")
+	}
+}
+
+func TestDialogQDoesNotClose(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	m.openDialog("help", helpLines())
+	updated, _ := m.Update(keyRunes('q'))
+	if mm := updated.(*model); mm.dialog == nil {
+		t.Fatal("q must not close the dialog")
+	}
+}
+
+func TestAskCtrlQQuits(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stAsk
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if mm := updated.(*model); !mm.quit {
+		t.Fatal("ctrl+q must quit from ask")
 	}
 }
 
@@ -695,7 +733,7 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 	st := defaultStyles()
 	long := "...The user is asking something, and here is a long chain of internal deliberation that must not read as the answer. " +
 		"Second line of musing that only the expanded view may show."
-	collapsed := renderBlock(thinkBlock(long), st, false)
+	collapsed := renderBlock(thinkBlock(long), st, false, 80)
 	if !strings.Contains(collapsed, "⋯") {
 		t.Fatalf("collapsed thinking needs its marker: %q", collapsed)
 	}
@@ -705,7 +743,7 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 	if !strings.Contains(collapsed, thinkToggleHint) {
 		t.Fatalf("collapsed thinking must name its key: %q", collapsed)
 	}
-	expanded := renderBlock(thinkBlock(long), st, true)
+	expanded := renderBlock(thinkBlock(long), st, true, 80)
 	if !strings.Contains(expanded, "Second line of musing") {
 		t.Fatalf("expanded thinking must show all: %q", expanded)
 	}
@@ -750,14 +788,17 @@ func TestHelpMentionsThinkKey(t *testing.T) {
 	m.input.SetValue("/help")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := updated.(*model)
+	if mm.dialog == nil {
+		t.Fatal("help must open a dialog")
+	}
 	found := false
-	for _, b := range mm.blocks {
-		if strings.Contains(b.text, thinkToggleHint) {
+	for _, ln := range mm.dialog.lines {
+		if strings.Contains(ln, thinkToggleHint) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("help must document the think key: %+v", mm.blocks)
+		t.Fatal("help must document the think key")
 	}
 }
 
@@ -983,12 +1024,12 @@ func TestOverlayPushPopRestore(t *testing.T) {
 func TestTimestampRendered(t *testing.T) {
 	st := defaultStyles()
 	at := time.Date(2026, 10, 3, 14, 22, 0, 0, time.Local)
-	out := renderBlock(block{roleUser, "❯ hi", at}, st, false)
+	out := renderBlock(block{roleUser, "❯ hi", at}, st, false, 80)
 	if !strings.Contains(out, "[14:22]") {
 		t.Fatalf("user block missing timestamp: %q", out)
 	}
 	// Unstamped blocks (zero time) render cleanly for unit-built models.
-	plain := renderBlock(block{roleAnswer, "hi", time.Time{}}, st, false)
+	plain := renderBlock(block{roleAnswer, "hi", time.Time{}}, st, false, 80)
 	if strings.Contains(plain, "[") {
 		t.Fatalf("zero-time block must not stamp: %q", plain)
 	}
@@ -1055,6 +1096,178 @@ func TestLongStepFlowsUncut(t *testing.T) {
 	}
 	if mm.blocks[1].role != roleThink || mm.blocks[1].text != reason {
 		t.Fatal("reasoning cut or misroled by the funnel")
+	}
+}
+
+func TestReflow(t *testing.T) {
+	for _, tc := range []struct {
+		in    string
+		width int
+		want  []string
+	}{
+		{"aaa bbb ccc ddd eee", 8, []string{"aaa bbb", "ccc ddd", "eee"}},
+		{"  indented line here", 10, []string{"  indented", "line here"}},
+		{"abcdefghij", 8, []string{"abcdefgh", "ij"}},
+		{"a\tb", 80, []string{"a    b"}},
+		{"", 80, []string{""}},
+		{"short", 2, []string{"short"}},
+	} {
+		got := reflow(tc.in, tc.width)
+		if len(got) != len(tc.want) {
+			t.Fatalf("reflow(%q, %d) = %q, want %q", tc.in, tc.width, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("reflow(%q, %d) = %q, want %q", tc.in, tc.width, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestRenderBlockWrapsToWidth(t *testing.T) {
+	st := defaultStyles()
+	text := "lorem ipsum dolor sit amet consectetur adipiscing elit sed do"
+	out := renderBlock(answerBlock(text), st, false, 20)
+	for _, line := range strings.Split(out, "\n") {
+		if n := len([]rune(line)); n > 20 {
+			t.Fatalf("line %d cols, want <= 20: %q", n, line)
+		}
+	}
+	// Wrapped continuations take a blank gutter, marking them as
+	// wrapped rather than new.
+	out = renderBlock(userBlock("aaa bbb ccc"), st, false, 20)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], "  ") {
+		t.Fatalf("continuation gutter missing: %q", out)
+	}
+}
+
+func TestPreReadyBlocksRender(t *testing.T) {
+	m := testModel() // never sized: not ready
+	m.appendBlock(markerBlock("early"))
+	mm := sizeModel(t, m)
+	if view := mm.View(); !strings.Contains(view, "early") {
+		t.Fatalf("pre-ready block missing: %q", view)
+	}
+}
+
+func TestStatusDialog(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	m.limit = 131072
+	m.tokens = 12400
+	m.input.SetValue("/status")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(*model)
+	if mm.dialog == nil || mm.dialog.title != "status" {
+		t.Fatal("status must open a dialog")
+	}
+	view := strings.Join(mm.dialog.lines, "\n")
+	for _, want := range []string{"backend", "workspace", "context", "ctx 12.4k / 131.1k (9%)", "gates"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("status missing %q: %q", want, view)
+		}
+	}
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if mm := updated.(*model); mm.dialog != nil || len(mm.overlays) != 0 {
+		t.Fatal("esc must close the dialog and drain the overlay")
+	}
+}
+
+func TestDialogFitsViewport(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.vp.Width, m.vp.Height = 26, 8
+	m.openDialog("status", m.statusLines())
+	out := m.dialogView()
+	lines := strings.Split(out, "\n")
+	if len(lines) > 8 {
+		t.Fatalf("%d dialog lines past height 8", len(lines))
+	}
+	for _, ln := range lines {
+		if n := lipgloss.Width(ln); n > 26 {
+			t.Fatalf("dialog line %d cols past 26: %q", n, ln)
+		}
+	}
+}
+
+func TestStartRunClosesDialog(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.send = func(tea.Msg) {}
+	m.ctx = context.Background()
+	m.openDialog("help", helpLines())
+	if len(m.overlays) != 1 {
+		t.Fatal("setup: dialog must push")
+	}
+	m.startRun(func(ctx context.Context) (string, error) { return "done", nil })
+	if m.dialog != nil || len(m.overlays) != 0 {
+		t.Fatal("run start must close the dialog")
+	}
+}
+
+func TestTruncateRuneSafe(t *testing.T) {
+	if got := truncate(strings.Repeat("—", 10), 8); got != strings.Repeat("—", 8)+"…" {
+		t.Fatalf("truncate = %q", got)
+	}
+	if truncate("abc", 8) != "abc" {
+		t.Fatal("short text altered")
+	}
+}
+
+func TestFailedRunKeepsErrorBlock(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(doneMsg{err: errors.New("boom")})
+	mm := updated.(*model)
+	if mm.runErr == nil {
+		t.Fatal("runErr must survive a failed run")
+	}
+	found := false
+	for _, b := range mm.blocks {
+		if b.role == roleError && strings.Contains(b.text, "boom") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("error missing from transcript: %+v", mm.blocks)
+	}
+}
+
+func TestRetryRerunsLastTurn(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.send = func(tea.Msg) {}
+	m.ctx = context.Background()
+	m.retryRun = func(ctx context.Context) (string, error) { return "recovered", nil }
+	m.runErr = errors.New("boom")
+	m.state = stDone
+	m.input.SetValue("/retry")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(*model)
+	if mm.state != stRunning {
+		t.Fatalf("state = %v, want running", mm.state)
+	}
+	updated, _ = mm.Update(doneMsg{answer: "recovered"})
+	mm = updated.(*model)
+	if mm.runErr != nil || mm.answer != "recovered" {
+		t.Fatalf("runErr = %v answer = %q", mm.runErr, mm.answer)
+	}
+}
+
+func TestRetryRefusesWhenOk(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	m.input.SetValue("/retry")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(*model)
+	if mm.state != stDone {
+		t.Fatalf("state = %v, want done", mm.state)
+	}
+	found := false
+	for _, b := range mm.blocks {
+		if strings.Contains(b.text, "nothing to retry") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal missing: %+v", mm.blocks)
 	}
 }
 

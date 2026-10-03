@@ -86,6 +86,9 @@ type model struct {
 	// newSession builds a session for a fresh task (first run and
 	// /new). Follow-ups reuse the running session via Resume.
 	newSession func(task, stateFile string) (*api.Session, error)
+	// retryRun is the last turn's closure, kept so /retry can
+	// re-attempt it exactly. Set by startRun, gated by runErr.
+	retryRun func(ctx context.Context) (string, error)
 	// send delivers out-of-band messages (run completion) to the
 	// program from worker goroutines. Set by Run once tea exists.
 	send func(tea.Msg)
@@ -115,6 +118,16 @@ type model struct {
 	gateResource string
 	note         textinput.Model
 	always       map[[2]string]bool
+	// dialog is the open modal, if any (dialog.go). While open it
+	// replaces the transcript body and eats all keys but close/quit.
+	dialog *dialog
+	// Status facts snapshotted from cfg at construction for /status:
+	// backend/workspace identity and budgets the run was given.
+	backendKind string
+	wsRoot      string
+	thinkBudget int
+	mcpCount    int
+	policyRules int
 }
 
 // Run executes the task under the TUI and returns the final answer.
@@ -143,6 +156,12 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		stateFile: cfg.StateFile,
 		note:      newNote(),
 		always:    map[[2]string]bool{},
+		// Status facts come from cfg once: the TUI never re-reads Env.
+		backendKind: cfg.Env.BackendKind,
+		wsRoot:      wsRootOf(cfg.Env.WS),
+		thinkBudget: cfg.Env.ReasoningBudget,
+		mcpCount:    len(cfg.Env.MCPTools),
+		policyRules: len(cfg.Env.Policy.Rules),
 	}
 	m.input = newInput()
 	m.input.Prompt = "> "

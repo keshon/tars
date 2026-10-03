@@ -106,42 +106,81 @@ func thinkSummary(s string) string {
 }
 
 // renderBlock styles one block and prefixes its role gutter on every
-// line. Thinking renders collapsed unless expanded.
-func renderBlock(b block, st styles, expandThink bool) string {
-	var body string
-	switch b.role {
-	case roleAnswer:
-		body = b.text
-	case roleUser:
-		body = st.user.Render(b.text)
-	case roleThink:
-		if expandThink {
-			body = st.think.Render(b.text)
-		} else {
-			body = st.think.Render("⋯ " + thinkSummary(b.text) + " (" + thinkToggleHint + " to expand)")
+// line. Thinking renders collapsed unless expanded. Lines reflow to
+// width columns (P10-6): the viewport never wraps, so unbroken long
+// lines would vanish past the right edge. Continuation fragments take
+// a blank gutter, marking them as wrapped rather than new.
+func renderBlock(b block, st styles, expandThink bool, width int) string {
+	raw := b.text
+	if b.role == roleThink && !expandThink {
+		raw = "⋯ " + thinkSummary(b.text) + " (" + thinkToggleHint + " to expand)"
+	}
+	stamped := !b.at.IsZero()
+	logical := strings.Split(raw, "\n")
+	var out []string
+	for li, line := range logical {
+		w := width - gutterWidth
+		if stamped && li == len(logical)-1 {
+			w -= stampWidth
 		}
+		frags := reflow(line, w)
+		for i, f := range frags {
+			g := st.gutter(b.role)
+			if i > 0 {
+				g = "  "
+			}
+			out = append(out, g+applyRoleStyle(b.role, line, f, st))
+		}
+	}
+	if stamped {
+		out[len(out)-1] += st.dim.Render(" [" + b.at.Format("15:04") + "]")
+	}
+	return strings.Join(out, "\n")
+}
+
+// stampWidth reserves room for the " [15:04]" suffix when wrapping the
+// block's last line, so the stamp never pushes it past the edge.
+const stampWidth = 8
+
+// applyRoleStyle colors one (already wrapped) fragment. Result blocks
+// keep the original line's diff prefix so continuations hold their color.
+func applyRoleStyle(r role, origLine, frag string, st styles) string {
+	switch r {
+	case roleAnswer:
+		return frag
+	case roleUser:
+		return st.user.Render(frag)
+	case roleThink:
+		return st.think.Render(frag)
 	case roleTool:
-		body = st.dim.Render(b.text)
+		return st.dim.Render(frag)
 	case roleResult:
-		body = renderResult(b.text, st)
+		return resultLineStyle(origLine, frag, st)
 	case roleGate:
-		body = st.gate.Render(b.text)
+		return st.gate.Render(frag)
 	case roleMission:
-		body = st.dim.Render(b.text)
+		return st.dim.Render(frag)
 	case roleMarker:
-		body = st.dim.Render(b.text)
+		return st.dim.Render(frag)
 	case roleError:
-		body = st.err.Render(b.text)
+		return st.err.Render(frag)
+	default:
+		return frag
 	}
-	if !b.at.IsZero() {
-		body += st.dim.Render(" [" + b.at.Format("15:04") + "]")
+}
+
+// resultLineStyle colors one fragment by its logical line's diff prefix.
+func resultLineStyle(origLine, frag string, st styles) string {
+	switch {
+	case strings.HasPrefix(origLine, "+") && !strings.HasPrefix(origLine, "++"):
+		return st.add.Render(frag)
+	case strings.HasPrefix(origLine, "-") && !strings.HasPrefix(origLine, "--"):
+		return st.del.Render(frag)
+	case strings.HasPrefix(origLine, "@@"):
+		return st.hunk.Render(frag)
+	default:
+		return st.dim.Render(frag)
 	}
-	g := st.gutter(b.role)
-	lines := strings.Split(body, "\n")
-	for i := range lines {
-		lines[i] = g + lines[i]
-	}
-	return strings.Join(lines, "\n")
 }
 
 // appendBlock records a block and re-renders the transcript.
@@ -151,8 +190,9 @@ func (m *model) appendBlock(b block) {
 }
 
 // refreshContent re-renders every block into the viewport. Called on
-// append and on toggles; YOffset survives SetContent, so a reading
-// user is never yanked (pinned by TestNewBlocksRespectUnfollow).
+// append, on toggles, and on resize (reflow follows the width). YOffset
+// survives SetContent, so a reading user is never yanked (pinned by
+// TestNewBlocksRespectUnfollow).
 func (m *model) refreshContent() {
 	if !m.ready {
 		return
@@ -162,7 +202,7 @@ func (m *model) refreshContent() {
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
-		sb.WriteString(renderBlock(b, m.styles, m.showThink))
+		sb.WriteString(renderBlock(b, m.styles, m.showThink, m.vp.Width))
 	}
 	m.vp.SetContent(sb.String())
 	if m.follow {
@@ -170,23 +210,40 @@ func (m *model) refreshContent() {
 	}
 }
 
-// renderResult colors unified-diff lines; other text stays dim.
-func renderResult(text string, st styles) string {
-	var b strings.Builder
-	for _, line := range strings.Split(text, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "++"):
-			b.WriteString(st.add.Render(line))
-		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--"):
-			b.WriteString(st.del.Render(line))
-		case strings.HasPrefix(line, "@@"):
-			b.WriteString(st.hunk.Render(line))
-		default:
-			b.WriteString(st.dim.Render(line))
-		}
-		b.WriteString("\n")
+// minWrapWidth guards absurdly narrow viewports: below it, lines pass
+// through rather than shredding into slivers.
+const minWrapWidth = 8
+
+// reflow word-wraps one logical line to width columns. Leading
+// whitespace survives on the first fragment; long words hard-cut
+// rune-safe; tabs expand to 4. ANSI-free input only: callers wrap raw
+// text before styling.
+func reflow(line string, width int) []string {
+	if width < minWrapWidth {
+		return []string{line}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	line = strings.ReplaceAll(line, "\t", "    ")
+	if line == "" {
+		return []string{""}
+	}
+	var out []string
+	for len([]rune(line)) > width {
+		r := []rune(line)
+		cut := width
+		for i := width; i >= 0; i-- {
+			if r[i] == ' ' {
+				cut = i
+				break
+			}
+			if i == 0 {
+				cut = width
+			}
+		}
+		out = append(out, strings.TrimRight(string(r[:cut]), " "))
+		line = strings.TrimLeft(string(r[cut:]), " ")
+	}
+	out = append(out, line)
+	return out
 }
 
 // allRoles lists every role for exhaustive tests (gutter width, etc.).

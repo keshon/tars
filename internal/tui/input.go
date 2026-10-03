@@ -1,16 +1,16 @@
 package tui
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/bubbles/textarea"
 )
 
+// truncate shortens display strings with a marker (R5). Rune-based:
+// a byte slice can split multi-byte UTF-8 and emit invalid output.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
 	}
-	return s[:n] + "…"
+	return s
 }
 
 // newInput builds the answer box: multiline, capped at a few rows.
@@ -24,10 +24,4 @@ func newInput() textarea.Model {
 	ta.MaxHeight = 6
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+o")
 	return ta
-}
-
-// inputEmpty reports whether the answer box holds no text.
-// Quit-on-a-letter keys consult it so typing can never exit the TUI.
-func (m *model) inputEmpty() bool {
-	return strings.TrimSpace(m.input.Value()) == ""
 }

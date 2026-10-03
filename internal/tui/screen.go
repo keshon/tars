@@ -8,6 +8,9 @@ func (m *model) View() string {
 		return "starting..."
 	}
 	body := m.vp.View()
+	if m.dialog != nil {
+		body = m.dialogView()
+	}
 	var bottom string
 	switch m.state {
 	case stPermission:
@@ -18,7 +21,7 @@ func (m *model) View() string {
 		if m.runErr != nil {
 			bottom = m.styles.err.Render("error: "+truncate(m.runErr.Error(), 240)) + "\n" + m.input.View()
 		} else {
-			bottom = m.styles.dim.Render("follow-up, empty + enter to quit") + "\n" + m.input.View()
+			bottom = m.styles.dim.Render("follow-up · empty + enter to quit · ctrl+q quits") + "\n" + m.input.View()
 		}
 	default:
 		bottom = m.styles.dim.Render("working… (q to abort)")

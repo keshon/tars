@@ -44,6 +44,12 @@ func newNote() textinput.Model {
 // a time. It answers through resolveGate only: every exit path tears
 // the overlay down, so a answered gate can never strand a stage.
 func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+q" {
+		// Quit works from every gate stage: letters are answers here.
+		m.quit = true
+		m.cancel()
+		return m, tea.Quit
+	}
 	switch m.gstage {
 	case gsAlways:
 		switch msg.String() {

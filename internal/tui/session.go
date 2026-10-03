@@ -63,9 +63,7 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 		m.cancel()
 		return m, tea.Quit
 	case "help":
-		m.appendBlock(markerBlock(
-			"keys: q/ctrl+c abort · esc interrupts the run, stays in chat · y/n/a answer permission · enter submits · ctrl+o newline · up/down history · ctrl+g thinking\n" +
-				"commands: /quit /help /new <task>"))
+		m.openDialog("help", helpLines())
 		return m, nil
 	case "new":
 		task := strings.TrimSpace(arg)
@@ -77,6 +75,17 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
 			return m, nil
 		}
+		return m, nil
+	case "status":
+		m.openDialog("status", m.statusLines())
+		return m, nil
+	case "retry":
+		if m.runErr == nil || m.retryRun == nil {
+			m.appendBlock(markerBlock("nothing to retry: last run did not fail"))
+			return m, nil
+		}
+		m.appendBlock(markerBlock("— retrying —"))
+		m.startRun(m.retryRun)
 		return m, nil
 	default:
 		m.appendBlock(errorBlock("unknown command " + text + " (try /help)"))
@@ -90,6 +99,17 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 // into the next turn.
 func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.cancel()
+	// A run takes over: a dialog left open would shadow a transcript
+	// that is suddenly live again.
+	if m.dialog != nil {
+		m.closeDialog()
+	}
+	// The turn closure is kept for /retry: re-invoking it re-attempts
+	// the exact turn (follow-ups reuse their loaded history, so a
+	// retry restarts from last known-good, not partial failure).
+	// runErr clears: a new turn has no result yet, and /retry gates on it.
+	m.retryRun = run
+	m.runErr = nil
 	// Unit-built models never set base; fall back instead of panicking
 	// on a nil parent context.
 	base := m.base
