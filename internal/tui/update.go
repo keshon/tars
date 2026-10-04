@@ -164,6 +164,12 @@ func (m *model) handleEvent(ev api.Event) {
 	switch ev.Name {
 	case "step":
 		m.steps++
+		// The enforced step budget rides the event (base plus any
+		// todo-funded extension): the meter reads the enforced line,
+		// never a second literal. Absent on old producers — keep ours.
+		if ms, ok := ev.Fields["max_steps"].(float64); ok && ms > 0 {
+			m.maxSteps = int(ms)
+		}
 		// The live buffer belongs to this response: clear it first so
 		// the authoritative blocks below never duplicate it. A step
 		// with empty text but a non-empty buffer adopts the buffer

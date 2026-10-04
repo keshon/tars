@@ -58,7 +58,7 @@ operator's redirect. Deterministic post-write checks surface as
 `finding` events (`scope` per-edit or session-end); they are
 report-only, never gates. Loop-generated harness notices surface as
 `nudge` events (`kind` verify/refusal/leak/think-wrap/truncated/
-overflow/budget/stuck/todo): the same `[harness]`-marked text the model
+overflow/budget/stuck/todo/closing): the same `[harness]`-marked text the model
 saw, so observers can audit every intervention. Streamed content
 chunks surface as `delta` events (display-only; the step event
 carries the authoritative text and replaces whatever was live). All flags that

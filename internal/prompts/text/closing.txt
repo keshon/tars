@@ -1,0 +1,1 @@
+All todo items are complete. You have %d steps left — write your final report now. Only call tools if something is still genuinely unfinished.

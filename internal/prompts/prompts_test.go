@@ -23,6 +23,7 @@ func TestAllPromptsLoadNonEmpty(t *testing.T) {
 		"SearchFatigue":          SearchFatigue,
 		"ToolLoop":               ToolLoop,
 		"TodoOpen":               TodoOpen,
+		"Closing":                Closing,
 		"DelegateHint":           DelegateHint,
 		"AskHint":                AskHint,
 		"WriteHint":              WriteHint,
@@ -96,6 +97,12 @@ func TestWithRole_NonEmptyAppendsFormattedAddendum(t *testing.T) {
 func TestVerify_KeepsProgressGuard(t *testing.T) {
 	if !strings.Contains(Verify, "A progress report is not a finish") {
 		t.Error("verify lost its progress-report guard")
+	}
+}
+
+func TestTodoOpen_NamesCheckoff(t *testing.T) {
+	if !strings.Contains(TodoOpen, "check it off") {
+		t.Error("todo bounce must name the checkoff action, not just more work")
 	}
 }
 

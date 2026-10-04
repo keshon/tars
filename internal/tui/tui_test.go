@@ -1134,7 +1134,7 @@ func TestLongStepFlowsUncut(t *testing.T) {
 	reason := strings.Repeat("deliberation — ", 100)
 	var buf bytes.Buffer
 	em := events.New(&buf)
-	api.EmitStep(em, "run", 1, llm.Message{Content: text, Reasoning: reason}, false)
+	api.EmitStep(em, "run", 1, llm.Message{Content: text, Reasoning: reason}, false, 0)
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
 		t.Fatalf("not json: %v", err)
@@ -1867,6 +1867,18 @@ func TestStatusLineShowsStepBudget(t *testing.T) {
 	m.maxSteps = 40
 	if line := m.statusLine(); !strings.Contains(line, "step 7/40") {
 		t.Fatalf("status line missing step budget: %q", line)
+	}
+}
+
+func TestStepEventUpdatesStepBudget(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.maxSteps = 25
+	updated, _ := m.Update(eventMsg(api.Event{
+		Name:   "step",
+		Fields: map[string]any{"max_steps": float64(37), "text": "hi"},
+	}))
+	if mm := updated.(*model); mm.maxSteps != 37 {
+		t.Fatalf("maxSteps = %d, want 37", mm.maxSteps)
 	}
 }
 

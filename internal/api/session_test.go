@@ -197,7 +197,7 @@ func TestEmitStep_MatchesEmitterEncoding(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	EmitStep(events.New(&buf), "w1", 3, msg, false)
+	EmitStep(events.New(&buf), "w1", 3, msg, false, 0)
 
 	var got []Event
 	w := &callbackWriter{onEvent: func(ev Event) { got = append(got, ev) }}
@@ -231,7 +231,7 @@ func TestEmitStep_IncludesCallID(t *testing.T) {
 	var buf bytes.Buffer
 	EmitStep(events.New(&buf), "run", 1, llm.Message{
 		ToolCalls: []llm.ToolCall{{ID: "c9", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
-	}, false)
+	}, false, 0)
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
 		t.Fatalf("not json: %v", err)
@@ -248,7 +248,7 @@ func TestEmitStep_IncludesCallID(t *testing.T) {
 
 func TestEmitStep_HarnessReplyFlag(t *testing.T) {
 	var buf bytes.Buffer
-	EmitStep(events.New(&buf), "run", 1, llm.Message{Content: "hi"}, true)
+	EmitStep(events.New(&buf), "run", 1, llm.Message{Content: "hi"}, true, 0)
 	var rec map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); err != nil {
 		t.Fatalf("not json: %v", err)
@@ -257,7 +257,7 @@ func TestEmitStep_HarnessReplyFlag(t *testing.T) {
 		t.Fatalf("flag missing: %v", rec)
 	}
 	var buf2 bytes.Buffer
-	EmitStep(events.New(&buf2), "run", 1, llm.Message{Content: "hi"}, false)
+	EmitStep(events.New(&buf2), "run", 1, llm.Message{Content: "hi"}, false, 0)
 	var rec2 map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf2.Bytes()), &rec2); err != nil {
 		t.Fatalf("not json: %v", err)

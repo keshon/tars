@@ -100,10 +100,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	// the harness, not the operator. One-shot and text-only: tool calls
 	// are work, whatever prompted them.
 	expectReply := false
+	var a *agent.Agent
 	env.OnStep = func(label string, step int, msg llm.Message) {
 		hr := expectReply && len(msg.ToolCalls) == 0
 		expectReply = false
-		EmitStep(emitter, label, step, msg, hr)
+		EmitStep(emitter, label, step, msg, hr, a.Report().MaxSteps)
 		if prevOnStep != nil {
 			prevOnStep(label, step, msg)
 		}
@@ -137,7 +138,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
-	a := roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
+	a = roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
 	ans, err := a.Run(ctx, s.cfg.Task)
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
 	return ans, err
@@ -177,10 +178,11 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	// the harness, not the operator. One-shot and text-only: tool calls
 	// are work, whatever prompted them.
 	expectReply := false
+	var a *agent.Agent
 	env.OnStep = func(label string, step int, msg llm.Message) {
 		hr := expectReply && len(msg.ToolCalls) == 0
 		expectReply = false
-		EmitStep(emitter, label, step, msg, hr)
+		EmitStep(emitter, label, step, msg, hr, a.Report().MaxSteps)
 		if prevOnStep != nil {
 			prevOnStep(label, step, msg)
 		}
@@ -214,7 +216,7 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
-	a := roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
+	a = roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
 	ans, err := a.Resume(ctx, history, note)
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
 	return ans, err
@@ -267,14 +269,19 @@ func (w *callbackWriter) Write(p []byte) (int, error) {
 // direct loop, mission workers, and Session so all three speak the same
 // schema. events.Message caps each text field. harnessReply marks a
 // text-only answer to a harness nudge (first reply is enough); the
-// field is omitted when false so old consumers see no change.
-func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message, harnessReply bool) {
+// field is omitted when false so old consumers see no change. maxSteps
+// carries the run's enforced step budget (base plus todo-funded
+// extension); zero omits it, for callers with no run behind the event.
+func EmitStep(emitter *events.Emitter, label string, step int, msg llm.Message, harnessReply bool, maxSteps int) {
 	if emitter == nil {
 		return
 	}
 	ev := map[string]any{"step": step, "label": label}
 	if harnessReply {
 		ev["harness_reply"] = true
+	}
+	if maxSteps > 0 {
+		ev["max_steps"] = maxSteps
 	}
 	if msg.Content != "" {
 		ev["text"] = events.Message(msg.Content)

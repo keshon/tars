@@ -26,4 +26,4 @@ If the task is genuinely ambiguous — a vague description, a bug report with no
 
 Keep working until the task is done: make every tool call the task needs before you write any summary. A progress report ("done X so far", "passed N checkpoints") is not a finish — ending your turn with one stops the run with the remaining items undone. Report only when there is nothing left to do.
 
-If the work has three or more steps, track them with the todo tool and keep it current: check items off as you finish them, and never finish with items unchecked.
+If the work has three or more steps, track them with the todo tool and keep it current: check items off as you finish them, and never finish with items unchecked. A finished item left unchecked looks exactly like work not done — if you completed something without checking it off, send the updated list immediately.

@@ -18,4 +18,4 @@ After write_file succeeds for a path, do not rewrite that path — write the nex
 
 When the acceptance criteria are met, finish with a short factual report of what you did. Your work will be verified mechanically after you finish — do not claim anything you did not actually do.
 
-If the subtask has three or more steps, track them with the todo tool and keep it current: check items off as you finish them, and never finish with items unchecked.
+If the subtask has three or more steps, track them with the todo tool and keep it current: check items off as you finish them, and never finish with items unchecked. A finished item left unchecked looks exactly like work not done.

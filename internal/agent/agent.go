@@ -30,6 +30,13 @@ type Config struct {
 	// MaxSteps bounds how many model round-trips a single Run performs.
 	MaxSteps int
 
+	// TodoFunding enables todo-driven step funding: acknowledged
+	// checklist work (listed open items, completed items) extends the
+	// step budget up to one extra base budget. Default off. Direct
+	// interactive runs set it; bounded workers (mission subtasks,
+	// subagents) run fixed budgets by construction.
+	TodoFunding bool
+
 	// MaxTokens caps generation length per response. Left at zero, New
 	// defaults this to 8192 — large single-shot generations (a full
 	// HTML+CSS+JS file in one write_file call) silently truncate mid-JSON
@@ -227,6 +234,11 @@ type RunReport struct {
 
 	// Final is the model's final answer text ("" if the run errored out).
 	Final string
+
+	// MaxSteps is the step budget enforced this run: base plus
+	// todo-funded extension, kept live so observers (step events, status
+	// meters) read the enforced line, not the configured one.
+	MaxSteps int
 
 	// LastPromptTokens is the backend-reported prompt size of the last
 	// completed call — how full the context actually got.
@@ -448,6 +460,18 @@ type runState struct {
 	// since the last tool work. See maxTodoBounces.
 	todoBounces int
 
+	// todoFunded counts step budget granted for acknowledged todo work.
+	// todoOpenMax and todoDoneMax are high-water marks (not snapshots):
+	// rewrites neither double-fund nor un-complete — deleting an item
+	// doesn't refund, re-adding it past the mark doesn't re-grant.
+	todoFunded  int
+	todoOpenMax int
+	todoDoneMax int
+	// todoClosingGranted latches the delivery handshake per all-done
+	// episode: reopening items resets it, so each genuine completion
+	// earns its own close.
+	todoClosingGranted bool
+
 	// toolCalls counts tool calls issued this run. Gates the first
 	// verify round together with claimsFileEffects below: a finish
 	// with no tool work and no file-effect claims behind it is
@@ -492,9 +516,9 @@ type runState struct {
 func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) {
 	var st runState
 	a.LastRunMutations = 0
-	a.report = RunReport{}
+	a.report = RunReport{MaxSteps: a.cfg.MaxSteps}
 
-	for step := 0; step < a.cfg.MaxSteps; step++ {
+	for step := 0; step < a.cfg.MaxSteps+st.todoFunded; step++ {
 		resp, err := a.chat(ctx, llm.ChatRequest{
 			Messages:  history,
 			Tools:     a.cfg.Tools.Defs(),
@@ -979,6 +1003,14 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			st.exploratorySteps++
 			a.trackSingleToolLoop(resp.Message.ToolCalls, results, &st)
 		}
+		if a.cfg.TodoFunding {
+			fundTodoSteps(a.cfg.Tools, a.cfg.MaxSteps, &st)
+			if checkTodoClosing(a.cfg.Tools, &st) {
+				st.todoFunded += todoClosingSteps
+				history = a.nudge(history, NudgeClosing, fmt.Sprintf(prompts.Closing, todoClosingSteps))
+			}
+			a.report.MaxSteps = a.cfg.MaxSteps + st.todoFunded
+		}
 		if progressed && !repeat {
 			st.stuckSteps = 0
 		} else {
@@ -993,7 +1025,7 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 
 	a.LastRunMutations = st.mutatingSucceeded
 	a.report.MutatedPaths = st.mutatedPaths
-	return "", fmt.Errorf("%w (%d) without finishing", ErrMaxSteps, a.cfg.MaxSteps)
+	return "", fmt.Errorf("%w (%d) without finishing", ErrMaxSteps, a.cfg.MaxSteps+st.todoFunded)
 }
 
 // chat runs one model turn: streaming when configured and supported,
@@ -1149,6 +1181,68 @@ const maxSameToolSteps = 3
 // in-context retries), same number.
 const maxTodoBounces = 3
 
+// todoStepsPerItem funds acknowledged todo work: open items at first
+// sight (cold-start for long task lists) and newly completed items
+// afterwards, each worth this many steps. Total granted never exceeds
+// one extra base budget — worst case is a doubled run. The audit that
+// motivated this needed ~5 steps per item against a fixed 25.
+const todoStepsPerItem = 4
+
+// todoClosingSteps funds the delivery handshake when the list flips to
+// all-done: worst case is a verify round plus the confirming report.
+// Cap-exempt on purpose — the cap bounds work, and the handshake isn't
+// work. A run that did everything right must never die mid-report.
+const todoClosingSteps = 2
+
+// checkTodoClosing reports whether this poll closes an episode: the list
+// is empty having previously held items, and no handshake was granted
+// since. Reopened items reset the latch. Pure state transition — the
+// caller grants, updates the report, and tells the model.
+func checkTodoClosing(tools *Registry, st *runState) bool {
+	_, open := tools.TodoProgress()
+	if len(open) > 0 {
+		st.todoClosingGranted = false
+		return false
+	}
+	if st.todoOpenMax == 0 || st.todoClosingGranted {
+		return false
+	}
+	st.todoClosingGranted = true
+	return true
+}
+
+// fundTodoSteps grants step budget for acknowledged checklist work,
+// polled after each tool step. Creation funds cold-start (a fresh
+// 5-item list immediately earns room); completions fund the tail.
+// High-water marks make rewrites safe: deleting items doesn't refund,
+// re-adding past the mark doesn't re-grant. Farming check-offs buys at
+// most the capped extension — steps buy chance, never correctness,
+// which stays governed by checks, verify, and stuck escalation.
+func fundTodoSteps(tools *Registry, maxSteps int, st *runState) {
+	if maxSteps <= 0 {
+		return
+	}
+	done, open := tools.TodoProgress()
+	grant := 0
+	if len(open) > st.todoOpenMax {
+		grant += (len(open) - st.todoOpenMax) * todoStepsPerItem
+		st.todoOpenMax = len(open)
+	}
+	if done > st.todoDoneMax {
+		grant += (done - st.todoDoneMax) * todoStepsPerItem
+		st.todoDoneMax = done
+	}
+	if grant <= 0 {
+		return
+	}
+	if room := maxSteps - st.todoFunded; room <= 0 {
+		return
+	} else if grant > room {
+		grant = room
+	}
+	st.todoFunded += grant
+}
+
 // maxIdenticalAttempts is how many identical attempts at a call are
 // allowed while it keeps failing and nothing mutates in between: the
 // call executes twice and the third attempt is refused without running.
@@ -1204,6 +1298,7 @@ const (
 	NudgeBudget    = "budget"
 	NudgeStuck     = "stuck"
 	NudgeTodo      = "todo"
+	NudgeClosing   = "closing"
 )
 
 // harnessText marks loop-generated text as harness provenance. The

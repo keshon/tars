@@ -420,12 +420,15 @@ func main() {
 		Stream:          streamEnabled(*streamFlag, *modeFlag, *tuiFlag),
 		MCPTools:        mcpTools,
 		ReasoningBudget: *thinkBudget,
-		OnDelta:         func(chunk string) { fmt.Print(chunk) },
-		OnStep:          stepPrinter(*modeFlag, emitter, *logMax),
-		OnToolResult:    toolResultPrinter(*modeFlag, emitter),
-		OnUsage:         usagePrinter(*modeFlag, emitter),
-		OnFinding:       findingPrinter(*modeFlag),
-		OnNudge:         nudgePrinter(*modeFlag),
+		// Direct runs fund acknowledged todo work with extra steps;
+		// -serve leaves this off until its budget story is decided.
+		TodoFunding:  true,
+		OnDelta:      func(chunk string) { fmt.Print(chunk) },
+		OnStep:       stepPrinter(*modeFlag, emitter, *logMax),
+		OnToolResult: toolResultPrinter(*modeFlag, emitter),
+		OnUsage:      usagePrinter(*modeFlag, emitter),
+		OnFinding:    findingPrinter(*modeFlag),
+		OnNudge:      nudgePrinter(*modeFlag),
 	}
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})
@@ -596,7 +599,7 @@ func runMission(ctx context.Context, p missionParams) error {
 		ApprovePlan:  approve,
 		VerifyCmd:    p.verifyCmd,
 		OnStep: func(subID string, step int, msg llm.Message) {
-			api.EmitStep(p.emitter, subID, step, msg, false)
+			api.EmitStep(p.emitter, subID, step, msg, false, 0)
 			if msg.Content != "" {
 				fmt.Fprintf(p.noteW, "[%s step %d] %s\n", subID, step, agent.TruncateMiddle(msg.Content, p.logMax))
 			}
@@ -738,7 +741,7 @@ func stdioSuspender(noteW io.Writer, emitter *events.Emitter) agent.Suspender {
 func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, int, llm.Message) {
 	if mode == "json" && emitter != nil {
 		return func(label string, step int, msg llm.Message) {
-			api.EmitStep(emitter, label, step, msg, false)
+			api.EmitStep(emitter, label, step, msg, false, 0)
 		}
 	}
 	return func(label string, step int, msg llm.Message) { printStep(label, step, msg, logMax) }

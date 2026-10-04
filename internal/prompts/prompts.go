@@ -122,6 +122,11 @@ var (
 	// count, and the quoted items.
 	TodoOpen = read("todo_open.txt")
 
+	// Closing grants the delivery handshake when the list flips to
+	// all-done: the run earned its +2 steps and is told to spend them
+	// reporting, not fiddling. One verb: the granted steps.
+	Closing = read("closing.txt")
+
 	// DelegateHint, AskHint, and WriteHint are capability-conditional
 	// suffixes: the loop appends each only when its registry offers the
 	// named tool, so role-agnostic nudges never cite tools the recipient

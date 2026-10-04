@@ -65,6 +65,13 @@ type Env struct {
 	// wrap-ups. Passed straight into agent.Config, which documents it.
 	ReasoningBudget int
 
+	// TodoFunding enables todo-driven step funding for the Interactive
+	// agent: acknowledged checklist work extends its step budget up to
+	// one extra base budget. Consulted by Interactive only — Subagent,
+	// Worker, Inspector, and Planner run fixed step budgets even when
+	// sharing this Env, by construction (bounded unit of work).
+	TodoFunding bool
+
 	// MCPTools are discovered MCP tools appended to the full tool set
 	// (Interactive, Subagent, Worker — never the read-only Inspector).
 	MCPTools []agent.Tool
@@ -276,6 +283,7 @@ func Interactive(e Env, label, stateFile string,
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
 		ReasoningBudget: e.ReasoningBudget,
+		TodoFunding:     e.TodoFunding,
 		StateFile:       e.statePath(stateFile),
 		Verify:          verify,
 		OnStep:          e.onStep(label),
