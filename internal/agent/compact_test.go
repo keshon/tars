@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/keshon/tars/internal/llm"
@@ -86,6 +87,31 @@ func TestStepGroups_SplitsOnAssistant(t *testing.T) {
 	}
 	if len(groups[0]) != 3 || len(groups[1]) != 1 {
 		t.Fatalf("unexpected group sizes: %d, %d", len(groups[0]), len(groups[1]))
+	}
+}
+
+// Delegate reports name no files in their call arguments — the touched
+// paths live in the result envelope. They must survive in the notice,
+// or post-compaction history remembers that a subagent ran but not what
+// it changed.
+func TestSummarizeDropped_KeepsDelegatePaths(t *testing.T) {
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "task"},
+	}
+	for i := 0; i < 10; i++ {
+		history = append(history,
+			llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "c", Name: "delegate_task"}}},
+			llm.Message{Role: llm.RoleTool, ToolCallID: "c", Content: "DELEGATE\nmutations: 2\npaths: sub/a.go\npaths: sub/b.go\n----\ndone"},
+		)
+	}
+	got := compactHistory(history, 3)
+	if len(got) < 3 {
+		t.Fatalf("too short: %d messages", len(got))
+	}
+	notice := got[2].Content
+	if !strings.Contains(notice, "sub/a.go") || !strings.Contains(notice, "sub/b.go") {
+		t.Fatalf("delegate paths lost from notice: %q", notice)
 	}
 }
 

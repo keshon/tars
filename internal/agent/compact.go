@@ -115,6 +115,18 @@ func summarizeDropped(dropped [][]llm.Message) string {
 					lastText = strings.TrimSpace(m.Content)
 				}
 			}
+			if m.Role == llm.RoleTool {
+				// Delegate reports name no files in their call
+				// arguments — the paths live in the result envelope.
+				// Without this, subagent work compacts down to a bare
+				// delegate_task×N with no record of what it touched.
+				_, dps := parseDelegateMutations(m.Content)
+				for _, p := range dps {
+					if p != "" && !containsStr(paths, p) && len(paths) < 20 {
+						paths = append(paths, p)
+					}
+				}
+			}
 		}
 	}
 	var b strings.Builder
