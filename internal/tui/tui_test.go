@@ -1378,6 +1378,39 @@ func TestStampsRightAligned(t *testing.T) {
 	}
 }
 
+func TestCleanTextStripsCR(t *testing.T) {
+	if got := cleanText("a\r\nb\rc"); got != "a\nb\nc" {
+		t.Fatalf("cleanText = %q", got)
+	}
+}
+
+func TestCRLFContentStaysInWidth(t *testing.T) {
+	st := defaultStyles()
+	// CRLF tool output (read_file on a Windows file) must render with
+	// no stray CR and no line past the width: a \r mid-line returns
+	// the cursor to column 0, so stamp padding overwrites the head
+	// and the alt-screen frame desyncs (ghost text over stale rows).
+	b := toolCardBlock("c1", "read_file a.md")
+	b.result = "FILE\npath: a.md\n----\n# Title\r\n\r\nbody line\r\n"
+	b.open = false
+	for _, line := range strings.Split(renderBlock(b, st, true, 80), "\n") {
+		if strings.Contains(line, "\r") {
+			t.Fatalf("CR survived render: %q", line)
+		}
+		if n := lipgloss.Width(line); n > 80 {
+			t.Fatalf("line %d cols past 80: %q", n, line)
+		}
+	}
+	// Stamped CRLF answer: the stamp line must keep its head text.
+	out := renderBlock(answerBlock("integrity.\r\nsecond line"), st, false, 40)
+	if strings.Contains(out, "\r") {
+		t.Fatalf("CR survived stamped render: %q", out)
+	}
+	if first := strings.Split(out, "\n")[0]; !strings.Contains(first, "integrity.") || !strings.Contains(first, "[") {
+		t.Fatalf("stamp line lost its head: %q", first)
+	}
+}
+
 func TestBareSkipsGutter(t *testing.T) {
 	st := defaultStyles()
 	b := markerBlock("note")

@@ -184,6 +184,11 @@ func thinkSummary(s string) string {
 // lines would vanish past the right edge. Continuation fragments take
 // a blank gutter, marking them as wrapped rather than new.
 func renderBlock(b block, st styles, expandThink bool, width int) string {
+	// Blocks are passed by value: normalizing here covers every path
+	// to the terminal (compact/full, cards, tests) without touching
+	// stored history.
+	b.text = cleanText(b.text)
+	b.result = cleanText(b.result)
 	raw := b.text
 	if b.role == roleThink {
 		if !expandThink {
@@ -221,6 +226,19 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 		out[0] = alignStamp(out[0], st, b.at, width)
 	}
 	return strings.Join(out, "\n")
+}
+
+// cleanText normalizes line endings at the display boundary. Tool
+// results carry the file's own CRLF (a 11672-byte read brought 239
+// CRs into the renderer), and model deltas may echo them back. A
+// stray \r moves the terminal cursor to column 0 mid-line, so
+// anything written after it (alignStamp's padding) overwrites the
+// line head, and the alt-screen repaint desyncs into ghost frames.
+// Lone \r becomes a newline rather than vanishing: it was a line
+// break where it came from.
+func cleanText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }
 
 // resultPreviewLines caps collapsed tool results (pi parity:
@@ -387,6 +405,7 @@ func stamps(r role) bool {
 // and reflow, but no markdown (partial spans would break across
 // chunks) and no timestamp (incomplete blocks aren't stamped).
 func renderLive(text string, st styles, width int) []string {
+	text = cleanText(text)
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
 		for i, f := range reflow(line, width-gutterWidth) {
