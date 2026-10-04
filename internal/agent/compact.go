@@ -90,6 +90,113 @@ func stepGroups(msgs []llm.Message) [][]llm.Message {
 // costs more than it saves.
 const pruneMinimumTokens = 20000
 
+// Context budgets: the token math that decides generation sizes and
+// warning thresholds. Sibling to compaction (which reacts when the
+// window fills) rather than part of it.
+
+// effectiveMaxTokens caps Config.MaxTokens against the room actually left
+// in the context window, using the prompt size from the previous call as
+// a stand-in for "about how big the next prompt will be" (history only
+// grows a little per step, so this is a safe approximation, not the exact
+// next value). Without this, asking for e.g. 32768 tokens of generation
+// when the prompt itself is already using real context space causes
+// exactly what koboldcpp warns about: "most of the context will be
+// removed" — the backend starts evicting the prompt mid-generation and
+// produces incoherent, runaway output instead of erroring cleanly.
+func (a *Agent) effectiveMaxTokens(lastPromptTokens int) int {
+	if a.cfg.ContextLimit <= 0 {
+		return a.cfg.MaxTokens
+	}
+	promptEstimate := lastPromptTokens
+	if promptEstimate <= 0 {
+		// First call, nothing measured yet. System prompt + tool schemas
+		// alone are routinely 1000+ tokens (we've seen 1135 in practice)
+		// — don't assume zero just because we haven't measured it.
+		promptEstimate = 1536
+	}
+	const safetyMargin = 256 // chat template / role overhead, not exact
+	room := a.cfg.ContextLimit - promptEstimate - safetyMargin
+	if room < 256 {
+		room = 256 // always ask for *something* rather than zero/negative
+	}
+	if room > a.cfg.MaxTokens {
+		return a.cfg.MaxTokens
+	}
+	return room
+}
+
+// budgetWarning returns a one-time nudge when usage crosses a new context
+// threshold, or "" if there's nothing new to report. *warned tracks the
+// highest percentage already warned about, so crossing 75% doesn't nag
+// every single step afterward — only the next, higher threshold matters.
+func (a *Agent) budgetWarning(usage llm.Usage, warned *int) string {
+	if a.cfg.ContextLimit <= 0 || usage.PromptTokens <= 0 {
+		return ""
+	}
+	pct := usage.PromptTokens * 100 / a.cfg.ContextLimit
+	msg := ""
+	switch {
+	case pct >= 90 && *warned < 90:
+		*warned = 90
+		msg = fmt.Sprintf(prompts.BudgetWarning, usage.PromptTokens, a.cfg.ContextLimit, pct)
+	case pct >= 75 && *warned < 75:
+		*warned = 75
+		msg = fmt.Sprintf(prompts.BudgetNotice, usage.PromptTokens, a.cfg.ContextLimit, pct)
+	default:
+		return ""
+	}
+	if a.hasTool("delegate_task") {
+		msg += " " + prompts.DelegateHint
+	}
+	return msg
+}
+
+// defaultCompactAtPercent is the share of the context window at which
+// history is compacted. Well below the old 90%: a window is what the
+// backend will accept, not what the model can still reason over, and the
+// steps taken between those two points are the ones that produce
+// confidently wrong work.
+const defaultCompactAtPercent = 60
+
+// dropRepeatCaches forgets which calls ran and which failed. The refusal
+// texts cite conversation content ("re-read it from the conversation",
+// "already failed identically") — true while that content is present,
+// false once compaction drops it or a mutation supersedes it. The maps
+// re-learn from fresh executions, bounded exactly as before.
+func dropRepeatCaches(st *runState) {
+	st.idempotentSeen = nil
+	st.failedCalls = nil
+}
+
+// maybeCompact drops old step groups once the prompt passes the
+// threshold, and may do so more than once in a run — a long run that
+// compacted at step 12 and then grew again is in exactly the state
+// compaction exists for.
+//
+// compactHistory returns its input unchanged when there is nothing left
+// to drop, which is what stops a full history from being compacted every
+// step to no effect.
+func (a *Agent) maybeCompact(history *[]llm.Message, usage llm.Usage, st *runState) bool {
+	if a.cfg.ContextLimit <= 0 || a.cfg.CompactKeepSteps <= 0 || usage.PromptTokens <= 0 {
+		return false
+	}
+	if usage.PromptTokens*100/a.cfg.ContextLimit < a.cfg.CompactAtPercent {
+		return false
+	}
+	// Small windows compact on percent alone; large windows also require
+	// enough absolute tokens to be worth the churn.
+	if a.cfg.ContextLimit >= 32000 && usage.PromptTokens < pruneMinimumTokens {
+		return false
+	}
+	compacted := compactHistory(*history, a.cfg.CompactKeepSteps)
+	if len(compacted) >= len(*history) {
+		return false
+	}
+	*history = compacted
+	dropRepeatCaches(st)
+	return true
+}
+
 // summarizeDropped extracts ground facts from dropped step groups: how many
 // steps, which tools ran, which paths were touched, and the last assistant
 // text snippet. Bounded output — this string itself lives in context.

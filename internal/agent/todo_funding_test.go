@@ -25,10 +25,10 @@ type todoPhase struct {
 	open []string
 }
 
-func (scriptTodo) Name() string            { return "todo" }
-func (scriptTodo) Description() string     { return "stub" }
-func (scriptTodo) Mode() ToolMode          { return Concurrent }
-func (scriptTodo) Schema() json.RawMessage { return json.RawMessage(`{}`) }
+func (*scriptTodo) Name() string            { return "todo" }
+func (*scriptTodo) Description() string     { return "stub" }
+func (*scriptTodo) Mode() ToolMode          { return Concurrent }
+func (*scriptTodo) Schema() json.RawMessage { return json.RawMessage(`{}`) }
 
 // Models the real Todo (idempotent since the ritual fix): identical
 // payloads short-circuit instead of re-executing.

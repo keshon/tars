@@ -9,8 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/permission"
+	"github.com/keshon/tars/internal/prompts"
 )
 
 // ToolMode tells the loop whether a tool is safe to run concurrently with
@@ -156,4 +160,319 @@ func (r *Registry) TodoProgress() (done int, open []string) {
 		return tl.Progress()
 	}
 	return 0, nil
+}
+
+// maxIdenticalAttempts is how many identical attempts at a call are
+// allowed while it keeps failing and nothing mutates in between: the
+// call executes twice and the third attempt is refused without running.
+// Above two so a genuinely time-dependent retry has room — polling a
+// server that is still starting is the honest case, and start_background
+// is Concurrent so it does not clear this cache.
+const maxIdenticalAttempts = 3
+
+// executeToolCalls runs one step's tool calls and accounts for them:
+// repeat detection, refusal short-circuits, policy gates, concurrent vs
+// exclusive scheduling, result collection, mutation bookkeeping, loop
+// counters, and step funding. It returns whether the calls repeated the
+// previous step and the grown history — it never finishes runs; the
+// loop decides that from the returned repeat flag.
+func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, calls []llm.ToolCall, history []llm.Message) (bool, []llm.Message) {
+	signature := callSignature(calls)
+	repeat := signature == st.lastSignature
+	st.lastSignature = signature
+	// Acting resets the todo-bounce latch: only back-to-back
+	// narration without intervening work counts toward it.
+	st.todoBounces = 0
+
+	// Tool calls within one step are scheduled by Tool.Mode(), not run
+	// uniformly. Concurrent calls (reads, independent delegate_task
+	// calls, read-only checks) run together via goroutines — this is
+	// what makes multiple delegate_task calls in one step actually
+	// run in parallel. Exclusive calls (anything that mutates the
+	// workspace, or run_shell's unanalyzable arbitrary command) run
+	// one at a time and never overlap with the Concurrent batch or
+	// each other — a model issuing write_file then patch_file on the
+	// same file in one step can rely on that order; two reads can't
+	// race a write of the same path either way, in any order.
+	results := make([]callResult, len(calls))
+
+	// Exact repeats of idempotent (pure-read) calls don't re-execute:
+	// nothing has changed, so the result would be byte-identical — and
+	// re-delivering it teaches a weak model nothing while filling the
+	// context with duplicates. The repeat comes back as an *error*
+	// result on purpose: errors don't count as progress, so the stuck
+	// detector keeps escalating if the model won't change course.
+	//
+	// write_file to a path already written this run is refused the same
+	// way: soft nudges don't break rewrite loops when every call
+	// returns success (progressed=true clears stuckSteps).
+	skipped := make([]bool, len(calls))
+	for i, call := range calls {
+		if call.Name == "write_file" {
+			if path := writePathFromArgs(call.Arguments); path != "" {
+				if prev, seen := st.wrotePaths[path]; seen {
+					skipped[i] = true
+					results[i] = callResult{err: fmt.Errorf(
+						"already wrote %s in step %d — it is on disk. Do NOT rewrite it with "+
+							"write_file. Use patch_file for edits, or write_file the NEXT missing "+
+							"file from your files_hint / acceptance list, then finish when done",
+						path, prev)}
+					continue
+				}
+			}
+		}
+		// A call that already failed, repeated identically with nothing
+		// mutated since, fails identically again. Soft nudges do not
+		// stop this: run_shell already returns an error on a non-zero
+		// exit, so the stuck counter was climbing and escalating the
+		// whole time a live worker ran `go test <one _test.go file>`
+		// seven times. It ignored every nudge. A refusal is not
+		// ignorable.
+		//
+		// The tolerance exists because a few tools are legitimately
+		// time-dependent — check_url against a server that is still
+		// starting is the honest case, and start_background is
+		// Concurrent so it does not clear this cache.
+		key := callKey(call.Name, call.Arguments)
+		if n := st.failedCalls[key]; n >= maxIdenticalAttempts-1 {
+			skipped[i] = true
+			results[i] = callResult{err: fmt.Errorf(
+				"this exact %s call has already failed %d times and nothing in the workspace "+
+					"has changed since — it will fail the same way again. Read the error above "+
+					"and fix the cause, or take a different approach; do not re-run it",
+				call.Name, n)}
+			continue
+		}
+
+		if !a.cfg.Tools.IdempotentOf(call.Name) {
+			continue
+		}
+		sig := key
+		if prev, seen := st.idempotentSeen[sig]; seen {
+			skipped[i] = true
+			results[i] = callResult{err: fmt.Errorf(
+				"this exact %s call (same arguments) already ran in step %d and nothing has "+
+					"changed since — its result is still valid, re-read it from the conversation. "+
+					"Do not repeat the call; do something different (different path, different "+
+					"arguments, or move on to acting on what you already know)",
+				call.Name, prev)}
+		}
+	}
+
+	var concurrentIdx, exclusiveIdx []int
+	for i, call := range calls {
+		if skipped[i] {
+			continue
+		}
+		if a.cfg.Tools.ModeOf(call.Name) == Concurrent {
+			concurrentIdx = append(concurrentIdx, i)
+		} else {
+			exclusiveIdx = append(exclusiveIdx, i)
+		}
+	}
+
+	runOne := func(i int) {
+		call := calls[i]
+		resource := toolResource(call.Name, call.Arguments)
+		if a.cfg.BeforeToolCall != nil {
+			eff := a.cfg.Policy.Evaluate(call.Name, resource)
+			if eff == permission.Ask || eff == permission.Deny {
+				hookEff, hookErr := a.cfg.BeforeToolCall(ctx, call.Name, resource, call.Arguments)
+				if hookErr != nil {
+					results[i] = callResult{err: hookErr}
+					if a.cfg.AfterToolCall != nil {
+						a.cfg.AfterToolCall(call.Name, resource, "", hookErr)
+					}
+					return
+				}
+				eff = hookEff
+			}
+			if eff == permission.Deny {
+				denied := fmt.Errorf("blocked by policy (%s on %s)", call.Name, resource)
+				results[i] = callResult{err: denied}
+				if a.cfg.AfterToolCall != nil {
+					a.cfg.AfterToolCall(call.Name, resource, "", denied)
+				}
+				return
+			}
+		}
+		content, err := a.cfg.Tools.Run(ctx, call.Name, call.Arguments)
+		results[i] = callResult{content: content, err: err}
+		if a.cfg.AfterToolCall != nil {
+			a.cfg.AfterToolCall(call.Name, resource, content, err)
+		}
+	}
+
+	if len(concurrentIdx) > 0 {
+		var wg sync.WaitGroup
+		for _, i := range concurrentIdx {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				runOne(i)
+			}(i)
+		}
+		wg.Wait()
+	}
+	for _, i := range exclusiveIdx {
+		runOne(i)
+	}
+
+	mutatingBefore := st.mutatingSucceeded
+	progressed := false
+	exclusiveSucceeded := false
+	for i, call := range calls {
+		content := results[i].content
+		if results[i].err != nil {
+			content = "error: " + results[i].err.Error()
+			if !skipped[i] {
+				// Skipped calls are already refusals; counting them
+				// would let the counter climb without the model ever
+				// having re-attempted anything.
+				if st.failedCalls == nil {
+					st.failedCalls = make(map[string]int)
+				}
+				st.failedCalls[callKey(call.Name, call.Arguments)]++
+			}
+		} else {
+			progressed = true
+			delete(st.failedCalls, callKey(call.Name, call.Arguments))
+			if a.cfg.Tools.ModeOf(call.Name) == Exclusive {
+				exclusiveSucceeded = true
+			}
+			if a.cfg.Tools.IdempotentOf(call.Name) {
+				if st.idempotentSeen == nil {
+					st.idempotentSeen = make(map[string]int)
+				}
+				st.idempotentSeen[callKey(call.Name, call.Arguments)] = step
+			}
+			if containsStr(a.cfg.MutatingTools, call.Name) {
+				st.mutatingSucceeded++
+				for _, p := range mutatedPathsFromCall(call.Arguments) {
+					if !containsStr(st.mutatedPaths, p) {
+						st.mutatedPaths = append(st.mutatedPaths, p)
+					}
+				}
+				if call.Name == "write_file" {
+					if path := writePathFromArgs(call.Arguments); path != "" {
+						if st.wrotePaths == nil {
+							st.wrotePaths = make(map[string]int)
+						}
+						st.wrotePaths[path] = step
+					}
+				}
+			}
+			if call.Name == "delegate_task" {
+				if m, paths := parseDelegateMutations(content); m > 0 {
+					st.mutatingSucceeded += m
+					for _, p := range paths {
+						if !containsStr(st.mutatedPaths, p) {
+							st.mutatedPaths = append(st.mutatedPaths, p)
+						}
+					}
+				}
+			}
+		}
+		history = append(history, llm.Message{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    content,
+		})
+		if a.cfg.OnToolResult != nil {
+			a.cfg.OnToolResult(call.ID, content)
+		}
+	}
+
+	// Anything that mutated (an Exclusive call — write/patch/shell — or
+	// a subagent reporting writes) invalidates the repeat cache: the
+	// same read can now legitimately return something new, and a call
+	// that failed before may now succeed.
+	if exclusiveSucceeded || st.mutatingSucceeded > mutatingBefore {
+		dropRepeatCaches(st)
+	}
+
+	// A step that changed the workspace is progress by definition, so
+	// it can never be evidence of a loop. Writing four different files
+	// in a row is the normal shape of a scaffolding subtask — it is
+	// write_file four times, which is exactly what the same-tool
+	// counter used to flag. Live failure, FPS mission: package.json, vite.config.ts and index.html were written
+	// correctly, tripped the nudge at three, and the worker was told
+	// to "switch to a genuinely different tool" mid-scaffold.
+	// src/main.ts — the third acceptance criterion — was never written.
+	//
+	// Exact repeats are already handled by callSignature/idempotentSeen
+	// and wrotePaths, so what's left for the same-tool counter is the
+	// narrow case that nudge was written for: grinding one read-only
+	// tool with slightly different arguments, getting the same bytes
+	// back, and never converging. Fresh results restart the chain —
+	// see trackSingleToolLoop.
+	mutated := st.mutatingSucceeded > mutatingBefore
+	if mutated {
+		st.exploratorySteps = 0
+		st.lastSingleTool = ""
+		st.lastSingleResult = 0
+		st.consecutiveSameToolCount = 0
+	} else {
+		st.exploratorySteps++
+		a.trackSingleToolLoop(calls, results, st)
+	}
+	if a.cfg.TodoFunding {
+		fundTodoSteps(a.cfg.Tools, a.cfg.MaxSteps, st)
+		if checkTodoClosing(a.cfg.Tools, st) {
+			st.todoFunded += todoClosingSteps
+			history = a.nudge(history, NudgeClosing, fmt.Sprintf(prompts.Closing, todoClosingSteps))
+		}
+		a.report.MaxSteps = a.cfg.MaxSteps + st.todoFunded
+	}
+	if progressed && !repeat {
+		st.stuckSteps = 0
+	} else {
+		st.stuckSteps++
+	}
+	return repeat, history
+}
+
+// callResult is one executed tool call's outcome: either content or err
+// is set. It lives beside the execution that produces it (tools.go)
+// rather than the loop that consumes it.
+type callResult struct {
+	content string
+	err     error
+}
+
+// callSignature identifies a set of tool calls by name+arguments, order
+// independent, so the loop can tell "the model issued the exact same
+// call(s) again" apart from "the model made progress" - a tool call that
+// succeeds without error is not the same thing as the model moving
+// forward if it's the same call as last time.
+func callSignature(calls []llm.ToolCall) string {
+	parts := make([]string, len(calls))
+	for i, c := range calls {
+		parts[i] = callKey(c.Name, c.Arguments)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
+}
+
+// callKey identifies one tool call for repeat detection, canonicalizing
+// the arguments so that spelling differences don't read as different
+// calls. A model re-reading one file emits {"path":"x"} one step and
+// {"path": "x", "metadata_only": false} the next; on raw bytes those are
+// two distinct keys, so the repeat guard never fires and the same file
+// comes back again. Round-tripping through a map sorts the keys and
+// drops the whitespace.
+//
+// Arguments that aren't a JSON object (malformed output, a bare string)
+// fall back to the raw bytes: better a key that is too specific than one
+// that collapses two genuinely different calls into one.
+func callKey(name string, args json.RawMessage) string {
+	var obj map[string]any
+	if err := json.Unmarshal(args, &obj); err != nil {
+		return name + ":" + string(args)
+	}
+	canonical, err := json.Marshal(obj)
+	if err != nil {
+		return name + ":" + string(args)
+	}
+	return name + ":" + string(canonical)
 }
