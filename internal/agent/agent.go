@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -423,10 +424,15 @@ func toolResource(name string, args json.RawMessage) string {
 type runState struct {
 	stuckSteps, exploratorySteps, mutatingSucceeded, warnedThreshold, lastPromptTokens int
 	consecutiveSameToolCount                                                           int
-	verifiedOnce, searchFatigueWarned, blockFinishDueToVerify, toolLoopWarned          bool
-	emptyFinishRetried                                                                 bool
-	lastSignature, verifyFailedOutput, lastSingleTool                                  string
-	mutatedPaths                                                                       []string
+	// lastSingleResult fingerprints the previous same-tool step's
+	// outcome, so the loop counter accumulates identical results, not
+	// mere repetition: three fresh reads are exploration, three times
+	// the same bytes are grinding. See trackSingleToolLoop.
+	lastSingleResult                                                          uint64
+	verifiedOnce, searchFatigueWarned, blockFinishDueToVerify, toolLoopWarned bool
+	emptyFinishRetried                                                        bool
+	lastSignature, verifyFailedOutput, lastSingleTool                         string
+	mutatedPaths                                                              []string
 
 	// zeroWriteFinishes counts how many times the model has tried to end
 	// the run having written nothing, while VerifyOnZeroWrites says the
@@ -711,10 +717,6 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		// each other — a model issuing write_file then patch_file on the
 		// same file in one step can rely on that order; two reads can't
 		// race a write of the same path either way, in any order.
-		type callResult struct {
-			content string
-			err     error
-		}
 		results := make([]callResult, len(resp.Message.ToolCalls))
 
 		// Exact repeats of idempotent (pure-read) calls don't re-execute:
@@ -927,15 +929,18 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		// Exact repeats are already handled by callSignature/idempotentSeen
 		// and wrotePaths, so what's left for the same-tool counter is the
 		// narrow case that nudge was written for: grinding one read-only
-		// tool with slightly different arguments and never converging.
+		// tool with slightly different arguments, getting the same bytes
+		// back, and never converging. Fresh results restart the chain —
+		// see trackSingleToolLoop.
 		mutated := st.mutatingSucceeded > mutatingBefore
 		if mutated {
 			st.exploratorySteps = 0
 			st.lastSingleTool = ""
+			st.lastSingleResult = 0
 			st.consecutiveSameToolCount = 0
 		} else {
 			st.exploratorySteps++
-			a.trackSingleToolLoop(resp.Message.ToolCalls, &st)
+			a.trackSingleToolLoop(resp.Message.ToolCalls, results, &st)
 		}
 		if progressed && !repeat {
 			st.stuckSteps = 0
@@ -1079,9 +1084,12 @@ func (a *Agent) maybeCompact(history *[]llm.Message, usage llm.Usage, st *runSta
 }
 
 // trackSingleToolLoop counts consecutive steps where the model issued
-// exactly one tool call and it's the same tool name as the previous
-// such step — catches run_shell/git-log tweak loops that exact-repeat
-// detection misses because the arguments differ slightly each time.
+// exactly one tool call, it's the same tool name as the previous such
+// step, and it returned the same bytes. Novelty restarts the chain:
+// read a/b/c with fresh results never accumulates, while grinding one
+// query with slightly different arguments — the case exact-repeat
+// detection misses — still trips at maxSameToolSteps. Errors fold in
+// as their message, so three identical failures count as one grind.
 // maxSameToolSteps is how many consecutive non-mutating steps calling one
 // tool alone trip the tool-loop nudge.
 const maxSameToolSteps = 3
@@ -1103,6 +1111,15 @@ type stepOutcome struct {
 
 	// budget is a context-usage notice for this step, or "" for none.
 	budget string
+}
+
+// callResult is one executed tool call's outcome: either content or err
+// is set. Package-level (not step-local) so post-execution analysis —
+// the same-tool loop counter — can read results without re-deriving
+// the content/error convention.
+type callResult struct {
+	content string
+	err     error
 }
 
 // interject picks at most ONE thing to say to the model at the end of a
@@ -1277,19 +1294,41 @@ func claimsFileEffects(text string) bool {
 	return fileToken.MatchString(text)
 }
 
-func (a *Agent) trackSingleToolLoop(calls []llm.ToolCall, st *runState) {
+func (a *Agent) trackSingleToolLoop(calls []llm.ToolCall, results []callResult, st *runState) {
 	if len(calls) != 1 {
 		st.lastSingleTool = ""
+		st.lastSingleResult = 0
 		st.consecutiveSameToolCount = 0
 		return
 	}
+	// results parallels calls by construction (one entry per issued
+	// call); the length check is a guard against indexing, not a case
+	// the loop produces.
+	var h uint64
+	if len(results) > 0 {
+		h = resultHash(results[0])
+	}
 	name := calls[0].Name
-	if name == st.lastSingleTool {
+	if name == st.lastSingleTool && h == st.lastSingleResult {
 		st.consecutiveSameToolCount++
 		return
 	}
 	st.lastSingleTool = name
+	st.lastSingleResult = h
 	st.consecutiveSameToolCount = 1
+}
+
+// resultHash fingerprints one call's outcome for the same-tool loop
+// counter. FNV-64a, not crypto: a collision costs one advisory nudge,
+// the fail-safe direction — identical to today's behavior.
+func resultHash(r callResult) uint64 {
+	h := fnv.New64a()
+	if r.err != nil {
+		h.Write([]byte("error: " + r.err.Error()))
+	} else {
+		h.Write([]byte(r.content))
+	}
+	return h.Sum64()
 }
 
 // budgetWarning returns a one-time nudge when usage crosses a new context

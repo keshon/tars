@@ -101,7 +101,8 @@ var (
 	// ToolLoop fires once when the same read-only tool is called alone for
 	// several consecutive steps with only small argument changes. Steps
 	// that mutate the workspace never count toward it — writing several
-	// different files in a row is progress, not a loop.
+	// different files in a row is progress, not a loop — and neither do
+	// steps that return fresh results: only identical outcomes accumulate.
 	ToolLoop = read("tool_loop.txt")
 
 	// AnnouncedNotWritten fires when the model tries to end a run that was
