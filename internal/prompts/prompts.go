@@ -98,6 +98,14 @@ var (
 	// placeholders: tokens used, limit, percent.
 	BudgetNotice = read("budget_notice.txt")
 
+	// StepNotice and StepWarning fire once when step usage crosses 75%
+	// and 90% of the enforced budget (base plus todo-funded extension).
+	// Four placeholders: steps used, limit, percent, steps left. The
+	// numbers ride the notice because a static budget line would lie as
+	// soon as funding moves the limit.
+	StepNotice  = read("step_notice.txt")
+	StepWarning = read("step_warning.txt")
+
 	// OverflowRecovered fires when a chat call failed with a
 	// context-window-exceeded error and history was compacted to recover.
 	OverflowRecovered = read("overflow_recovered.txt")
@@ -126,6 +134,13 @@ var (
 	// all-done: the run earned its +2 steps and is told to spend them
 	// reporting, not fiddling. One verb: the granted steps.
 	Closing = read("closing.txt")
+
+	// BudgetContinue asks the operator for one more base budget when a
+	// run dies at MaxSteps with open todos and a state file to resume
+	// from. Four verbs: steps used, open count, quoted items, granted
+	// steps. Session-level (not a loop nudge): the answer decides
+	// whether the run resumes.
+	BudgetContinue = read("budget_continue.txt")
 
 	// DelegateHint, AskHint, and WriteHint are capability-conditional
 	// suffixes: the loop appends each only when its registry offers the

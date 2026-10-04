@@ -1,0 +1,3 @@
+Step budget exhausted after %d steps with %d open todo items:
+%s
+Continue with %d more steps? (y/n)

@@ -1,0 +1,1 @@
+Step budget %d/%d used (%d%%): %d steps left. Wrap up now — finish the current item and report; do not start anything new.

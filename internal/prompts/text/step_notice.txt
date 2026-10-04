@@ -1,0 +1,1 @@
+Step budget %d/%d used (%d%%): %d steps left. Finish open todos first and skip low-value items — do not start new lines of inquiry.

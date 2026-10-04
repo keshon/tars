@@ -49,7 +49,7 @@ The same vocabulary as `-mode json`, so one parser serves both:
 {"seq": 11, "event": "delta", "text": "partial answer..."}
 ```
 
-`kind` is `ask_user`, `permission`, or `plan_approval`. Permission gates
+`kind` is `ask_user`, `permission`, `plan_approval`, or `budget`. Permission gates
 also carry `tool`, `resource`, and the operator-facing `prompt` (ask
 gates carry `prompt` only), so a client can name the gated call
 without keeping gate state. A `respond` answer of `n: <note>` denies

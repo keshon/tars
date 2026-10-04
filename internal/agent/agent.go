@@ -56,6 +56,12 @@ type RunReport struct {
 	// meters) read the enforced line, not the configured one.
 	MaxSteps int
 
+	// OpenTodos is the checklist still unchecked when the run ended
+	// (nil when none). Snapshot on the MaxSteps path only — that is the
+	// one exit where unfinished acknowledged work needs an operator
+	// decision. Sessions read it to ask for one more budget.
+	OpenTodos []string
+
 	// LastPromptTokens is the backend-reported prompt size of the last
 	// completed call — how full the context actually got.
 	LastPromptTokens int
@@ -177,6 +183,10 @@ func (a *Agent) saveState(history []llm.Message) {
 type runState struct {
 	stuckSteps, exploratorySteps, mutatingSucceeded, warnedThreshold, lastPromptTokens int
 	consecutiveSameToolCount                                                           int
+	// warnedSteps tracks the highest step-budget threshold already
+	// warned about (75/90 of the enforced limit), mirroring
+	// warnedThreshold for tokens.
+	warnedSteps int
 	// lastSingleResult fingerprints the previous same-tool step's
 	// outcome, so the loop counter accumulates identical results, not
 	// mere repetition: three fresh reads are exploration, three times

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/keshon/tars/internal/checks"
 	"github.com/keshon/tars/internal/events"
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/prompts"
 	"github.com/keshon/tars/internal/roles"
 	"github.com/keshon/tars/internal/workspace"
 )
@@ -140,8 +142,63 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	env.OnFinding = drain.reportPerEdit
 	a = roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
 	ans, err := a.Run(ctx, s.cfg.Task)
+	if err != nil {
+		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
+			ans, err = resAns, resErr
+		}
+	}
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
 	return ans, err
+}
+
+// budgetContinue asks the operator for one more base budget when a run
+// dies at MaxSteps with acknowledged work unfinished and a state file to
+// resume from. Single continuation per session call (no loop): piping yes
+// into stdin must not buy unbounded runs. Deny, answer error, headless
+// (ClosedSuspender), missing state file, and no open todos all fall
+// through to the original error — the run fails exactly as before.
+func (s *Session) budgetContinue(ctx context.Context, a *agent.Agent, err error) (string, error, bool) {
+	if !errors.Is(err, agent.ErrMaxSteps) {
+		return "", nil, false
+	}
+	if s.cfg.StateFile == "" || s.cfg.Answer == nil {
+		return "", nil, false
+	}
+	open := a.Report().OpenTodos
+	if len(open) == 0 {
+		return "", nil, false
+	}
+	rep, aerr := s.cfg.Answer(ctx, agent.SuspendRequest{
+		Kind: agent.SuspendBudget, ID: "budget",
+		Prompt: fmt.Sprintf(prompts.BudgetContinue,
+			a.Report().MaxSteps, len(open), shortOpen(open), agent.DefaultMaxSteps),
+	})
+	if aerr != nil {
+		return "", nil, false
+	}
+	if ans := strings.ToLower(strings.TrimSpace(rep.Answer)); ans != "y" && ans != "yes" {
+		return "", nil, false
+	}
+	history, lerr := agent.LoadState(s.cfg.StateFile)
+	if lerr != nil {
+		return "", nil, false
+	}
+	// Provenance mark mirrors agent.harnessText (unexported): this note
+	// is harness-generated, not operator-typed.
+	note := fmt.Sprintf("[harness] Step budget extended by operator approval (+%d steps). Continue the remaining work: %s. Do not restart finished items.",
+		agent.DefaultMaxSteps, shortOpen(open))
+	ans, rerr := a.Resume(ctx, history, note)
+	return ans, rerr, true
+}
+
+// shortOpen renders open todos for operator and model consumption,
+// capped: the list itself can be fifty items long.
+func shortOpen(open []string) string {
+	const maxShown = 5
+	if len(open) <= maxShown {
+		return strings.Join(open, "; ")
+	}
+	return strings.Join(open[:maxShown], "; ") + fmt.Sprintf(" (+%d more)", len(open)-maxShown)
 }
 
 // asker builds the ask_user implementation over the session suspender,
@@ -218,6 +275,11 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	env.OnFinding = drain.reportPerEdit
 	a = roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
 	ans, err := a.Resume(ctx, history, note)
+	if err != nil {
+		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
+			ans, err = resAns, resErr
+		}
+	}
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
 	return ans, err
 }

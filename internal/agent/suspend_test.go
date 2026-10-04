@@ -15,7 +15,8 @@ func TestClosedSuspender_Fails(t *testing.T) {
 }
 
 func TestSuspendKinds_Distinct(t *testing.T) {
-	if SuspendAsk == SuspendPermission || SuspendPermission == SuspendPlan || SuspendAsk == SuspendPlan {
+	if SuspendAsk == SuspendPermission || SuspendPermission == SuspendPlan || SuspendAsk == SuspendPlan ||
+		SuspendBudget == SuspendAsk || SuspendBudget == SuspendPermission || SuspendBudget == SuspendPlan {
 		t.Fatal("suspend kinds must be distinct")
 	}
 }

@@ -18,6 +18,10 @@ const (
 	SuspendPermission SuspendKind = "permission"
 	// SuspendPlan is a mission plan awaiting approve/reject/note.
 	SuspendPlan SuspendKind = "plan_approval"
+	// SuspendBudget is an exhausted step budget with acknowledged work
+	// unfinished, asking the operator for one more base budget. Deny,
+	// error, or headless all decline — the run fails as before.
+	SuspendBudget SuspendKind = "budget"
 )
 
 // SuspendRequest is one blocked gate.

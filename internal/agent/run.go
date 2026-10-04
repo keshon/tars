@@ -46,6 +46,12 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		history = append(history, resp.Message)
 		st.toolCalls += len(resp.Message.ToolCalls)
 		budgetNudge := a.budgetWarning(resp.Usage, &st.warnedThreshold)
+		if budgetNudge == "" {
+			// Token notices win ties through the shared slot: context
+			// death strands more work than step death, and one signal
+			// per step is the whole point of interject.
+			budgetNudge = a.stepWarning(&st, step)
+		}
 		if resp.Usage.PromptTokens > 0 {
 			st.lastPromptTokens = resp.Usage.PromptTokens
 		}
@@ -72,6 +78,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 
 	a.LastRunMutations = st.mutatingSucceeded
 	a.report.MutatedPaths = st.mutatedPaths
+	if _, open := a.cfg.Tools.TodoProgress(); len(open) > 0 {
+		a.report.OpenTodos = open
+	}
 	return "", fmt.Errorf("%w (%d) without finishing", ErrMaxSteps, a.cfg.MaxSteps+st.todoFunded)
 }
 
@@ -157,4 +166,30 @@ func (a *Agent) chat(ctx context.Context, req llm.ChatRequest) (llm.ChatResponse
 		}
 	}
 	return llm.ChatWithRetry(ctx, a.cfg.Client, req, llm.DefaultRetryPolicy())
+}
+
+// stepWarning renders a pacing notice at 75%/90% of the enforced step
+// budget (base plus todo-funded extension), each once per run. The
+// limit moves as funding lands; the latches don't move back, so a jump
+// past a threshold still fires it exactly once. Unconditional on
+// TodoFunding — pacing information is useful whether or not the budget
+// can grow.
+func (a *Agent) stepWarning(st *runState, step int) string {
+	limit := a.cfg.MaxSteps + st.todoFunded
+	if limit <= 0 {
+		return ""
+	}
+	used := step + 1
+	pct := used * 100 / limit
+	left := limit - used
+	switch {
+	case pct >= 90 && st.warnedSteps < 90:
+		st.warnedSteps = 90
+		return fmt.Sprintf(prompts.StepWarning, used, limit, pct, left)
+	case pct >= 75 && st.warnedSteps < 75:
+		st.warnedSteps = 75
+		return fmt.Sprintf(prompts.StepNotice, used, limit, pct, left)
+	default:
+		return ""
+	}
 }
