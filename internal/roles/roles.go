@@ -206,6 +206,14 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 // can block the process waiting on a human who is watching the parent.
 // The inherited System text names both withheld tools, so the scope
 // correction is composed here, where the restricted registry is chosen.
+// Observer hooks (steps, results, usage, nudges) are deliberately muted
+// here, not inherited: the parent session wraps them into parent-evidence
+// events, and a subagent's blow-by-blow would land in the parent
+// transcript as orphan blocks and overwrite the parent's usage meter —
+// unactionable noise the parent model can't even map, since it never sees
+// the subagent's history. The parent learns everything it can use from
+// the DELEGATE result envelope. Enforcement (gate) and file-grounded
+// findings still flow: those constrain or describe the work itself.
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:          e.Client,
@@ -218,9 +226,6 @@ func Subagent(e Env, role string) *agent.Agent {
 		SkipVerify:      true,
 		Policy:          e.policy(),
 		BeforeToolCall:  e.gate(),
-		OnToolResult:    e.OnToolResult,
-		OnUsage:         e.OnUsage,
-		OnNudge:         e.OnNudge,
 	})
 }
 

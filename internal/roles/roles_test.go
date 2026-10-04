@@ -2,10 +2,12 @@ package roles
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/keshon/tars/internal/llm"
@@ -95,6 +97,54 @@ func TestWorker_HasWorkingToolsButNoDelegation(t *testing.T) {
 	}
 	if hasTool(a, "delegate_task") {
 		t.Error("a mission worker delegating means the plan already decomposed the task")
+	}
+}
+
+// seqStub replays scripted responses in order.
+type seqStub struct {
+	calls int
+	steps []llm.ChatResponse
+}
+
+func (s *seqStub) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
+	r := s.steps[s.calls]
+	s.calls++
+	return r, nil
+}
+
+func missingRead(id string) llm.ChatResponse {
+	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+		{ID: id, Name: "read_file", Arguments: json.RawMessage(`{"path":"missing.go"}`)}}}}
+}
+
+// A subagent's blow-by-blow must not leak into parent evidence: results,
+// usage, and nudges stay inside the subagent even when they fire (two
+// failing reads earn a stuck nudge here). The parent learns the outcome
+// from the DELEGATE envelope, never the internals.
+func TestSubagent_ObserverHooksStaySilent(t *testing.T) {
+	var toolResults, usages, nudges int32
+	e := testEnv(t)
+	e.OnToolResult = func(string, string) { atomic.AddInt32(&toolResults, 1) }
+	e.OnUsage = func(int, llm.Usage) { atomic.AddInt32(&usages, 1) }
+	e.OnNudge = func(string, string) { atomic.AddInt32(&nudges, 1) }
+	client := &seqStub{steps: []llm.ChatResponse{
+		missingRead("c1"),
+		missingRead("c2"),
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+	}}
+	e.Client = client
+	sub := Subagent(e, "")
+
+	out, err := sub.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("out = %q", out)
+	}
+	if toolResults != 0 || usages != 0 || nudges != 0 {
+		t.Fatalf("subagent leaked observers: results=%d usage=%d nudges=%d",
+			toolResults, usages, nudges)
 	}
 }
 
