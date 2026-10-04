@@ -138,3 +138,22 @@ func (r *Registry) IdempotentOf(name string) bool {
 	}
 	return false
 }
+
+// TodoProgress reports the "todo" tool's checklist state: done count and
+// still-open item texts. Zeros when no such tool is registered or it
+// doesn't expose progress — the finish gate reads "no list" as "nothing
+// pending" (fail-open: registries without a checklist run exactly as
+// before). Nil-receiver safe: some loop paths run tool-less.
+func (r *Registry) TodoProgress() (done int, open []string) {
+	if r == nil {
+		return 0, nil
+	}
+	t, ok := r.tools["todo"]
+	if !ok {
+		return 0, nil
+	}
+	if tl, ok := t.(interface{ Progress() (int, []string) }); ok {
+		return tl.Progress()
+	}
+	return 0, nil
+}

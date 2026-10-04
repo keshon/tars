@@ -22,6 +22,11 @@ func TestAllPromptsLoadNonEmpty(t *testing.T) {
 		"BudgetNotice":           BudgetNotice,
 		"SearchFatigue":          SearchFatigue,
 		"ToolLoop":               ToolLoop,
+		"TodoOpen":               TodoOpen,
+		"DelegateHint":           DelegateHint,
+		"AskHint":                AskHint,
+		"WriteHint":              WriteHint,
+		"SubagentScope":          SubagentScope,
 		"AnnouncedNotWritten":    AnnouncedNotWritten,
 		"Truncated":              Truncated,
 		"CompactNotice":          CompactNotice,
@@ -88,6 +93,12 @@ func TestWithRole_NonEmptyAppendsFormattedAddendum(t *testing.T) {
 // behavior: tool discipline, anti-fake-save, background policy, asking.
 // Rewording deletes the test's premise, so reword deliberately —
 // update the fragments, never just delete them.
+func TestVerify_KeepsProgressGuard(t *testing.T) {
+	if !strings.Contains(Verify, "A progress report is not a finish") {
+		t.Error("verify lost its progress-report guard")
+	}
+}
+
 func TestSystem_KeepsLoadBearingGuards(t *testing.T) {
 	for _, want := range []string{
 		"does NOT save it anywhere",
@@ -96,6 +107,8 @@ func TestSystem_KeepsLoadBearingGuards(t *testing.T) {
 		"Use grep_files instead",
 		"Never run a long-running process",
 		"use ask_user to ask one focused clarifying question",
+		"A progress report (\"done X so far\"",
+		"never finish with items unchecked",
 	} {
 		if !strings.Contains(System, want) {
 			t.Errorf("system prompt lost its guard %q", want)

@@ -1,0 +1,1 @@
+You have no ask_user and no delegate_task: do the subtask yourself with your own tools, and never emit calls to tools you were not given.

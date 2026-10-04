@@ -2,10 +2,14 @@ package roles
 
 import (
 	"context"
+	"regexp"
 	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/prompts"
 	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
 )
@@ -91,5 +95,65 @@ func TestWorker_HasWorkingToolsButNoDelegation(t *testing.T) {
 	}
 	if hasTool(a, "delegate_task") {
 		t.Error("a mission worker delegating means the plan already decomposed the task")
+	}
+}
+
+// A system text that names a tool promises that tool exists: every
+// static tool-name token in a role's prompt must resolve in that role's
+// registry, or a weak model emits calls to tools it was never given
+// ("unknown tool", burned steps). Nudge and task texts are excluded on
+// purpose — they are role-agnostic by design, and the loop conditions
+// their tool-specific clauses on its own registry (DelegateHint,
+// AskHint, WriteHint) instead of promising statically.
+func TestRoleSystemToolsResolve(t *testing.T) {
+	e := testEnv(t)
+	universe := map[string]bool{"ask_user": true, "delegate_task": true}
+	for _, n := range tools.Base(e.WS, e.Procs, nil).Names() {
+		universe[n] = true
+	}
+	for _, n := range tools.ReadOnly(e.WS, e.Procs).Names() {
+		universe[n] = true
+	}
+	var alts []string
+	for n := range universe {
+		alts = append(alts, regexp.QuoteMeta(n))
+	}
+	sort.Strings(alts)
+	mentioned := regexp.MustCompile(`\b(` + strings.Join(alts, "|") + `)\b`)
+
+	interactive := Interactive(e, "", "", func(string) (string, error) { return "", nil }, nil)
+	subagent := Subagent(e, "tester")
+	worker := Worker(e, "w", prompts.MissionWorker, "", 15, false)
+	inspector := Inspector(e, "i", prompts.MissionMapAnnotate, "")
+	planner := Planner(e, "p", "")
+	// System texts as their roles actually ship them: the subagent
+	// composition includes its scope correction (mirrors Subagent).
+	subagentSystem := prompts.WithRole("tester") + "\n\n" + prompts.SubagentScope
+	cases := []struct {
+		role  string
+		texts []string
+		names []string
+	}{
+		{"interactive", []string{prompts.System, prompts.SystemForBackend("kobold"), prompts.SystemForBackend("openai")}, interactive.ToolNames()},
+		{"subagent", []string{subagentSystem}, subagent.ToolNames()},
+		{"worker", []string{prompts.MissionWorker}, worker.ToolNames()},
+		{"inspector", []string{prompts.MissionMapAnnotate, prompts.MissionReview}, inspector.ToolNames()},
+		{"planner", []string{prompts.PlanMode}, planner.ToolNames()},
+	}
+	for _, c := range cases {
+		have := map[string]bool{}
+		for _, n := range c.names {
+			have[n] = true
+		}
+		for _, text := range c.texts {
+			for _, m := range mentioned.FindAllString(text, -1) {
+				// A withheld tool may be named only to forbid it
+				// ("no <tool>"): a promise and a prohibition read the
+				// same to a regex but opposite to a model.
+				if !have[m] && !strings.Contains(text, "no "+m) {
+					t.Errorf("%s prompt names %q, missing from its registry", c.role, m)
+				}
+			}
+		}
 	}
 }

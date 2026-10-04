@@ -1,1 +1,1 @@
-Context budget warning: %d/%d tokens used (%d%%). Wrap up now — finish this step and stop, or delegate any remaining self-contained work to delegate_task so it runs in a fresh context instead of growing this one.
+Context budget warning: %d/%d tokens used (%d%%). Wrap up now — finish this step and stop.

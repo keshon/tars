@@ -41,6 +41,66 @@ func TestReadFile_TruncatesLargeFiles(t *testing.T) {
 	}
 }
 
+// Offset pages past truncation: a file larger than the cap reads in
+// windows, and the truncation note points at the next offset instead of
+// a dead end. Without this, bytes past the cap are unreachable —
+// max_bytes only shrinks the head and grep has no context lines.
+func TestReadFile_OffsetPagesLargeFile(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+
+	var b strings.Builder
+	for i := 1; i <= 6000; i++ {
+		fmt.Fprintf(&b, "line-%04d-padding-padding\n", i)
+	}
+	path := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	read := func(args map[string]any) string {
+		raw, _ := json.Marshal(args)
+		out, err := ReadFile{WS: ws}.Run(context.Background(), raw)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return out
+	}
+
+	head := read(map[string]any{"path": "big.txt"})
+	if !strings.Contains(head, "lines: 6000") {
+		t.Fatalf("header must report total lines:\n%s", head[:400])
+	}
+	if !strings.Contains(head, "re-read with offset ") {
+		t.Fatalf("truncation note must point at paging:\n%s", head[len(head)-300:])
+	}
+	if strings.Contains(head, "line-5999") {
+		t.Fatal("head window must not reach the tail")
+	}
+	// The note's offset is 1-based and continues coverage: take the
+	// tail from a late offset and check both edges arrive.
+	tail := read(map[string]any{"path": "big.txt", "offset": 5900})
+	if !strings.Contains(tail, "window: lines 5900-6000 of 6000") {
+		t.Fatalf("tail window mislabeled:\n%s", tail[:400])
+	}
+	if !strings.Contains(tail, "line-5999") {
+		t.Fatalf("tail window missing late lines")
+	}
+	if strings.Contains(tail, "line-0001") {
+		t.Fatal("tail window must not repeat the head")
+	}
+
+	past := read(map[string]any{"path": "big.txt", "offset": 99999})
+	if !strings.Contains(past, "past end of file: 6000 lines") {
+		t.Fatalf("past-end offset must say so:\n%s", past)
+	}
+	if _, err := (ReadFile{WS: ws}).Run(context.Background(), json.RawMessage(`{"path":"big.txt","offset":-1}`)); err == nil {
+		t.Fatal("negative offset must fail, not read")
+	}
+}
+
 func TestReadFile_SmallFileUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	ws, err := workspace.New(dir)

@@ -1,0 +1,1 @@
+Alternatively, hand remaining self-contained work to delegate_task: it runs in a fresh context instead of growing this one.

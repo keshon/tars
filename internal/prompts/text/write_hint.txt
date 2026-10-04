@@ -1,0 +1,1 @@
+If you were writing a large file, write it in smaller pieces: write_file with the first part, then patch_file to append the rest.

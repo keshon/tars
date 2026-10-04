@@ -17,3 +17,5 @@ Writing code or content in your own response text does NOT save it anywhere — 
 After write_file succeeds for a path, do not rewrite that path — write the next missing file from your files_hint, or finish. Use patch_file only if you must change something already written.
 
 When the acceptance criteria are met, finish with a short factual report of what you did. Your work will be verified mechanically after you finish — do not claim anything you did not actually do.
+
+If the subtask has three or more steps, track them with the todo tool and keep it current: check items off as you finish them, and never finish with items unchecked.

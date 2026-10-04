@@ -14,8 +14,8 @@ func (m *model) statusLine() string {
 		follow = " · ↓ end"
 	}
 	return m.styles.status.Render(fmt.Sprintf(
-		"steps %d · %s · elapsed %s · %s%s%s",
-		m.steps, m.meter(), formatElapsed(m.elapsed), m.spinner(), m.statusWord(), follow))
+		"step %d/%d · %s · elapsed %s · %s%s%s",
+		m.steps, m.maxSteps, m.meter(), formatElapsed(m.elapsed), m.spinner(), m.statusWord(), follow))
 }
 
 func (m *model) statusWord() string {

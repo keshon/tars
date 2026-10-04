@@ -34,9 +34,9 @@ func testModel() *model {
 		started: time.Now(),
 		styles:  defaultStyles(),
 		follow:  true,
-		compact: true,
-		note:    newNote(),
-		always:  map[[2]string]bool{},
+		compact: true, maxSteps: agent.DefaultMaxSteps,
+		note:   newNote(),
+		always: map[[2]string]bool{},
 	}
 	m.input = newInput()
 	m.input.Prompt = "> "
@@ -1858,6 +1858,15 @@ func TestGateEventForwardsFields(t *testing.T) {
 	})
 	if ev.Fields["tool"] != "run_shell" || ev.Fields["resource"] != "go test" || ev.Fields["prompt"] != "allow?" {
 		t.Fatalf("fields = %v", ev.Fields)
+	}
+}
+
+func TestStatusLineShowsStepBudget(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.steps = 7
+	m.maxSteps = 40
+	if line := m.statusLine(); !strings.Contains(line, "step 7/40") {
+		t.Fatalf("status line missing step budget: %q", line)
 	}
 }
 

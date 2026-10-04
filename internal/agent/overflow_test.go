@@ -75,3 +75,57 @@ func TestRun_OverflowOnFirstCallContinues(t *testing.T) {
 		t.Fatalf("got %q, want recovered", got)
 	}
 }
+
+// scriptedClient replays responses and errors in order.
+type scriptedClient struct {
+	calls int
+	steps []any // llm.ChatResponse or error
+}
+
+func (s *scriptedClient) Chat(_ context.Context, _ llm.ChatRequest) (llm.ChatResponse, error) {
+	s.calls++
+	switch st := s.steps[s.calls-1].(type) {
+	case error:
+		return llm.ChatResponse{}, st
+	default:
+		return st.(llm.ChatResponse), nil
+	}
+}
+
+// Overflow recovery rewrites history, so the repeat caches must not
+// survive it: a read refused as "already ran" before the overflow has
+// no citable result afterwards and must re-execute.
+func TestRun_OverflowRecoveryClearsRepeatCaches(t *testing.T) {
+	var runs int32
+	c := &scriptedClient{steps: []any{
+		readStep("1", "a.go"),
+		readStep("2", "a.go"),
+		&llm.APIError{Status: 400, StatusText: "bad", Body: "exceeds the context window", Overflow: true},
+		readStep("3", "a.go"),
+		say("done"),
+	}}
+	a := New(Config{
+		Client:           c,
+		Tools:            NewRegistry(readStub{name: "read_file", runs: &runs}),
+		System:           "sys",
+		ContextLimit:     1000,
+		CompactKeepSteps: 2,
+		SkipVerify:       true,
+	})
+	out, err := a.Run(context.Background(), "task")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("out = %q", out)
+	}
+	// Three identical reads, two executions: the middle one was refused
+	// from cache (proving it was populated), the last one re-ran because
+	// overflow recovery cleared it.
+	if runs != 2 {
+		t.Fatalf("runs = %d, want 2", runs)
+	}
+	if c.calls != 5 {
+		t.Fatalf("calls = %d, want 5", c.calls)
+	}
+}

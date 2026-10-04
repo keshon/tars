@@ -1,1 +1,1 @@
-Context budget notice: %d/%d tokens used (%d%%). Consider wrapping up soon, or delegating self-contained remaining work to a subagent via delegate_task to keep this conversation's context smaller.
+Context budget notice: %d/%d tokens used (%d%%). Consider wrapping up soon.

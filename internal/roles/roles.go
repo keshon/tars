@@ -197,11 +197,13 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 // Subagent is what delegate_task spawns. It gets the full tool set minus
 // ask_user and delegate_task: no subagent can spawn subagents, and none
 // can block the process waiting on a human who is watching the parent.
+// The inherited System text names both withheld tools, so the scope
+// correction is composed here, where the restricted registry is chosen.
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:          e.Client,
 		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
-		System:          prompts.WithRole(role),
+		System:          prompts.WithRole(role) + "\n\n" + prompts.SubagentScope,
 		MaxSteps:        subagentSteps,
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,

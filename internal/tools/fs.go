@@ -35,8 +35,8 @@ type ReadFile struct{ WS *workspace.Workspace }
 
 func (ReadFile) Name() string { return "read_file" }
 func (ReadFile) Description() string {
-	return "Read a text file. Returns a FILE header (path, size, truncated, binary) and the full " +
-		"content. Set metadata_only=true to get only the header — use this for file size or " +
+	return "Read a text file. Returns a FILE header (path, size, lines, truncated, binary) and the " +
+		"content, optionally from offset (a 1-based first line) for paging through large files. Set metadata_only=true to get only the header — use this for file size or " +
 		"type checks without loading content into context."
 }
 func (ReadFile) Mode() agent.ToolMode { return agent.Concurrent }
@@ -59,6 +59,10 @@ func (ReadFile) Schema() json.RawMessage {
 			"max_bytes": {
 				"type": "integer",
 				"description": "optional cap on content bytes; omit or 0 for the full content"
+			},
+			"offset": {
+				"type": "integer",
+				"description": "1-based first line to return; omit or 0 to start at the top. Use with the lines: count from a truncated read to page past it"
 			}
 		},
 		"required": ["path"]
@@ -70,15 +74,19 @@ func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 		Path         string `json:"path"`
 		MetadataOnly bool   `json:"metadata_only"`
 		MaxBytes     *int   `json:"max_bytes"`
+		Offset       int    `json:"offset"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("bad arguments: %w", err)
 	}
-	if err := rejectUnknownFields(args, "path", "metadata_only", "max_bytes"); err != nil {
+	if err := rejectUnknownFields(args, "path", "metadata_only", "max_bytes", "offset"); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(in.Path) == "" {
 		return "", fmt.Errorf("path is required and must be non-empty")
+	}
+	if in.Offset < 0 {
+		return "", fmt.Errorf("offset must be >= 0")
 	}
 	full, err := t.WS.Resolve(in.Path)
 	if err != nil {
@@ -108,20 +116,59 @@ func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 			maxBody = *in.MaxBytes
 		}
 	}
-	return formatReadFileResult(rel, data, maxBody), nil
+	return formatReadFileResult(rel, data, maxBody, in.Offset), nil
 }
 
 // maxBodyBytes: 0 = header only; otherwise cap body at min(maxBodyBytes, readMaxBytes).
-func formatReadFileResult(path string, data []byte, maxBodyBytes int) string {
+// offset is a 1-based first line; <=1 reads from the start, byte-identical
+// to the old path. Line windows make large files pageable: the header
+// always reports total lines (and the shown window when offset), and the
+// truncation note points at the next offset instead of a dead end —
+// without this, bytes past the cap are unreachable (max_bytes only
+// shrinks the head, grep has no context lines), and the loop's
+// duplicate-read refusal becomes a wall in front of nothing.
+func formatReadFileResult(path string, data []byte, maxBodyBytes, offset int) string {
 	totalSize := len(data)
 	text, encoding, binary := decodeText(data)
 	body := []byte(text)
 	truncated := len(body) > readMaxBytes
 
+	// Line inventory for paging. Empty file: zero lines, not one.
+	var all []string
+	if trimmed := strings.TrimSuffix(text, "\n"); trimmed != "" {
+		all = strings.Split(trimmed, "\n")
+	}
+	totalLines := len(all)
+
+	start := offset
+	if start < 1 {
+		start = 1
+	}
+	// Byte-exact tail from the requested line: scanning for newlines
+	// preserves original bytes (and endings) without a rejoin.
+	window := text
+	winStart := 1
+	pastEnd := false
+	if totalLines > 0 && start > 1 {
+		if start > totalLines {
+			pastEnd = true
+		} else {
+			idx := 0
+			for line := 1; line < start; idx++ {
+				if text[idx] == '\n' {
+					line++
+				}
+			}
+			window = text[idx:]
+			winStart = start
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString("FILE\n")
 	fmt.Fprintf(&b, "path: %s\n", path)
 	fmt.Fprintf(&b, "size: %d\n", totalSize)
+	fmt.Fprintf(&b, "lines: %d\n", totalLines)
 	if encoding != "" {
 		fmt.Fprintf(&b, "encoding: %s (decoded for display; patches are refused — convert to UTF-8 first)\n", encoding)
 	}
@@ -141,17 +188,36 @@ func formatReadFileResult(path string, data []byte, maxBodyBytes int) string {
 		limit = readMaxBytes
 	}
 	b.WriteString("----\n")
-	if truncated {
-		b.Write(body[:limit])
-		if limit < len(body) {
-			fmt.Fprintf(&b, "\n...(content truncated at %d bytes — use grep_files, metadata_only, or read a smaller section)", limit)
-		}
-	} else if limit < len(body) {
-		b.Write(body[:limit])
-		fmt.Fprintf(&b, "\n...(content truncated at %d bytes)", limit)
-	} else {
-		b.Write(body)
+	if pastEnd {
+		fmt.Fprintf(&b, "(offset %d past end of file: %d lines)", offset, totalLines)
+		return b.String()
 	}
+	wbody := []byte(window)
+	if len(wbody) > limit {
+		shown := wbody[:limit]
+		endLine := winStart + strings.Count(string(shown), "\n")
+		if len(shown) > 0 && shown[len(shown)-1] == '\n' {
+			endLine--
+		}
+		if winStart > 1 {
+			fmt.Fprintf(&b, "window: lines %d-%d of %d\n", winStart, endLine, totalLines)
+		}
+		b.Write(shown)
+		fmt.Fprintf(&b, "\n...(content truncated at %d of %d bytes, lines %d-%d of %d — re-read with offset %d to continue)",
+			len(shown), len(wbody), winStart, endLine, totalLines, endLine+1)
+		return b.String()
+	}
+	if winStart > 1 {
+		endLine := winStart + strings.Count(window, "\n")
+		if strings.HasSuffix(window, "\n") {
+			endLine--
+		}
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+		fmt.Fprintf(&b, "window: lines %d-%d of %d\n", winStart, endLine, totalLines)
+	}
+	b.WriteString(window)
 	return b.String()
 }
 

@@ -38,6 +38,12 @@ var (
 	// role. One %s: the role text.
 	RoleAddendum = read("role_addendum.txt")
 
+	// SubagentScope corrects the inherited System text for subagents:
+	// System names ask_user and delegate_task, which subagent registries
+	// deliberately withhold. Without this, a weak model emits calls to
+	// tools it was never given.
+	SubagentScope = read("subagent_scope.txt")
+
 	// Resume is appended when continuing an interrupted run via -resume.
 	Resume = read("resume.txt")
 
@@ -56,6 +62,8 @@ var (
 	// Truncated fires when a response ended with finish_reason "length"
 	// and no tool calls — the backend cut the model off mid-generation
 	// and whatever it was building (usually a tool call) was discarded.
+	// The write-in-pieces advice is appended by the loop only for
+	// registries that can write — see WriteHint.
 	Truncated = read("truncated.txt")
 
 	// LeakDetected fires when a response contains leaked native
@@ -81,7 +89,9 @@ var (
 	StuckEscalated = read("stuck_escalated.txt")
 
 	// BudgetWarning fires once when context usage crosses 90%. Three
-	// placeholders: tokens used, limit, percent.
+	// placeholders: tokens used, limit, percent. The delegate handoff
+	// sentence is appended by the loop only for registries that have
+	// delegate_task — see DelegateHint.
 	BudgetWarning = read("budget_warning.txt")
 
 	// BudgetNotice fires once when context usage crosses 75%. Three
@@ -96,6 +106,8 @@ var (
 	// any mutating tool call succeeding — the model is exploring/
 	// searching but not converging. Nudges it to broaden its approach or
 	// stop and ask, instead of indefinitely narrowing the same dead end.
+	// The ask_user escalation is appended by the loop only for
+	// registries that have ask_user — see AskHint.
 	SearchFatigue = read("search_fatigue.txt")
 
 	// ToolLoop fires once when the same read-only tool is called alone for
@@ -104,6 +116,19 @@ var (
 	// different files in a row is progress, not a loop — and neither do
 	// steps that return fresh results: only identical outcomes accumulate.
 	ToolLoop = read("tool_loop.txt")
+
+	// TodoOpen bounces a text-only finish while todo items are still
+	// unchecked: a progress report, not a finish. Two verbs: the open
+	// count, and the quoted items.
+	TodoOpen = read("todo_open.txt")
+
+	// DelegateHint, AskHint, and WriteHint are capability-conditional
+	// suffixes: the loop appends each only when its registry offers the
+	// named tool, so role-agnostic nudges never cite tools the recipient
+	// was never given.
+	DelegateHint = read("delegate_hint.txt")
+	AskHint      = read("ask_hint.txt")
+	WriteHint    = read("write_hint.txt")
 
 	// AnnouncedNotWritten fires when the model tries to end a run that was
 	// supposed to write files having written none — the "let me now write

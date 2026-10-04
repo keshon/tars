@@ -139,6 +139,24 @@ func compactAgent(t *testing.T, atPercent int) *Agent {
 	})
 }
 
+// Compaction drops the results the repeat caches cite: after it fires,
+// a cached repeat must re-execute (its bytes are gone from history),
+// not refuse with "re-read it from the conversation".
+func TestMaybeCompact_ClearsRepeatCaches(t *testing.T) {
+	a := compactAgent(t, 60)
+	st := &runState{
+		idempotentSeen: map[string]int{"read_file|a": 3},
+		failedCalls:    map[string]int{"read_file|b": 2},
+	}
+	h := historyWithSteps(10)
+	if !a.maybeCompact(&h, llm.Usage{PromptTokens: 900}, st) {
+		t.Fatal("setup: compaction did not fire")
+	}
+	if len(st.idempotentSeen) != 0 || len(st.failedCalls) != 0 {
+		t.Fatalf("repeat caches survived compaction: %+v / %+v", st.idempotentSeen, st.failedCalls)
+	}
+}
+
 func TestMaybeCompact_LeavesHistoryAloneBelowThreshold(t *testing.T) {
 	a := compactAgent(t, 60)
 	h := historyWithSteps(10)

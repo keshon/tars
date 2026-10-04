@@ -110,6 +110,23 @@ func (t *Todo) Items() []todoItem {
 	return append([]todoItem(nil), t.items...)
 }
 
+// Progress reports checklist state for the loop's finish gate: how many
+// items are done, and the texts still open. Basic types only — the agent
+// package must not name tool internals (tools imports agent, never the
+// reverse), so the registry reaches this through a structural interface.
+func (t *Todo) Progress() (done int, open []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, it := range t.items {
+		if it.State == "done" {
+			done++
+		} else {
+			open = append(open, it.Text)
+		}
+	}
+	return done, open
+}
+
 func renderTodo(items []todoItem) string {
 	if len(items) == 0 {
 		return "todo: cleared"

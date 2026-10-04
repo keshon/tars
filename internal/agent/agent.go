@@ -250,9 +250,14 @@ func (a *Agent) Report() RunReport {
 	return a.report
 }
 
+// DefaultMaxSteps bounds a run that names no budget. Shared with the
+// TUI's step meter so the displayed limit is the enforced one, never a
+// second literal drifting beside it.
+const DefaultMaxSteps = 25
+
 func New(cfg Config) *Agent {
 	if cfg.MaxSteps == 0 {
-		cfg.MaxSteps = 25
+		cfg.MaxSteps = DefaultMaxSteps
 	}
 	if cfg.MaxStuckSteps == 0 {
 		cfg.MaxStuckSteps = 2
@@ -439,6 +444,10 @@ type runState struct {
 	// run was supposed to write. See MaxZeroWriteRefusals.
 	zeroWriteFinishes int
 
+	// todoBounces counts text-only finishes bounced for unchecked todos
+	// since the last tool work. See maxTodoBounces.
+	todoBounces int
+
 	// toolCalls counts tool calls issued this run. Gates the first
 	// verify round together with claimsFileEffects below: a finish
 	// with no tool work and no file-effect claims behind it is
@@ -507,7 +516,12 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 					if keep <= 0 {
 						keep = 8
 					}
-					history = compactHistory(history, keep/2)
+					// Caches drop only when history actually shrank: the
+					// refusal texts cite content that must really be gone.
+					if next := compactHistory(history, keep/2); len(next) < len(history) {
+						history = next
+						dropRepeatCaches(&st)
+					}
 					a.saveState(history)
 				}
 				history = a.nudge(history, NudgeOverflow, prompts.OverflowRecovered)
@@ -572,7 +586,11 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			// counter so a backend that truncates every response is still
 			// bounded by MaxStuckSteps → MaxSteps.
 			if resp.FinishReason == "length" {
-				history = a.nudge(history, NudgeTruncated, prompts.Truncated)
+				msg := prompts.Truncated
+				if a.hasTool("write_file") {
+					msg += " " + prompts.WriteHint
+				}
+				history = a.nudge(history, NudgeTruncated, msg)
 				st.stuckSteps++
 				if st.stuckSteps >= a.cfg.MaxStuckSteps {
 					history = a.nudge(history, NudgeStuck, prompts.StuckFailing)
@@ -623,6 +641,18 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 				continue
 			}
 
+			// A text reply with unchecked todos is a progress report, not
+			// a finish: quote the open items back and continue the run.
+			// No todo tool (or an empty list) means nothing pending, so
+			// chit-chat is untouched. The latch keeps narration-only
+			// loops terminal; intervening tool work resets it below.
+			if _, open := a.cfg.Tools.TodoProgress(); len(open) > 0 && st.todoBounces < maxTodoBounces {
+				st.todoBounces++
+				history = a.nudge(history, NudgeTodo, fmt.Sprintf(prompts.TodoOpen, len(open), formatTodoOpen(open)))
+				a.saveState(history)
+				continue
+			}
+
 			verifyWanted := !a.cfg.SkipVerify ||
 				(a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0)
 			// Tool-dependent: verify when the run did tool work, when
@@ -638,7 +668,13 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 			if verifyWanted && !st.verifiedOnce && needsVerify {
 				st.verifiedOnce = true
 				verifyMsg := prompts.Verify
-				if st.mutatingSucceeded == 0 {
+				// The zero-writes fact is evidence of failure only where
+				// writes were expected (workers told to write) or the
+				// answer itself claims file effects (fake-save shape).
+				// On a read-only run it reads as an accusation and a weak
+				// model "fixes" it by writing an unasked file.
+				if st.mutatingSucceeded == 0 &&
+					(a.cfg.VerifyOnZeroWrites || claimsFileEffects(resp.Message.Content)) {
 					verifyMsg += fmt.Sprintf(prompts.VerifyZeroWrites,
 						strings.Join(a.cfg.MutatingTools, "/"))
 				}
@@ -706,6 +742,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		signature := callSignature(resp.Message.ToolCalls)
 		repeat := signature == st.lastSignature
 		st.lastSignature = signature
+		// Acting resets the todo-bounce latch: only back-to-back
+		// narration without intervening work counts toward it.
+		st.todoBounces = 0
 
 		// Tool calls within one step are scheduled by Tool.Mode(), not run
 		// uniformly. Concurrent calls (reads, independent delegate_task
@@ -908,12 +947,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 
 		// Anything that mutated (an Exclusive call — write/patch/shell — or
 		// a subagent reporting writes) invalidates the repeat cache: the
-		// same read can now legitimately return something new.
+		// same read can now legitimately return something new, and a call
+		// that failed before may now succeed.
 		if exclusiveSucceeded || st.mutatingSucceeded > mutatingBefore {
-			st.idempotentSeen = nil
-			// The same reasoning: once the workspace changed, a call that
-			// failed before may now succeed.
-			st.failedCalls = nil
+			dropRepeatCaches(&st)
 		}
 
 		// A step that changed the workspace is progress by definition, so
@@ -1055,6 +1092,16 @@ func parseDelegateMutations(content string) (int, []string) {
 // confidently wrong work.
 const defaultCompactAtPercent = 60
 
+// dropRepeatCaches forgets which calls ran and which failed. The refusal
+// texts cite conversation content ("re-read it from the conversation",
+// "already failed identically") — true while that content is present,
+// false once compaction drops it or a mutation supersedes it. The maps
+// re-learn from fresh executions, bounded exactly as before.
+func dropRepeatCaches(st *runState) {
+	st.idempotentSeen = nil
+	st.failedCalls = nil
+}
+
 // maybeCompact drops old step groups once the prompt passes the
 // threshold, and may do so more than once in a run — a long run that
 // compacted at step 12 and then grew again is in exactly the state
@@ -1080,6 +1127,7 @@ func (a *Agent) maybeCompact(history *[]llm.Message, usage llm.Usage, st *runSta
 		return false
 	}
 	*history = compacted
+	dropRepeatCaches(st)
 	return true
 }
 
@@ -1093,6 +1141,13 @@ func (a *Agent) maybeCompact(history *[]llm.Message, usage llm.Usage, st *runSta
 // maxSameToolSteps is how many consecutive non-mutating steps calling one
 // tool alone trip the tool-loop nudge.
 const maxSameToolSteps = 3
+
+// maxTodoBounces bounds how many text-only finishes with unchecked todos
+// are bounced back into the run: a model that only narrates must still
+// terminate. Intervening tool work resets the latch, so a working run
+// never notices it. Mirrors MaxZeroWriteRefusals — same shape (cheap
+// in-context retries), same number.
+const maxTodoBounces = 3
 
 // maxIdenticalAttempts is how many identical attempts at a call are
 // allowed while it keeps failing and nothing mutates in between: the
@@ -1148,6 +1203,7 @@ const (
 	NudgeRefusal   = "refusal"
 	NudgeBudget    = "budget"
 	NudgeStuck     = "stuck"
+	NudgeTodo      = "todo"
 )
 
 // harnessText marks loop-generated text as harness provenance. The
@@ -1221,7 +1277,11 @@ func (a *Agent) interject(st *runState, o stepOutcome) string {
 
 	case st.exploratorySteps >= a.cfg.MaxExploratorySteps && !st.searchFatigueWarned:
 		st.searchFatigueWarned = true
-		return a.markNudge(NudgeStuck, prompts.SearchFatigue)
+		msg := prompts.SearchFatigue
+		if a.hasTool("ask_user") {
+			msg += " " + prompts.AskHint
+		}
+		return a.markNudge(NudgeStuck, msg)
 	}
 
 	msg := st.pendingBudget
@@ -1318,6 +1378,24 @@ func (a *Agent) trackSingleToolLoop(calls []llm.ToolCall, results []callResult, 
 	st.consecutiveSameToolCount = 1
 }
 
+// formatTodoOpen renders open todo texts for the finish-gate bounce:
+// a short quoted list, never the whole backlog. Bounded output — this
+// string itself lives in context.
+func formatTodoOpen(open []string) string {
+	const maxShown = 5
+	shown := open
+	more := ""
+	if len(open) > maxShown {
+		shown = open[:maxShown]
+		more = fmt.Sprintf("\n(+%d more)", len(open)-maxShown)
+	}
+	var b strings.Builder
+	for _, t := range shown {
+		fmt.Fprintf(&b, "\n- %s", t)
+	}
+	return strings.TrimPrefix(b.String(), "\n") + more
+}
+
 // resultHash fingerprints one call's outcome for the same-tool loop
 // counter. FNV-64a, not crypto: a collision costs one advisory nudge,
 // the fail-safe direction — identical to today's behavior.
@@ -1371,16 +1449,21 @@ func (a *Agent) budgetWarning(usage llm.Usage, warned *int) string {
 		return ""
 	}
 	pct := usage.PromptTokens * 100 / a.cfg.ContextLimit
+	msg := ""
 	switch {
 	case pct >= 90 && *warned < 90:
 		*warned = 90
-		return fmt.Sprintf(prompts.BudgetWarning, usage.PromptTokens, a.cfg.ContextLimit, pct)
+		msg = fmt.Sprintf(prompts.BudgetWarning, usage.PromptTokens, a.cfg.ContextLimit, pct)
 	case pct >= 75 && *warned < 75:
 		*warned = 75
-		return fmt.Sprintf(prompts.BudgetNotice, usage.PromptTokens, a.cfg.ContextLimit, pct)
+		msg = fmt.Sprintf(prompts.BudgetNotice, usage.PromptTokens, a.cfg.ContextLimit, pct)
 	default:
 		return ""
 	}
+	if a.hasTool("delegate_task") {
+		msg += " " + prompts.DelegateHint
+	}
+	return msg
 }
 
 func containsStr(list []string, s string) bool {
@@ -1390,6 +1473,14 @@ func containsStr(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// hasTool reports whether this run's registry offers the named tool.
+// Nudge composition consults it so role-agnostic notices never cite
+// tools the recipient was never given (delegate_task to a worker,
+// ask_user to a subagent). Nil-registry safe: unknown means absent.
+func (a *Agent) hasTool(name string) bool {
+	return a.cfg.Tools != nil && containsStr(a.cfg.Tools.Names(), name)
 }
 
 // callSignature identifies a set of tool calls by name+arguments, order

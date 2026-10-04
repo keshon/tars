@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/llm"
@@ -69,19 +70,23 @@ type model struct {
 	ctx     context.Context
 	// base spawns one context per run: an interrupted run's cancelled
 	// context must never leak into the next turn.
-	base    context.Context
-	sess    *api.Session
-	blocks  []block
-	state   runState
-	gate    string
-	steps   int
-	started time.Time
-	elapsed time.Duration
-	ready   bool
-	answer  string
-	runErr  error
-	styles  styles
-	quit    bool
+	base   context.Context
+	sess   *api.Session
+	blocks []block
+	state  runState
+	gate   string
+	steps  int
+	// maxSteps is the run's step budget for the meter: the loop default,
+	// since the Interactive role never overrides it. Display only — the
+	// loop enforces its own copy.
+	maxSteps int
+	started  time.Time
+	elapsed  time.Duration
+	ready    bool
+	answer   string
+	runErr   error
+	styles   styles
+	quit     bool
 	// interrupted marks a run stopped by esc rather than completion;
 	// its doneMsg renders neutrally instead of as an error.
 	interrupted bool
@@ -201,6 +206,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		started:   time.Now(),
 		styles:    defaultStyles(),
 		limit:     cfg.Env.ContextLimit,
+		maxSteps:  agent.DefaultMaxSteps,
 		follow:    true,
 		compact:   true,
 		stateFile: cfg.StateFile,
