@@ -153,26 +153,36 @@ func (m *model) statusLines() []string {
 	if m.stateFile != "" {
 		taskDir = filepath.Dir(m.stateFile)
 	}
-	think := "compact"
+	// The toggle's own name comes from the bottom bar ("ctrl+g
+	// details"), not the history internals: compact here describes the
+	// transcript view, never context compaction.
+	details := "collapsed (ctrl+g)"
 	if !m.compact {
-		think = "full"
+		details = "full (ctrl+g)"
 	}
 	// Zero means the loop's default; the TUI must not print "0".
-	budget := strconv.Itoa(m.thinkBudget)
-	if m.thinkBudget <= 0 {
-		budget = "default"
+	budget := "default"
+	if m.thinkBudget > 0 {
+		budget = strconv.Itoa(m.thinkBudget) + " chars"
 	}
-	return []string{
+	// Run-local scope matters: these grants die with the process.
+	allowed := "none"
+	if n := len(m.always); n > 0 {
+		allowed = strconv.Itoa(n) + " (this run only)"
+	}
+	return kvRows([]string{
 		"backend: " + nonEmpty(m.backendKind),
 		"model: " + nonEmpty(m.modelName),
 		"workspace: " + nonEmpty(m.wsRoot),
 		"task dir: " + taskDir,
 		"context: " + m.meter(),
-		"run: steps " + strconv.Itoa(m.steps) + " · " + m.statusWord() + " · " + formatElapsed(m.elapsed),
-		"thinking: budget " + budget + " chars · " + think,
-		"gates: staged y/a/n · always-memory: " + strconv.Itoa(len(m.always)) + " pairs",
-		"tools: mcp " + strconv.Itoa(m.mcpCount) + " · policy rules " + strconv.Itoa(m.policyRules),
-	}
+		"run: " + strconv.Itoa(m.steps) + " steps · " + m.statusWord() + " · " + formatElapsed(m.elapsed),
+		"details: " + details,
+		"thinking budget: " + budget,
+		"permissions: y allow once · a always allow · n deny with note",
+		"always allowed: " + allowed,
+		"tools: " + strconv.Itoa(m.mcpCount) + " mcp · " + strconv.Itoa(m.policyRules) + " policy rules",
+	})
 }
 
 func nonEmpty(s string) string {
@@ -180,4 +190,25 @@ func nonEmpty(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// kvRows aligns "label: value" rows so values start in one column:
+// short labels are padded, never truncated. Borderless on purpose —
+// status facts, not data grids (markdown tables already cover those).
+func kvRows(rows []string) []string {
+	w := 0
+	for _, r := range rows {
+		if i := strings.Index(r, ":"); i > w {
+			w = i
+		}
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		if j := strings.Index(r, ":"); j >= 0 {
+			out[i] = r[:j] + strings.Repeat(" ", w-j) + r[j:]
+		} else {
+			out[i] = r
+		}
+	}
+	return out
 }

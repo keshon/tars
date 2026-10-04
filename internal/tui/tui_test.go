@@ -1223,9 +1223,36 @@ func TestStatusPostsToHistory(t *testing.T) {
 		t.Fatal("status must post to history, not a modal")
 	}
 	view := m.vp.View()
-	for _, want := range []string{"backend", "workspace", "context", "ctx 12.4k / 131.1k (9%)", "gates"} {
+	for _, want := range []string{"backend", "workspace", "context", "ctx 12.4k / 131.1k (9%)", "permissions"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("status missing %q", want)
+		}
+	}
+}
+
+func TestKvRowsAlignsValues(t *testing.T) {
+	rows := kvRows([]string{"a: 1", "longer: 2", "no-colon"})
+	if rows[2] != "no-colon" {
+		t.Fatalf("colonless row must pass through: %q", rows[2])
+	}
+	i1, i2 := strings.Index(rows[0], "1"), strings.Index(rows[1], "2")
+	if i1 != i2 {
+		t.Fatalf("values misaligned: %q vs %q", rows[0], rows[1])
+	}
+}
+
+func TestStatusLinesPlainLanguage(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.backendKind, m.modelName = "llama", "local"
+	out := strings.Join(m.statusLines(), "\n")
+	for _, banned := range []string{"staged", "always-memory", "pairs", "budget default chars"} {
+		if strings.Contains(out, banned) {
+			t.Fatalf("status keeps harness jargon %q:\n%s", banned, out)
+		}
+	}
+	for _, want := range []string{"details", "ctrl+g", "permissions", "y allow once", "always allowed", "none"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -1838,7 +1865,15 @@ func TestStatusShowsModel(t *testing.T) {
 	m := testModel()
 	m.modelName = "qwen"
 	view := strings.Join(m.statusLines(), "\n")
-	if !strings.Contains(view, "model: qwen") {
+	// Values align in one column, so the label and name no longer sit
+	// adjacent — assert the name on the model row, not exact spacing.
+	found := false
+	for _, ln := range strings.Split(view, "\n") {
+		if strings.HasPrefix(ln, "model") && strings.Contains(ln, "qwen") {
+			found = true
+		}
+	}
+	if !found {
 		t.Fatalf("status missing model: %q", view)
 	}
 }
