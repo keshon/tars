@@ -302,7 +302,9 @@ type WriteFile struct{ WS *workspace.Workspace }
 func (WriteFile) Name() string         { return "write_file" }
 func (WriteFile) Mode() agent.ToolMode { return agent.Exclusive }
 func (WriteFile) Description() string {
-	return "Write text content to a file, creating parent directories as needed."
+	return "Write text content to a file, creating parent directories as needed. " +
+		"For content over a few KB, write in parts — write_file the head, then patch_file " +
+		"to append — a single giant call risks truncation."
 }
 func (WriteFile) Schema() json.RawMessage {
 	return json.RawMessage(`{

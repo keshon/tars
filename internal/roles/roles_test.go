@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/keshon/tars/internal/agent"
+
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/prompts"
 	"github.com/keshon/tars/internal/tools"
@@ -205,5 +207,37 @@ func TestRoleSystemToolsResolve(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// textStub answers every turn with fixed text and no tool calls.
+type textStub struct{ text string }
+
+func (s textStub) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {
+	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: s.text}}, nil
+}
+
+// -max-steps threads Env.MaxSteps into the Interactive agent; zero keeps
+// the agent default. Roles with fixed budgets never consult it.
+func TestInteractive_HonorsEnvMaxSteps(t *testing.T) {
+	e := testEnv(t)
+	e.Client = textStub{"done"}
+	e.MaxSteps = 40
+	a := Interactive(e, "", "", nil, nil)
+	if _, err := a.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := a.Report().MaxSteps; got != 40 {
+		t.Fatalf("Report().MaxSteps = %d, want 40", got)
+	}
+
+	e2 := testEnv(t)
+	e2.Client = textStub{"done"}
+	a2 := Interactive(e2, "", "", nil, nil)
+	if _, err := a2.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := a2.Report().MaxSteps; got != agent.DefaultMaxSteps {
+		t.Fatalf("Report().MaxSteps = %d, want default %d", got, agent.DefaultMaxSteps)
 	}
 }

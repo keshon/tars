@@ -27,7 +27,7 @@ type finishOutcome struct {
 // zero-write finish, an empty finish, or a genuine answer. Check order
 // is load-bearing (verify catches the first announcement, the refusal
 // catches the rest) — preserve it.
-func (a *Agent) handleFinish(ctx context.Context, st *runState, resp llm.ChatResponse, leakedText bool, budgetNudge string, history []llm.Message) finishOutcome {
+func (a *Agent) handleFinish(ctx context.Context, st *runState, step int, resp llm.ChatResponse, leakedText bool, budgetNudge string, history []llm.Message) finishOutcome {
 	// finish_reason "length" means the backend cut generation off
 	// and discarded whatever the model was building — usually the
 	// tool call it had just announced. That's a truncation, never a
@@ -118,7 +118,7 @@ func (a *Agent) handleFinish(ctx context.Context, st *runState, resp llm.ChatRes
 		claimsFileEffects(resp.Message.Content)
 	if verifyWanted && !st.verifiedOnce && needsVerify {
 		st.verifiedOnce = true
-		verifyMsg := prompts.Verify
+		verifyMsg := prompts.Verify + a.stepTag(st, step)
 		// The zero-writes fact is evidence of failure only where
 		// writes were expected (workers told to write) or the
 		// answer itself claims file effects (fake-save shape).
@@ -165,7 +165,7 @@ func (a *Agent) handleFinish(ctx context.Context, st *runState, resp llm.ChatRes
 			st.zeroWriteFinishes++
 			history = a.nudge(history, NudgeRefusal, fmt.Sprintf(prompts.AnnouncedNotWritten,
 				lastClaim(resp.Message.Content),
-				strings.Join(a.cfg.MutatingTools, "/")))
+				strings.Join(a.cfg.MutatingTools, "/"))+a.stepTag(st, step))
 			a.saveState(history)
 			return finishOutcome{history: history}
 		}
@@ -187,6 +187,32 @@ func (a *Agent) handleFinish(ctx context.Context, st *runState, resp llm.ChatRes
 	a.report.MutatedPaths = st.mutatedPaths
 	a.report.Final = resp.Message.Content
 	return finishOutcome{done: true, answer: resp.Message.Content, history: history}
+}
+
+// wrapUpTurn issues one final text-only turn when the step budget is
+// exhausted: the model summarizes what was accomplished, what remains,
+// and the most useful next step. Tools stay in the request (opencode
+// parity — measure before hardening); any calls made are ignored, only
+// text is kept. Not a step: no hooks fire, no counters move, history is
+// untouched. Returns false when there is nothing to close (zero steps
+// ran) or the call itself fails — the original error stands either way.
+func (a *Agent) wrapUpTurn(ctx context.Context, st *runState, history []llm.Message) (string, bool) {
+	if a.report.Steps <= 0 {
+		return "", false
+	}
+	h := append(history, llm.Message{Role: llm.RoleUser, Content: prompts.WrapUp})
+	resp, err := a.chat(ctx, llm.ChatRequest{
+		Messages:  h,
+		Tools:     a.cfg.Tools.Defs(),
+		MaxTokens: a.effectiveMaxTokens(st.lastPromptTokens),
+	})
+	if err != nil {
+		return "", false
+	}
+	if strings.TrimSpace(resp.Message.Content) == "" {
+		return "", false
+	}
+	return resp.Message.Content, true
 }
 
 // MaxZeroWriteRefusals bounds how many times a run that was supposed to

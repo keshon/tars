@@ -107,6 +107,7 @@ func TestReport_OpenTodosSnapshotOnMaxSteps(t *testing.T) {
 		readStep("3", "a.go"),
 		readStep("4", "a.go"),
 		readStep("5", "a.go"),
+		say("unfinished: c.go pending"),
 	}}
 	a := New(Config{
 		Client: client,

@@ -78,6 +78,47 @@ func TestAgent_IdenticalFailingCall_RefusedAfterTolerance(t *testing.T) {
 	}
 }
 
+// outputFails stands in for run_shell running a command that fails WITH
+// output — compiler errors, test failures. The loop must keep the text
+// alongside the error: dropping it blinds the model to what actually
+// went wrong (live: a failed go build surfaced only as "exit status 1",
+// forcing the model into echo-marker workarounds to see anything).
+type outputFails struct{ name string }
+
+func (o outputFails) Name() string          { return o.name }
+func (outputFails) Description() string     { return "stub" }
+func (outputFails) Mode() ToolMode          { return Exclusive }
+func (outputFails) Schema() json.RawMessage { return json.RawMessage(`{}`) }
+func (outputFails) Run(context.Context, json.RawMessage) (string, error) {
+	return "main.go:10: undefined: foo", fmt.Errorf("command failed: exit status 1")
+}
+
+func TestAgent_FailingCall_KeepsOutput(t *testing.T) {
+	client := &stubClient{responses: []llm.ChatResponse{
+		shellStep("1", "go build ./..."),
+		say("done"),
+	}}
+	a := New(Config{
+		Client: client, Tools: NewRegistry(outputFails{"run_shell"}),
+		System: "sys", SkipVerify: true,
+	})
+
+	if _, err := a.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	found := false
+	for _, m := range client.lastHistory {
+		if m.Role == llm.RoleTool &&
+			strings.Contains(m.Content, "undefined: foo") &&
+			strings.Contains(m.Content, "exit status 1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("tool result dropped failing-command output; history shows error only")
+	}
+}
+
 // The tolerance exists for genuinely time-dependent retries: a check
 // against a server that is still starting fails and then succeeds, and
 // start_background is Concurrent so it does not clear the cache.

@@ -51,6 +51,8 @@ func main() {
 		"grammar the server builds from the tool schemas")
 	maxTokens := flag.Int("max-tokens", 8192, "generation budget per response — too low truncates "+
 		"large outputs (e.g. a full HTML+CSS+JS file) mid-JSON")
+	maxSteps := flag.Int("max-steps", 0, "step budget per run — 0 takes the agent default (25). "+
+		"Applies to direct runs; mission workers and subagents keep fixed budgets")
 	thinkBudget := flag.Int("reasoning-budget", 0, "characters of <think> deliberation allowed per response "+
 		"before a wrap-up round demands commitment; 0 takes the agent default (6000), negative disables wrapping")
 	resume := flag.String("resume", "", "path to a .agent/tasks/.../state.json snapshot to resume "+
@@ -413,6 +415,7 @@ func main() {
 		Procs:           bgProcs,
 		MaxTokens:       *maxTokens,
 		ContextLimit:    contextLimit,
+		MaxSteps:        *maxSteps,
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
 		Gate:            audit.Hook(*auditPath, "cli", permissionGate(*yes, suspend, ws)),
 		BackendKind:     *backendKind,

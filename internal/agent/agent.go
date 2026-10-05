@@ -51,6 +51,13 @@ type RunReport struct {
 	// Final is the model's final answer text ("" if the run errored out).
 	Final string
 
+	// WrapUp is the text-only closing summary captured on budget death
+	// ("" when the run ended any other way, or the closing call failed).
+	// Separate from Final on purpose: Final == "" on error is pinned
+	// (report_test.go), and mission retry semantics key off the error,
+	// not the text.
+	WrapUp string
+
 	// MaxSteps is the step budget enforced this run: base plus
 	// todo-funded extension, kept live so observers (step events, status
 	// meters) read the enforced line, not the configured one.

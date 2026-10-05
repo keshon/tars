@@ -188,6 +188,16 @@ func withoutPrintHooks(env roles.Env) roles.Env {
 	return env
 }
 
+// envMaxSteps mirrors the loop default: Env.MaxSteps set by -max-steps,
+// otherwise the agent default. Display only — like the other status
+// facts it is snapshotted once; the live meter follows max_steps events.
+func envMaxSteps(env roles.Env) int {
+	if env.MaxSteps > 0 {
+		return env.MaxSteps
+	}
+	return agent.DefaultMaxSteps
+}
+
 // Run executes the task under the TUI and returns the final answer.
 // The terminal is restored on return, however the run ends.
 func Run(ctx context.Context, cfg Config) (string, error) {
@@ -206,7 +216,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		started:   time.Now(),
 		styles:    defaultStyles(),
 		limit:     cfg.Env.ContextLimit,
-		maxSteps:  agent.DefaultMaxSteps,
+		maxSteps:  envMaxSteps(cfg.Env),
 		follow:    true,
 		compact:   true,
 		stateFile: cfg.StateFile,

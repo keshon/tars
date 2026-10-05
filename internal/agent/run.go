@@ -61,16 +61,16 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		a.saveState(history)
 
 		if len(resp.Message.ToolCalls) == 0 {
-			out := a.handleFinish(ctx, &st, resp, leakedText, budgetNudge, history)
+			out := a.handleFinish(ctx, &st, step, resp, leakedText, budgetNudge, history)
 			history = out.history
 			if out.done {
 				return out.answer, out.err
 			}
 			continue
 		}
-		repeat, newHistory := a.executeToolCalls(ctx, &st, step, resp.Message.ToolCalls, history)
+		repeat, newHistory := a.executeToolCalls(ctx, &st, step, resp.FinishReason, resp.Message.ToolCalls, history)
 		history = newHistory
-		if msg := a.interject(&st, stepOutcome{repeat: repeat, budget: budgetNudge}); msg != "" {
+		if msg := a.interject(&st, step, stepOutcome{repeat: repeat, budget: budgetNudge}); msg != "" {
 			history = append(history, llm.Message{Role: llm.RoleUser, Content: msg})
 		}
 		a.saveState(history)
@@ -80,6 +80,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 	a.report.MutatedPaths = st.mutatedPaths
 	if _, open := a.cfg.Tools.TodoProgress(); len(open) > 0 {
 		a.report.OpenTodos = open
+	}
+	if wrap, ok := a.wrapUpTurn(ctx, &st, history); ok {
+		a.report.WrapUp = wrap
 	}
 	return "", fmt.Errorf("%w (%d) without finishing", ErrMaxSteps, a.cfg.MaxSteps+st.todoFunded)
 }
@@ -160,7 +163,13 @@ func (a *Agent) chat(ctx context.Context, req llm.ChatRequest) (llm.ChatResponse
 			if err == nil {
 				return resp, err
 			}
-			if !strings.Contains(strings.ToLower(err.Error()), "streaming unsupported") {
+			if apiErr, ok := llm.AsAPIError(err); ok && apiErr.Retryable() {
+				// Fall through to unary retry: an HTTP error status
+				// arrives before any SSE data (the stream reader returns
+				// before scanning the body on non-200), so nothing
+				// streamed and there is no partial content to resume or
+				// duplicate.
+			} else if !strings.Contains(strings.ToLower(err.Error()), "streaming unsupported") {
 				return resp, err
 			}
 		}
@@ -192,4 +201,17 @@ func (a *Agent) stepWarning(st *runState, step int) string {
 	default:
 		return ""
 	}
+}
+
+// stepTag renders the live budget counter appended to decision-point
+// messages the model demonstrably reads (verify, stuck escalation,
+// refusals). Numbers, not prose, so it lives here rather than in a
+// prompt template: one format everywhere, computed at the call site.
+func (a *Agent) stepTag(st *runState, step int) string {
+	limit := a.cfg.MaxSteps + st.todoFunded
+	if limit <= 0 {
+		return ""
+	}
+	used := step + 1
+	return fmt.Sprintf(" (step %d/%d, %d left)", used, limit, limit-used)
 }

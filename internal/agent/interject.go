@@ -38,7 +38,7 @@ func (a *Agent) markNudge(kind, text string) string {
 // The latches keep each advisory to once per run; without them a nudge
 // repeats every step for as long as its counter stays over the line,
 // which is its own kind of noise.
-func (a *Agent) interject(st *runState, o stepOutcome) string {
+func (a *Agent) interject(st *runState, step int, o stepOutcome) string {
 	// A budget notice fires once per threshold crossed, so it has to
 	// queue rather than be dropped when something more urgent takes the
 	// slot — otherwise the run never hears about it again.
@@ -62,11 +62,11 @@ func (a *Agent) interject(st *runState, o stepOutcome) string {
 		st.stuckNudges++
 		switch {
 		case st.stuckNudges == 1 && o.repeat:
-			return a.markNudge(NudgeStuck, prompts.StuckRepeating)
+			return a.markNudge(NudgeStuck, prompts.StuckRepeating+a.stepTag(st, step))
 		case st.stuckNudges == 1:
-			return a.markNudge(NudgeStuck, prompts.StuckFailing)
+			return a.markNudge(NudgeStuck, prompts.StuckFailing+a.stepTag(st, step))
 		case st.stuckNudges == 2:
-			return a.markNudge(NudgeStuck, prompts.StuckEscalated)
+			return a.markNudge(NudgeStuck, prompts.StuckEscalated+a.stepTag(st, step))
 		default:
 			return ""
 		}

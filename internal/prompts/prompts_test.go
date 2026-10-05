@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,7 @@ func TestAllPromptsLoadNonEmpty(t *testing.T) {
 		"SubagentScope":          SubagentScope,
 		"AnnouncedNotWritten":    AnnouncedNotWritten,
 		"Truncated":              Truncated,
+		"WrapUp":                 WrapUp,
 		"CompactNotice":          CompactNotice,
 		"VerifyFailedContinue":   VerifyFailedContinue,
 		"MissionPlan":            MissionPlan,
@@ -106,6 +108,16 @@ func TestVerify_KeepsProgressGuard(t *testing.T) {
 func TestTodoOpen_NamesCheckoff(t *testing.T) {
 	if !strings.Contains(TodoOpen, "check it off") {
 		t.Error("todo bounce must name the checkoff action, not just more work")
+	}
+}
+
+func TestPlatformLine_NamesCurrentOS(t *testing.T) {
+	got := PlatformLine()
+	if got == "" {
+		t.Fatal("platform line must not be empty")
+	}
+	if !strings.Contains(strings.ToLower(got), runtime.GOOS) {
+		t.Fatalf("platform line %q must name runtime.GOOS %q", got, runtime.GOOS)
 	}
 }
 

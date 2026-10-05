@@ -187,8 +187,8 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	// Blocks are passed by value: normalizing here covers every path
 	// to the terminal (compact/full, cards, tests) without touching
 	// stored history.
-	b.text = cleanText(b.text)
-	b.result = cleanText(b.result)
+	b.text = strings.TrimRight(cleanText(b.text), "\n")
+	b.result = strings.TrimRight(cleanText(b.result), "\n")
 	raw := b.text
 	if b.role == roleThink {
 		if !expandThink {

@@ -13,6 +13,7 @@ package prompts
 import (
 	"embed"
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -65,6 +66,11 @@ var (
 	// The write-in-pieces advice is appended by the loop only for
 	// registries that can write — see WriteHint.
 	Truncated = read("truncated.txt")
+
+	// WrapUp asks for a closing summary on budget death: what was
+	// accomplished, what remains, the most useful next step. Static
+	// text, no placeholders — the numbers already rode the warnings.
+	WrapUp = read("wrapup.txt")
 
 	// LeakDetected fires when a response contains leaked native
 	// tool-call template text instead of a real structured call.
@@ -259,4 +265,17 @@ func SystemForBackend(kind string) string {
 	default:
 		return System
 	}
+}
+
+// PlatformLine names the OS the agent runs on, for shell-capable roles.
+// System text is static and embedded, so it cannot say this itself —
+// and a weak model on Windows otherwise emits POSIX and burns steps on
+// "command not found". Attach at role construction (Interactive,
+// Subagent, Worker); Planner and Inspector are read-only and never shell.
+func PlatformLine() string {
+	if runtime.GOOS == "windows" {
+		return "You run on Windows. Shell commands execute via cmd.exe: use `dir` (not `ls`), " +
+			"`copy`/`move`/`del` (not `cp`/`mv`/`rm`/`cat`). Both `\\` and `/` work in file paths."
+	}
+	return "You run on " + runtime.GOOS + " with a POSIX shell and standard coreutils available."
 }

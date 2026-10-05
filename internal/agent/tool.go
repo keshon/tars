@@ -176,7 +176,7 @@ const maxIdenticalAttempts = 3
 // counters, and step funding. It returns whether the calls repeated the
 // previous step and the grown history — it never finishes runs; the
 // loop decides that from the returned repeat flag.
-func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, calls []llm.ToolCall, history []llm.Message) (bool, []llm.Message) {
+func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, finishReason string, calls []llm.ToolCall, history []llm.Message) (bool, []llm.Message) {
 	signature := callSignature(calls)
 	repeat := signature == st.lastSignature
 	st.lastSignature = signature
@@ -208,6 +208,18 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, ca
 	// returns success (progressed=true clears stuckSteps).
 	skipped := make([]bool, len(calls))
 	for i, call := range calls {
+		// Truncated arguments (generation cut off mid-call) are stumps,
+		// not calls: executing them fails arg parsing here and 500s
+		// backends that parse server-side. Refuse with reissue-smaller
+		// guidance instead. Malformed args with any other finish reason
+		// keep the accurate "bad arguments" error below.
+		if finishReason == "length" && len(strings.TrimSpace(string(call.Arguments))) > 0 && !json.Valid(call.Arguments) {
+			skipped[i] = true
+			results[i] = callResult{err: fmt.Errorf(
+				"call arguments are truncated JSON (generation hit its output limit mid-call) — " +
+					"reissue smaller: split the call into smaller pieces")}
+			continue
+		}
 		if call.Name == "write_file" {
 			if path := writePathFromArgs(call.Arguments); path != "" {
 				if prev, seen := st.wrotePaths[path]; seen {
@@ -324,7 +336,14 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, ca
 	for i, call := range calls {
 		content := results[i].content
 		if results[i].err != nil {
-			content = "error: " + results[i].err.Error()
+			// A failing tool often returns its most useful text
+			// alongside the error (compiler output, test failures) —
+			// keep it. An error with no output keeps the old shape.
+			if strings.TrimSpace(content) != "" {
+				content += "\nerror: " + results[i].err.Error()
+			} else {
+				content = "error: " + results[i].err.Error()
+			}
 			if !skipped[i] {
 				// Skipped calls are already refusals; counting them
 				// would let the counter climb without the model ever

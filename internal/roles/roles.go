@@ -72,6 +72,11 @@ type Env struct {
 	// sharing this Env, by construction (bounded unit of work).
 	TodoFunding bool
 
+	// MaxSteps overrides the agent default step budget (25) for the
+	// Interactive agent. Zero means default. Consulted by Interactive
+	// only, like TodoFunding above.
+	MaxSteps int
+
 	// MCPTools are discovered MCP tools appended to the full tool set
 	// (Interactive, Subagent, Worker — never the read-only Inspector).
 	MCPTools []agent.Tool
@@ -218,7 +223,7 @@ func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
 		Client:          e.Client,
 		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
-		System:          prompts.WithRole(role) + "\n\n" + prompts.SubagentScope,
+		System:          prompts.WithRole(role) + "\n\n" + prompts.SubagentScope + "\n\n" + prompts.PlatformLine(),
 		MaxSteps:        subagentSteps,
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
@@ -240,7 +245,7 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 	return agent.New(agent.Config{
 		Client:             e.Client,
 		Tools:              tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
-		System:             system,
+		System:             system + "\n\n" + prompts.PlatformLine(),
 		MaxSteps:           maxSteps,
 		MaxTokens:          e.MaxTokens,
 		ContextLimit:       e.ContextLimit,
@@ -284,11 +289,12 @@ func Interactive(e Env, label, stateFile string,
 	return agent.New(agent.Config{
 		Client:          e.Client,
 		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, extra...),
-		System:          interactiveSystem(e.BackendKind),
+		System:          interactiveSystem(e.BackendKind) + "\n\n" + prompts.PlatformLine(),
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
 		ReasoningBudget: e.ReasoningBudget,
 		TodoFunding:     e.TodoFunding,
+		MaxSteps:        e.MaxSteps,
 		StateFile:       e.statePath(stateFile),
 		Verify:          verify,
 		OnStep:          e.onStep(label),

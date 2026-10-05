@@ -90,6 +90,8 @@ func deathScript(extra ...llm.ChatResponse) []llm.ChatResponse {
 	for i := 0; i < 24; i++ {
 		steps = append(steps, budgetRead("r"))
 	}
+	// Budget death always ends with one wrap-up turn.
+	steps = append(steps, budgetSay("wrapping up"))
 	return append(steps, extra...)
 }
 
@@ -124,8 +126,8 @@ func TestSession_BudgetGate_ApproveContinues(t *testing.T) {
 			t.Fatalf("gate prompt missing %q:\n%s", want, ga.prompt)
 		}
 	}
-	if client.calls != 29 {
-		t.Fatalf("calls = %d, want 29 (25 to die, 4 to finish)", client.calls)
+	if client.calls != 30 {
+		t.Fatalf("calls = %d, want 30 (25 to die, wrap-up, 4 to finish)", client.calls)
 	}
 }
 
@@ -185,10 +187,11 @@ func TestSession_BudgetGate_AnswerErrorDeclines(t *testing.T) {
 }
 
 func TestSession_BudgetGate_SkipsWithoutOpenTodos(t *testing.T) {
-	steps := make([]llm.ChatResponse, 0, 25)
+	steps := make([]llm.ChatResponse, 0, 26)
 	for i := 0; i < 25; i++ {
 		steps = append(steps, budgetRead("r"))
 	}
+	steps = append(steps, budgetSay("wrapping up"))
 	client := &seqClient{steps: steps}
 	env, dir := budgetEnv(t, client)
 	ga := &gateAnswer{reply: "y"}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -429,6 +430,43 @@ func TestResultBlockDiffColors(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, out)
 		}
 	}
+}
+
+// A trailing newline in answer text is content termination, not a blank
+// line: joined with the uniform block gap it must not double.
+func TestAnswerTrailingNewlineNoDoubleGap(t *testing.T) {
+	st := defaultStyles()
+	ans := answerBlock("I'll explore my own workspace.\n")
+	tool := toolCardBlock("c1", "read_file")
+	tool.result = "ok"
+	tool.open = false
+	joined := renderBlock(ans, st, false, 80) + "\n\n" +
+		renderBlock(tool, st, false, 80)
+	if gap := consecutiveBlanks(joined); gap > 1 {
+		t.Fatalf("double gap after reply with trailing newline:\n%q", joined)
+	}
+	if ans.text != "I'll explore my own workspace.\n" {
+		t.Fatalf("stored text mutated: %q", ans.text)
+	}
+}
+
+// consecutiveBlanks counts the longest run of visually blank lines
+// (ANSI gutter + whitespace only). The block join contributes exactly
+// one; anything more is a rendering defect.
+func consecutiveBlanks(s string) int {
+	ansi := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	best, run := 0, 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(ansi.ReplaceAllString(line, "")) == "" {
+			run++
+			if run > best {
+				best = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	return best
 }
 
 func TestViewportSizedWithoutTTY(t *testing.T) {
@@ -1867,6 +1905,15 @@ func TestStatusLineShowsStepBudget(t *testing.T) {
 	m.maxSteps = 40
 	if line := m.statusLine(); !strings.Contains(line, "step 7/40") {
 		t.Fatalf("status line missing step budget: %q", line)
+	}
+}
+
+func TestEnvMaxSteps_DefaultAndOverride(t *testing.T) {
+	if got := envMaxSteps(roles.Env{}); got != agent.DefaultMaxSteps {
+		t.Fatalf("envMaxSteps(zero) = %d, want default %d", got, agent.DefaultMaxSteps)
+	}
+	if got := envMaxSteps(roles.Env{MaxSteps: 60}); got != 60 {
+		t.Fatalf("envMaxSteps(60) = %d, want 60", got)
 	}
 }
 
