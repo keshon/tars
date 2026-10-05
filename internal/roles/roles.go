@@ -77,6 +77,14 @@ type Env struct {
 	// only, like TodoFunding above.
 	MaxSteps int
 
+	// SkipVerify drops the self-check verify round for the Interactive
+	// agent: the finish is accepted without the extra verification
+	// turn. Saves 1-2 model calls per run; the loop guards (stuck,
+	// truncation, repeat nudges) stay on — they are fault tolerance,
+	// not hand-holding. Consulted by Interactive only: mission workers
+	// keep their zero-writes refusal whatever this says.
+	SkipVerify bool
+
 	// MCPTools are discovered MCP tools appended to the full tool set
 	// (Interactive, Subagent, Worker — never the read-only Inspector).
 	MCPTools []agent.Tool
@@ -296,6 +304,7 @@ func Interactive(e Env, label, stateFile string,
 		TodoFunding:     e.TodoFunding,
 		MaxSteps:        e.MaxSteps,
 		StateFile:       e.statePath(stateFile),
+		SkipVerify:      e.SkipVerify,
 		Verify:          verify,
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,

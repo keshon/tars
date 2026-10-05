@@ -44,7 +44,7 @@ func TestTrackAndDiff(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snap := Track(dir, filepath.Join(dir, ".agent", "snapshots"))
+	snap := Track(dir, filepath.Join(dir, ".tars", "snapshots"))
 	if snap.Path == "" {
 		t.Fatal("expected snapshot path")
 	}

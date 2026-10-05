@@ -54,6 +54,7 @@ type serveDeps struct {
 	backendKind  string
 	stream       bool
 	thinkBudget  int
+	skipVerify   bool
 	mcpTools     []agent.Tool
 }
 
@@ -234,8 +235,9 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 	}
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
-	taskDir := filepath.Join(".agent", "tasks", taskID)
+	taskDir := workspace.TaskDir(taskID)
 	stateFile := filepath.Join(taskDir, "state.json")
+	_ = workspace.WriteSessionTitle(taskDir, workspace.TitleLine(task))
 
 	if snap := snapshot.Track(d.ws.Root(), filepath.Join(taskDir, "snapshots")); snap.Path != "" {
 		fmt.Fprintf(noteW, "snapshot: %s\n", snap.Path)
@@ -252,6 +254,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 		Gate:            audit.Hook(d.auditPath, "serve", permissionGate(d.autoDeny, suspend, d.ws)),
 		BackendKind:     d.backendKind,
 		Stream:          d.stream,
+		SkipVerify:      d.skipVerify,
 		MCPTools:        d.mcpTools,
 		ReasoningBudget: d.thinkBudget,
 	}

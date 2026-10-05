@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -344,13 +345,39 @@ func TestCommand_Quit(t *testing.T) {
 	}
 }
 
-func TestCommand_NewNeedsTask(t *testing.T) {
+func TestCommand_BareNewResetsToChat(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
+	m.blocks = []block{answerBlock("old transcript")}
+	m.stateFile = "some/state.json"
 	m.input.SetValue("/new")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if mm := updated.(*model); mm.quit || mm.state != stDone {
-		t.Fatal("bare /new must explain usage and stay")
+	mm := updated.(*model)
+	if mm.quit || mm.state != stDone {
+		t.Fatal("bare /new must reset and stay")
+	}
+	if mm.sess != nil || mm.stateFile != "" {
+		t.Fatal("bare /new must drop the session")
+	}
+	if len(mm.blocks) != 1 || mm.blocks[0].text != "— new task —" {
+		t.Fatalf("blocks = %+v, want a clean transcript with one marker", mm.blocks)
+	}
+	// The next line starts a fresh run, not a follow-up to nothing:
+	// with no session, followUp must take the startFresh path.
+	mm.newSession = func(task, stateFile string) (*api.Session, error) {
+		return nil, errors.New("fresh path taken")
+	}
+	mm.input.SetValue("fresh task")
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm2 := updated.(*model)
+	found := false
+	for _, b := range mm2.blocks {
+		if strings.Contains(b.text, "cannot start: fresh path taken") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("blocks = %+v, want the startFresh error path", mm2.blocks)
 	}
 }
 
@@ -534,6 +561,56 @@ func TestHistory_DedupesConsecutive(t *testing.T) {
 	}
 }
 
+// The bubbles textarea defaults line numbers on: an empty box then
+// renders a phantom "1" that looks like content but submits nothing.
+func TestInputHidesLineNumbers(t *testing.T) {
+	m := testModel()
+	if view := m.input.View(); strings.Contains(view, "1") {
+		t.Fatalf("empty input renders %q — line gutter leaking?", view)
+	}
+}
+
+// The caret blinks: blink messages must reach the input — the Update
+// catch-all would silently drop them and the caret would sit dead.
+// (Chaining itself is bubbles' clock, covered by its own tests; a zero
+// BlinkMsg is correctly rejected by the cursor, so routing — not a
+// follow-up command — is what's asserted here.)
+func TestCaretBlinkRouted(t *testing.T) {
+	m := sizeModel(t, testModel())
+	updated, _ := m.Update(cursor.BlinkMsg{})
+	if updated == nil {
+		t.Fatal("Update dropped BlinkMsg")
+	}
+	mm := updated.(*model)
+	if mm.input.Value() != "" {
+		t.Fatal("blink must never alter content")
+	}
+}
+
+// Breathing room: the last transcript line never touches the divider —
+// a blank line sits between content and rule at the bottom.
+func TestTranscriptBreathesBeforeDivider(t *testing.T) {
+	m := sizeModel(t, testModel())
+	for _, b := range renderHistory(compactTestHistory(15)) {
+		m.appendBlock(b)
+	}
+	m.vp.GotoBottom()
+	lines := strings.Split(m.View(), "\n")
+	div := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "─") {
+			div = i
+			break
+		}
+	}
+	if div < 1 {
+		t.Fatalf("no divider in view:\n%s", m.View())
+	}
+	if strings.TrimSpace(lines[div-1]) != "" {
+		t.Fatalf("line above divider = %q, want blank", lines[div-1])
+	}
+}
+
 func TestNewlineKey(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
@@ -704,22 +781,24 @@ func TestSpinnerOnlyWhileRunning(t *testing.T) {
 	m := testModel()
 	m.state = stRunning
 	m.elapsed = 0
-	if got := m.spinner(); got != "Tars " {
+	// Frame 0: the T lights amber, the rest rides plain.
+	if got := m.spinner(); got != m.styles.gate.Render("T")+"ARS " {
 		t.Fatalf("spinner = %q", got)
 	}
 	m.elapsed = 2 * time.Second
-	if got := m.spinner(); got != "taRs " {
+	if got := m.spinner(); got != "TA"+m.styles.gate.Render("R")+"S " {
 		t.Fatalf("spinner = %q, want frame advance", got)
 	}
 	m.state = stDone
 	if got := m.spinner(); got != "" {
 		t.Fatalf("spinner outside running = %q", got)
 	}
-	// The running status line carries the frame.
+	// The running status line carries the frame (the lit letter carries
+	// ANSI, so match the plain tail).
 	m = sizeModel(t, testModel())
 	m.state = stRunning
 	m.elapsed = 0
-	if view := m.View(); !strings.Contains(view, "Tars running") {
+	if view := m.View(); !strings.Contains(view, "ARS running") {
 		t.Fatalf("status line missing spinner: %q", view)
 	}
 }
@@ -1403,8 +1482,9 @@ func TestHelpSections(t *testing.T) {
 	// Two columns: every command description starts at the same
 	// absolute column (keys padded to the section max).
 	cmds := map[string]string{
-		"/quit": "exit", "/help": "this list", "/new <task>": "fresh task",
-		"/status": "run facts", "/retry": "re-run last failed turn",
+		"/quit": "exit", "/help": "this list", "/new [task]": "fresh task (empty resets to chat)",
+		"/status": "run facts", "/retry": "re-run last failed turn", "/sessions": "past sessions",
+		"/compact": "shrink this session's history",
 	}
 	col, found := -1, 0
 	for _, ln := range renderHelp() {

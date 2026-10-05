@@ -217,6 +217,52 @@ func (s textStub) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, erro
 	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: s.text}}, nil
 }
 
+// scriptClient replays canned responses in order, counting calls.
+type scriptClient struct {
+	responses []llm.ChatResponse
+	calls     *int32
+}
+
+func (s *scriptClient) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {
+	n := atomic.AddInt32(s.calls, 1) - 1
+	if int(n) >= len(s.responses) {
+		return s.responses[len(s.responses)-1], nil
+	}
+	return s.responses[n], nil
+}
+
+// -no-verify threads Env.SkipVerify into the Interactive agent: the
+// finish is accepted without the extra verification turn (one fewer
+// model call after tool work). Workers never consult it.
+func TestInteractive_SkipVerifySkipsVerifyRound(t *testing.T) {
+	scripted := func(calls *int32) llm.Client {
+		return &scriptClient{responses: []llm.ChatResponse{
+			{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "1", Name: "list_files", Arguments: json.RawMessage(`{"path":"."}`)},
+			}}},
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+		}, calls: calls}
+	}
+	run := func(skip bool) int32 {
+		var calls int32
+		e := testEnv(t)
+		e.Client = scripted(&calls)
+		e.SkipVerify = skip
+		a := Interactive(e, "", "", nil, nil)
+		if _, err := a.Run(context.Background(), "task"); err != nil {
+			t.Fatalf("Run(skip=%v): %v", skip, err)
+		}
+		return calls
+	}
+	if got := run(false); got != 3 {
+		t.Fatalf("verified run took %d model calls, want 3 (work + finish + verify)", got)
+	}
+	if got := run(true); got != 2 {
+		t.Fatalf("skipped run took %d model calls, want 2 (work + finish)", got)
+	}
+}
+
 // -max-steps threads Env.MaxSteps into the Interactive agent; zero keeps
 // the agent default. Roles with fixed budgets never consult it.
 func TestInteractive_HonorsEnvMaxSteps(t *testing.T) {

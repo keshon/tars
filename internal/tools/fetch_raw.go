@@ -39,7 +39,7 @@ func (FetchRaw) Schema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"url": {"type": "string"},
-			"max_bytes": {"type": "string", "description": "optional cap on returned text bytes; omit for the default"}
+			"max_bytes": {"type": "integer", "description": "optional cap on returned text bytes; omit for the default"}
 		},
 		"required": ["url"]
 	}`)

@@ -759,7 +759,7 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 		runner := &mission.Runner{
 			Client:       modelClient,
 			WS:           ws,
-			Dir:          filepath.Join(work, ".agent", "eval"),
+			Dir:          filepath.Join(work, workspace.StateDirName, "eval"),
 			Procs:        procs,
 			ContextLimit: contextLimit,
 			MaxTokens:    maxTokens,

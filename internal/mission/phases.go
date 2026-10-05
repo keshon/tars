@@ -26,7 +26,7 @@ import (
 type Runner struct {
 	Client llm.Client
 	WS     *workspace.Workspace
-	Dir    string // .agent/tasks/<id> — the mission's state directory
+	Dir    string // .tars/tasks/<id> — the mission's state directory
 	Procs  *tools.BackgroundProcesses
 
 	ContextLimit int

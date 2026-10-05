@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/keshon/tars/internal/llm"
@@ -56,8 +57,10 @@ func TestRun_RecoversFromOverflowByCompacting(t *testing.T) {
 
 // Probe 18 failed live on exactly this shape: the first model call of a
 // fresh run overflowed, history held only system+task (nothing to
-// compact), and the run died instead of continuing with the nudge.
-func TestRun_OverflowOnFirstCallContinues(t *testing.T) {
+// compact). The old code nudged and retried the identical oversized
+// request until MaxSteps — 25 wasted calls. Now it fails fast with
+// directions instead.
+func TestRun_OverflowUnshrinkableFailsFast(t *testing.T) {
 	c := &overflowOnce{}
 	a := New(Config{
 		Client:           c,
@@ -67,12 +70,44 @@ func TestRun_OverflowOnFirstCallContinues(t *testing.T) {
 		CompactKeepSteps: 2,
 		SkipVerify:       true,
 	})
-	got, err := a.Run(context.Background(), "task")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	_, err := a.Run(context.Background(), "task")
+	if err == nil || !strings.Contains(err.Error(), "persists after compaction") {
+		t.Fatalf("err = %v, want fast-fail with directions", err)
 	}
-	if got != "recovered" {
-		t.Fatalf("got %q, want recovered", got)
+	if c.calls != 1 {
+		t.Fatalf("calls=%d, want 1 (no doomed retry)", c.calls)
+	}
+}
+
+// One compact-and-retry per run: a second overflow means the window
+// cannot hold the session however it is cut — fail, don't grind.
+func TestRun_SecondOverflowFailsFast(t *testing.T) {
+	overflow := &llm.APIError{Status: 400, StatusText: "bad", Body: "exceeds the context window", Overflow: true}
+	c := &scriptedClient{steps: []any{overflow, overflow}}
+	a := New(Config{
+		Client:           c,
+		Tools:            NewRegistry(echoToolStub{}),
+		System:           "sys",
+		ContextLimit:     1000,
+		CompactKeepSteps: 2,
+		SkipVerify:       true,
+	})
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "task"},
+	}
+	for i := 0; i < 6; i++ {
+		history = append(history,
+			llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "c", Name: "echo", Arguments: json.RawMessage(`{}`)}}},
+			llm.Message{Role: llm.RoleTool, ToolCallID: "c", Content: "ok"},
+		)
+	}
+	_, err := a.Resume(context.Background(), history, "continue")
+	if err == nil || !strings.Contains(err.Error(), "persists after compaction") {
+		t.Fatalf("err = %v, want fast-fail on second overflow", err)
+	}
+	if c.calls != 2 {
+		t.Fatalf("calls=%d, want 2 (one recovery attempt, then stop)", c.calls)
 	}
 }
 

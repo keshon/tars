@@ -318,7 +318,7 @@ func (r *repo) readPath(t *testing.T, rel string) string {
 // generated output or an agent's scratch space rather than source.
 func goFiles(t *testing.T, root string) []string {
 	t.Helper()
-	skip := map[string]bool{".git": true, ".agent": true, "sandbox": true, "results": true, ".kilo": true}
+	skip := map[string]bool{".git": true, ".tars": true, "sandbox": true, "results": true, ".kilo": true}
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

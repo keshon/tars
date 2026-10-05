@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +15,56 @@ func assistantStep(id string) []llm.Message {
 	return []llm.Message{
 		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: id, Name: "echo"}}},
 		{Role: llm.RoleTool, ToolCallID: id, Content: "ok"},
+	}
+}
+
+// CompactFile compacts a snapshot in place and reports counts; a
+// second call is a no-op that writes nothing.
+func TestCompactFile_ShrinksSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state.json")
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "task"},
+	}
+	for i := 0; i < 15; i++ {
+		history = append(history, assistantStep("c")...)
+	}
+	raw, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(state, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before, after, err := CompactFile(state, 8)
+	if err != nil {
+		t.Fatalf("CompactFile: %v", err)
+	}
+	if after >= before {
+		t.Fatalf("before=%d after=%d, want shrink", before, after)
+	}
+	loaded, err := LoadState(state)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if len(loaded) != after {
+		t.Fatalf("snapshot holds %d messages, want %d", len(loaded), after)
+	}
+
+	before2, after2, err := CompactFile(state, 8)
+	if err != nil {
+		t.Fatalf("second CompactFile: %v", err)
+	}
+	if before2 != after || after2 != after {
+		t.Fatalf("second call (%d→%d) must be a no-op", before2, after2)
+	}
+}
+
+func TestCompactFile_MissingSnapshotErrors(t *testing.T) {
+	if _, _, err := CompactFile(filepath.Join(t.TempDir(), "missing.json"), 8); err == nil {
+		t.Fatal("want error for missing snapshot")
 	}
 }
 

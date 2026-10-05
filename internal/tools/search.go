@@ -109,55 +109,45 @@ func (t SearchWeb) parseResults(engine, content string) ([]SearchResult, error) 
 	}
 }
 
-// parseDuckDuckGo is a fragile regex-based parser for DuckDuckGo HTML.
+// parseDuckDuckGo parses the duckduckgo.com/html/ endpoint. Its real
+// structure (verified 2026-10): result links are
+// <a class="result__a" href="//duckduckgo.com/l/?uddg=<real-url>...>,
+// snippets are <a class="result__snippet">. The /l/ wrapper must be
+// unwrapped, not filtered — dropping duckduckgo.com links drops every
+// result, which is how this parser shipped returning nothing live.
 func (t SearchWeb) parseDuckDuckGo(content string) []SearchResult {
+	linkRe := regexp.MustCompile(`<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+	snipRe := regexp.MustCompile(`<a[^>]+class="result__snippet"[^>]*>(.*?)</a>`)
+
+	linkMatches := linkRe.FindAllStringSubmatch(content, -1)
+	snipMatches := snipRe.FindAllStringSubmatch(content, -1)
+
 	var results []SearchResult
-
-	// DuckDuckGo results are often contained in blocks.
-	// We'll look for a pattern of an <a ... href="URL" ...>TITLE</a> followed by some text (snippet).
-	// This regex tries to find: <a ... href="URL" ...>TITLE</a> ... <div ...>SNIPPET</div\s*>
-	re := regexp.MustCompile(`(?s)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<div[^>]*>(.*?)</div\s*>`)
-	matches := re.FindAllStringSubmatch(content, -1)
-
-	for _, m := range matches {
-		if len(m) >= 4 {
-			rawURL := m[1]
-			rawTitle := m[2]
-			rawSnippet := m[3]
-
-			// Clean up the extracted parts
-			title := strings.TrimSpace(stripHTML(rawTitle))
-			snippet := strings.TrimSpace(stripHTML(rawSnippet))
-
-			// Basic URL cleaning
-			urlStr := rawURL
-			if strings.HasPrefix(urlStr, "//") {
-				urlStr = "https:" + urlStr
+	for i, m := range linkMatches {
+		urlStr := unwrapDDGLink(m[1])
+		if urlStr == "" {
+			continue
+		}
+		// stripHTML emits a newline at every tag boundary, so inline
+		// markup ("Title <b>1</b>") comes out multiline — collapse to
+		// one line for result display.
+		title := collapseSpace(stripHTML(m[2]))
+		if title == "" {
+			continue
+		}
+		var snippet string
+		if i < len(snipMatches) {
+			snippet = collapseSpace(stripHTML(snipMatches[i][1]))
+		}
+		duplicate := false
+		for _, r := range results {
+			if r.URL == urlStr {
+				duplicate = true
+				break
 			}
-
-			// Filter out non-result links (internal DDG links, nav links, etc.)
-			if !strings.HasPrefix(urlStr, "http") || strings.Contains(urlStr, "duckduckgo.com") {
-				continue
-			}
-
-			// A valid result must have a title and a URL.
-			if title != "" && urlStr != "" {
-				// Avoid duplicates
-				exists := false
-				for _, r := range results {
-					if r.URL == urlStr {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					results = append(results, SearchResult{
-						Title:   title,
-						URL:     urlStr,
-						Snippet: snippet,
-					})
-				}
-			}
+		}
+		if !duplicate {
+			results = append(results, SearchResult{Title: title, URL: urlStr, Snippet: snippet})
 		}
 		if len(results) >= 10 {
 			break
@@ -167,3 +157,33 @@ func (t SearchWeb) parseDuckDuckGo(content string) []SearchResult {
 	return results
 }
 
+// collapseSpace trims and collapses all whitespace runs to single
+// spaces: extracted result fields must render on one line.
+func collapseSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// unwrapDDGLink resolves a result href to the target URL: /l/?uddg=...
+// wrappers decode to the real page, bare http(s) links pass through,
+// anything else (internal DDG pages, nav) is rejected with "".
+func unwrapDDGLink(href string) string {
+	href = strings.ReplaceAll(href, "&amp;", "&")
+	if strings.HasPrefix(href, "//") {
+		href = "https:" + href
+	}
+	if !strings.HasPrefix(href, "http") {
+		return ""
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(u.Host, "duckduckgo.com") {
+		real := u.Query().Get("uddg")
+		if real == "" || (!strings.HasPrefix(real, "http://") && !strings.HasPrefix(real, "https://")) {
+			return ""
+		}
+		return real
+	}
+	return href
+}

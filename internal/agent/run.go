@@ -19,6 +19,11 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 	var st runState
 	a.LastRunMutations = 0
 	a.report = RunReport{MaxSteps: a.cfg.MaxSteps}
+	// The registry is fresh per run, but the checklist is per task:
+	// restore it from the last todo call in history, or the todo-gated
+	// finish and todo funding only ever see same-turn todos — a resumed
+	// session with open todos would finish without a bounce.
+	a.rehydrateTodo(ctx, history)
 
 	for step := 0; step < a.cfg.MaxSteps+st.todoFunded; step++ {
 		resp, err := a.chat(ctx, llm.ChatRequest{
@@ -92,30 +97,34 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 // mission treats it as resumable errInfra. Returns the history to
 // continue with, or a fatal error.
 //
-// The step-0 case matters: the first call can overflow (a huge task
-// plus system prompt on a small window), when history holds nothing
-// compactable. Then there is nothing to drop, but the run must still
-// continue with the nudge rather than die — probe 18 failed exactly
-// this way before the guard was split.
+// Exactly one compact-and-retry per run: the first overflow compacts
+// aggressively (keep/2) and continues; a second overflow — or one where
+// compaction shrank nothing — fails fast with directions. Retrying past
+// that point burns one backend call per step until MaxSteps, every
+// attempt failing identically.
 func (a *Agent) handleChatError(st *runState, step int, err error, history []llm.Message) ([]llm.Message, error) {
 	if !llm.IsOverflow(err) {
 		return nil, fmt.Errorf("step %d: chat: %w", step, err)
 	}
-	// A full context is recoverable: compact aggressively and let
-	// the next step continue with the summary.
+	shrunk := false
 	if len(history) > 2 {
 		keep := a.cfg.CompactKeepSteps
 		if keep <= 0 {
-			keep = 8
+			keep = DefaultCompactKeepSteps
 		}
 		// Caches drop only when history actually shrank: the
 		// refusal texts cite content that must really be gone.
 		if next := compactHistory(history, keep/2); len(next) < len(history) {
 			history = next
 			dropRepeatCaches(st)
+			shrunk = true
 		}
 		a.saveState(history)
 	}
+	if !shrunk || st.overflowRetried {
+		return nil, fmt.Errorf("step %d: context overflow persists after compaction — /compact the session, shorten the task, or use a larger-context model: %w", step, err)
+	}
+	st.overflowRetried = true
 	history = a.nudge(history, NudgeOverflow, prompts.OverflowRecovered)
 	return history, nil
 }

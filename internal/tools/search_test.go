@@ -57,16 +57,20 @@ func TestSearchWeb_DuckDuckGo(t *testing.T) {
 	searcher := SearchWeb{WS: ws}
 	ctx := context.Background()
 
-	// Canned DuckDuckGo HTML structure based on our regex:
-	// <a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<div[^>]*>(.*?)</div\s*>
+	// Real duckduckgo.com/html/ structure: result links carry
+	// class="result__a" with an /l/?uddg= wrapper href, snippets are
+	// class="result__snippet" anchors. A parser tested against anything
+	// else passes its test and returns nothing live.
 	cannedDDG := `
 		<html>
 			<body>
-				<a href="https://example.com/page1">Title 1</a>
-				<div class="snippet">This is snippet 1</div>
-				
-				<a href="https://example.com/page2">Title 2</a>
-				<div class="desc">This is snippet 2</div>
+				<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage1&amp;rut=abc">Title <b>1</b></a>
+				<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage1">This is snippet 1</a>
+
+				<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage2">Title 2</a>
+				<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage2">This is snippet 2</a>
+
+				<a class="result__a" href="https://duckduckgo.com/settings">Settings</a>
 			</body>
 		</html>
 	`
@@ -89,46 +93,32 @@ func TestSearchWeb_DuckDuckGo(t *testing.T) {
 	if !strings.Contains(result, "Title 1") || !strings.Contains(result, "This is snippet 1") {
 		t.Errorf("Result missing Title 1 or Snippet 1. Got: %s", result)
 	}
-	if !strings.Contains(result, "Title 2") || !strings.Contains(result, "This is snippet 2") {
-		t.Errorf("Result missing Title 2 or Snippet 2. Got: %s", result)
+	if !strings.Contains(result, "https://example.com/page2") || !strings.Contains(result, "This is snippet 2") {
+		t.Errorf("Result missing unwrapped page2 URL or Snippet 2. Got: %s", result)
+	}
+	// The /l/ wrapper must be unwrapped, never leaked; internal DDG
+	// links (settings, nav) must not appear as results.
+	if strings.Contains(result, "uddg=") || strings.Contains(result, "duckduckgo.com/settings") {
+		t.Errorf("Result leaks wrapper or internal links. Got: %s", result)
 	}
 }
 
-func TestSearchWeb_Reddit(t *testing.T) {
+// No reddit engine: old.reddit.com redirects to the www.reddit.com
+// login wall (verified live 2026-10-05 — "Welcome to Reddit" JS shell,
+// zero server-rendered results), so there is nothing to parse. If
+// Reddit becomes scrapable again, add the engine with a canned test in
+// the real response shape, not an invented one.
+func TestSearchWeb_UnsupportedEngineRejected(t *testing.T) {
 	ws := newTestWS()
 	searcher := SearchWeb{WS: ws}
-	ctx := context.Background()
-
-	// Canned Reddit HTML structure based on our regex:
-	// <a[^>]+href="([^"]+/r/[^/]+/comments/[^/]+)"[^>]*>(.*?)</a>
-	cannedReddit := `
-		<html>
-			<body>
-				<a href="/r/golang/comments/12345/hello_world/">The Great Golang Discussion</a>
-				<a href="/r/programming/comments/67890/test_thread/">Test Thread</a>
-			</body>
-		</html>
-	`
-	fetchRawTransport = &mockTransport{
-		body:   cannedReddit,
-		status: http.StatusOK,
-	}
-	defer func() { fetchRawTransport = nil }()
 
 	args, _ := json.Marshal(map[string]string{
 		"query":  "reddit search",
 		"engine": "reddit",
 	})
 
-	result, err := searcher.Run(ctx, args)
-	if err != nil {
-		t.Fatalf("SearchWeb Reddit failed: %v", err)
-	}
-
-	if !strings.Contains(result, "The Great Golang Discussion") {
-		t.Errorf("Result missing Reddit title. Got: %s", result)
-	}
-	if !strings.Contains(result, "https://www.reddit.com/r/golang/comments/12345/hello_world/") {
-		t.Errorf("Result missing correct Reddit URL. Got: %s", result)
+	_, err := searcher.Run(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "unsupported engine") {
+		t.Fatalf("engine reddit: err = %v, want unsupported-engine rejection", err)
 	}
 }

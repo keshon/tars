@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -166,6 +168,36 @@ const defaultCompactAtPercent = 60
 func dropRepeatCaches(st *runState) {
 	st.idempotentSeen = nil
 	st.failedCalls = nil
+}
+
+// CompactFile mechanically compacts a saved snapshot in place: the
+// same compactHistory the loop uses, invoked on demand (/compact)
+// instead of at the usage threshold. Returns message counts before
+// and after; writes only when something actually dropped, atomically
+// like saveState. An error leaves the snapshot untouched.
+func CompactFile(stateFile string, keepSteps int) (before, after int, err error) {
+	history, err := LoadState(stateFile)
+	if err != nil {
+		return 0, 0, err
+	}
+	before = len(history)
+	compacted := compactHistory(history, keepSteps)
+	after = len(compacted)
+	if after >= before {
+		return before, after, nil
+	}
+	data, err := json.MarshalIndent(compacted, "", "  ")
+	if err != nil {
+		return before, after, err
+	}
+	tmp := stateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return before, after, err
+	}
+	if err := os.Rename(tmp, stateFile); err != nil {
+		return before, after, err
+	}
+	return before, after, nil
 }
 
 // maybeCompact drops old step groups once the prompt passes the

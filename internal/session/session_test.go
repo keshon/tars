@@ -39,3 +39,17 @@ func TestLoadEmptyFails(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestTitleFor_SkipsHarnessAndSystem(t *testing.T) {
+	history := []llm.Message{
+		{Role: llm.RoleSystem, Content: "system"},
+		{Role: llm.RoleUser, Content: "[harness] verify yourself"},
+		{Role: llm.RoleUser, Content: "real task\nsecond line"},
+	}
+	if got := TitleFor(history); got != "real task" {
+		t.Fatalf("TitleFor = %q", got)
+	}
+	if got := TitleFor(nil); got != "" {
+		t.Fatalf("TitleFor(nil) = %q", got)
+	}
+}

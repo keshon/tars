@@ -190,6 +190,10 @@ type Config struct {
 // second literal drifting beside it.
 const DefaultMaxSteps = 25
 
+// DefaultCompactKeepSteps is how many recent step groups compaction
+// keeps, manual or automatic. One literal, not two eights.
+const DefaultCompactKeepSteps = 8
+
 func New(cfg Config) *Agent {
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = DefaultMaxSteps
@@ -207,7 +211,7 @@ func New(cfg Config) *Agent {
 		cfg.MutatingTools = []string{"write_file", "patch_file", "patch_lines", "move_file"}
 	}
 	if cfg.CompactKeepSteps == 0 {
-		cfg.CompactKeepSteps = 8
+		cfg.CompactKeepSteps = DefaultCompactKeepSteps
 	}
 	if cfg.CompactAtPercent == 0 {
 		cfg.CompactAtPercent = defaultCompactAtPercent

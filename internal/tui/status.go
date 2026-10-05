@@ -46,19 +46,25 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, sec)
 }
 
-// spinnerFrames pulses the TARS name on the existing 1s tick —
+// spinner shows TARS while a run is in flight, else nothing: paired
+// with elapsed, time-since-submit stays visible while the backend is
+// silent. The "active" letter cycles in amber on the existing 1s tick —
 // memorable, ASCII-only (zero font risk), no extra messages or
 // goroutines: the frame index falls out of elapsed.
-var spinnerFrames = []string{"Tars", "tArs", "taRs", "tarS"}
-
-// spinner shows the current frame while a run is in flight, else
-// nothing: paired with elapsed, time-since-submit stays visible while
-// the backend is silent.
 func (m *model) spinner() string {
 	if m.state != stRunning {
 		return ""
 	}
-	return spinnerFrames[int(m.elapsed.Seconds())%len(spinnerFrames)] + " "
+	active := int(m.elapsed.Seconds()) % len("TARS")
+	var b strings.Builder
+	for i, r := range "TARS" {
+		if i == active {
+			b.WriteString(m.styles.gate.Render(string(r)))
+		} else {
+			b.WriteString(string(r))
+		}
+	}
+	return b.String() + " "
 }
 
 // meter renders the context fill from the latest backend-reported prompt

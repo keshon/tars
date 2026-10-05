@@ -10,6 +10,8 @@ func (m *model) View() string {
 	body := m.vp.View()
 	if m.dialog != nil {
 		body = m.dialogView()
+	} else if m.sessions != nil {
+		body = m.sessionsView()
 	}
 	var bottom string
 	switch m.state {

@@ -16,6 +16,81 @@ type todoFake struct {
 	open []string
 }
 
+// todoReplay is a checklist stub that stores what it is sent, like the
+// real tool: rehydration replays history through Run.
+type todoReplay struct {
+	items []replayItem
+}
+
+type replayItem struct {
+	ID    int    `json:"id"`
+	State string `json:"state"`
+	Text  string `json:"text"`
+}
+
+func (*todoReplay) Name() string        { return "todo" }
+func (*todoReplay) Description() string { return "stub" }
+func (*todoReplay) Mode() ToolMode      { return Concurrent }
+func (*todoReplay) Schema() json.RawMessage {
+	return json.RawMessage(`{}`)
+}
+func (t *todoReplay) Run(_ context.Context, args json.RawMessage) (string, error) {
+	var in struct {
+		Items []replayItem `json:"items"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return "", err
+	}
+	t.items = in.Items
+	return "ok", nil
+}
+func (t *todoReplay) Progress() (int, []string) {
+	var done int
+	var open []string
+	for _, it := range t.items {
+		if it.State == "done" {
+			done++
+		} else {
+			open = append(open, it.Text)
+		}
+	}
+	return done, open
+}
+
+// Every Run/Resume builds a fresh registry, so without rehydration the
+// tracker resets every turn: a resumed session with open todos finishes
+// without a bounce. Replaying the last todo call's args restores it.
+func TestAgent_RehydrateTodo_RestoresGateFromHistory(t *testing.T) {
+	history := []llm.Message{
+		{Role: llm.RoleUser, Content: "task"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "1", Name: "todo",
+			Arguments: json.RawMessage(`{"items":[{"id":1,"state":"done","text":"a"},{"id":2,"state":"pending","text":"b"}]}`)}}},
+		{Role: llm.RoleTool, ToolCallID: "1", Content: "todo:\n  [x] 1. a\n  [ ] 2. b\n  (1/2 done)\n"},
+	}
+	replay := &todoReplay{}
+	client := &stubClient{responses: []llm.ChatResponse{
+		say("done"), say("done"), say("done"), say("final"),
+	}}
+	a := New(Config{
+		Client: client, Tools: NewRegistry(replay),
+		System: "sys", SkipVerify: true,
+	})
+
+	out, err := a.Resume(context.Background(), history, "continue")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if out != "final" {
+		t.Fatalf("out = %q, want the post-bounce answer", out)
+	}
+	if done, open := replay.Progress(); done != 1 || len(open) != 1 || open[0] != "b" {
+		t.Fatalf("Progress = (%d, %v), want (1, [b])", done, open)
+	}
+	if n := countInjected(client.lastHistory, "unchecked todo"); n != maxTodoBounces {
+		t.Fatalf("bounced %d times, want %d — gate blind to resumed todos", n, maxTodoBounces)
+	}
+}
+
 func (todoFake) Name() string            { return "todo" }
 func (todoFake) Description() string     { return "stub" }
 func (todoFake) Mode() ToolMode          { return Concurrent }

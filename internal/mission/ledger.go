@@ -122,7 +122,7 @@ type Mission struct {
 
 const fileName = "mission.json"
 
-// Load reads a mission ledger from dir (.agent/tasks/<id>).
+// Load reads a mission ledger from dir (.tars/tasks/<id>).
 func Load(dir string) (*Mission, error) {
 	data, err := os.ReadFile(filepath.Join(dir, fileName))
 	if err != nil {

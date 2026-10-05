@@ -67,6 +67,12 @@ func (m *model) dialogView() string {
 	if len(rows) > maxRows {
 		rows = append(rows[:maxRows-1], rows[len(rows)-1])
 	}
+	return renderBox(rows, availW, availH)
+}
+
+// renderBox centers rows in a bordered box: shared by the dialog and
+// the sessions screen, so overlay chrome can never drift in two.
+func renderBox(rows []string, availW, availH int) string {
 	bw := 0
 	for _, r := range rows {
 		if n := lipgloss.Width(r); n > bw {
@@ -118,9 +124,11 @@ func helpSections() []helpSection {
 		{"commands", [][2]string{
 			{"/quit", "exit"},
 			{"/help", "this list"},
-			{"/new <task>", "fresh task"},
+			{"/new [task]", "fresh task (empty resets to chat)"},
 			{"/status", "run facts"},
 			{"/retry", "re-run last failed turn"},
+			{"/sessions", "past sessions"},
+			{"/compact", "shrink this session's history"},
 		}},
 	}
 }

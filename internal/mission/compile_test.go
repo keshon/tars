@@ -15,7 +15,7 @@ func TestWorkspaceListing_SkipsNoiseAndReportsRealFiles(t *testing.T) {
 		filepath.Join("src", "game.js"),
 		filepath.Join("node_modules", "lib", "junk.js"),
 		filepath.Join(".git", "HEAD"),
-		filepath.Join(".agent", "tasks", "x", "state.json"),
+		filepath.Join(".tars", "tasks", "x", "state.json"),
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755); err != nil {
 			t.Fatal(err)
@@ -29,7 +29,7 @@ func TestWorkspaceListing_SkipsNoiseAndReportsRealFiles(t *testing.T) {
 	if !strings.Contains(listing, "index.html") || !strings.Contains(listing, "src/game.js") {
 		t.Fatalf("listing missing real files:\n%s", listing)
 	}
-	for _, banned := range []string{"node_modules", ".git", ".agent"} {
+	for _, banned := range []string{"node_modules", ".git", ".tars"} {
 		if strings.Contains(listing, banned) {
 			t.Fatalf("listing leaked %s:\n%s", banned, listing)
 		}

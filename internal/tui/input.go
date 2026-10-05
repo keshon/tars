@@ -23,6 +23,9 @@ func newInput() textarea.Model {
 	ta := textarea.New()
 	ta.Prompt = "> "
 	ta.MaxHeight = 6
+	// Line numbers default on in bubbles and render as a phantom "1"
+	// in the empty box — it looks like content but submits nothing.
+	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+o")
 	return ta
 }

@@ -134,7 +134,7 @@ propose, change nothing — enforced by the same tool-set removal.
 ## Mission mode
 
 A mission is a state machine over phases — `explore`, `plan`, `execute`,
-`verify`, `done`, `failed` — persisted to `.agent/tasks/<id>/mission.json`
+`verify`, `done`, `failed` — persisted to `.tars/tasks/<id>/mission.json`
 after every transition. The model never chooses the next phase. Resume is
 "load, switch on phase, continue".
 

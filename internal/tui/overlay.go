@@ -20,6 +20,7 @@ const (
 	ovNone overlayKind = iota
 	ovGate
 	ovDialog
+	ovSessions
 )
 
 type overlayFrame struct {

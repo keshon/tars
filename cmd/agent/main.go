@@ -55,7 +55,7 @@ func main() {
 		"Applies to direct runs; mission workers and subagents keep fixed budgets")
 	thinkBudget := flag.Int("reasoning-budget", 0, "characters of <think> deliberation allowed per response "+
 		"before a wrap-up round demands commitment; 0 takes the agent default (6000), negative disables wrapping")
-	resume := flag.String("resume", "", "path to a .agent/tasks/.../state.json snapshot to resume "+
+	resume := flag.String("resume", "", "path to a .tars/tasks/.../state.json snapshot to resume "+
 		"an interrupted run from, instead of starting a new task")
 	answer := flag.String("answer", "", "answer to supply when resuming a run paused on ask_user "+
 		"(use with -resume when the agent stopped to ask a clarifying question)")
@@ -95,6 +95,7 @@ func main() {
 	modeFlag := flag.String("mode", "print", "output mode: print (human-readable) or json (one JSON object per line)")
 	serveFlag := flag.Bool("serve", false, "serve JSON-RPC over stdio instead of running one task: methods run/respond/cancel, events on stdout. See docs/rpc.md")
 	tuiFlag := flag.Bool("tui", false, "fullscreen terminal UI instead of print mode: live transcript, status, and gate prompts")
+	noVerifyFlag := flag.Bool("no-verify", false, "skip the self-check verify round (finish accepted without the extra verification turn). Saves 1-2 model calls; strong models only")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
@@ -167,8 +168,12 @@ func main() {
 	} else {
 		sum := sha1.Sum([]byte(task + time.Now().String()))
 		taskID := hex.EncodeToString(sum[:])[:8]
-		taskDir := filepath.Join(".agent", "tasks", taskID)
+		taskDir := workspace.TaskDir(taskID)
 		stateFile = filepath.Join(taskDir, "state.json")
+		// The session title lives with the session (pi's session_info):
+		// written once here, rewritten on TUI rename, derived from
+		// history when absent. Display metadata, never load-bearing.
+		_ = workspace.WriteSessionTitle(taskDir, workspace.TitleLine(task))
 		if *forkFlag != "" {
 			var err error
 			forkHistory, err = loadHistory(*forkFlag)
@@ -404,6 +409,7 @@ func main() {
 			backendKind:  *backendKind,
 			stream:       *streamFlag,
 			thinkBudget:  *thinkBudget,
+			skipVerify:   *noVerifyFlag,
 			mcpTools:     mcpTools,
 		}, os.Stdin, os.Stdout, os.Stderr)
 		return
@@ -426,6 +432,7 @@ func main() {
 		// Direct runs fund acknowledged todo work with extra steps;
 		// -serve leaves this off until its budget story is decided.
 		TodoFunding:  true,
+		SkipVerify:   *noVerifyFlag,
 		OnDelta:      func(chunk string) { fmt.Print(chunk) },
 		OnStep:       stepPrinter(*modeFlag, emitter, *logMax),
 		OnToolResult: toolResultPrinter(*modeFlag, emitter),
@@ -635,7 +642,7 @@ func runMission(ctx context.Context, p missionParams) error {
 }
 
 // buildPolicy combines built-in defaults with -allow/-deny overrides.
-// -pure skips project config (no .agent/permissions.json loaded yet, so
+// -pure skips project config (no .tars/permissions.json loaded yet, so
 // today it just means defaults only); extra rules always win by append order.
 func buildPolicy(pure bool, allow, deny string) permission.Policy {
 	_ = pure

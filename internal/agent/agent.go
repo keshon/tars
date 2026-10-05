@@ -201,8 +201,13 @@ type runState struct {
 	lastSingleResult                                                          uint64
 	verifiedOnce, searchFatigueWarned, blockFinishDueToVerify, toolLoopWarned bool
 	emptyFinishRetried                                                        bool
-	lastSignature, verifyFailedOutput, lastSingleTool                         string
-	mutatedPaths                                                              []string
+	// overflowRetried allows exactly one compact-and-retry per run
+	// (pi's discipline): a second overflow means the window cannot
+	// hold this session however it is cut — fail with directions
+	// instead of burning a call per step until MaxSteps.
+	overflowRetried                                   bool
+	lastSignature, verifyFailedOutput, lastSingleTool string
+	mutatedPaths                                      []string
 
 	// zeroWriteFinishes counts how many times the model has tried to end
 	// the run having written nothing, while VerifyOnZeroWrites says the

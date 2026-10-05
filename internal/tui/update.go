@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -12,7 +13,10 @@ import (
 )
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(waitEvents(m), tick())
+	// cursor.Blink seeds the movie-terminal caret: BlinkMsg chains
+	// through input.Update, so one seed blinks forever. Routed in
+	// Update explicitly — the catch-all would drop it.
+	return tea.Batch(waitEvents(m), tick(), cursor.Blink)
 }
 
 func waitEvents(m *model) tea.Cmd {
@@ -74,13 +78,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.input.Focus()
 
 	case tea.MouseMsg:
-		// A dialog freezes the background: scroll resumes on close.
-		if m.dialog != nil {
+		// An overlay freezes the background: scroll resumes on close.
+		if m.dialog != nil || m.sessions != nil {
 			return m, nil
 		}
 		// The input never consumes mouse messages, so scroll works in
 		// every state: wheel in ask/done used to fall through and die.
 		return m.scrollViewport(msg)
+
+	case cursor.BlinkMsg:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -281,6 +290,12 @@ func (m *model) handleEvent(ev api.Event) {
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sessions != nil && m.state != stPermission {
+		// The sessions screen owns its keys like a dialog — except
+		// over a permission gate, which is always on top: its y/n/a
+		// answers must never land in a list.
+		return m.sessionsKey(msg)
+	}
 	if m.dialog != nil {
 		// Takeover: the dialog eats every key but close and quit so
 		// typing can neither reach the input nor toggle state behind it.

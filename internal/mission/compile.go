@@ -25,7 +25,7 @@ const (
 // bookkeeping, VCS internals, dependency trees. A weak model that sees
 // node_modules in its file listing will read node_modules.
 var skipDirs = map[string]bool{
-	".agent": true, ".git": true, "node_modules": true,
+	".tars": true, ".git": true, "node_modules": true,
 	".idea": true, ".vscode": true, "__pycache__": true,
 }
 

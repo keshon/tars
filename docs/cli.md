@@ -54,6 +54,7 @@ secrets) gated to ask. See `SECURITY.md` for the trust boundary.
 | `-allow RULES` | — | Comma-separated `tool=pattern` rules to allow, e.g. `"run_shell=go *,read_file=*.go"`. Wins over defaults |
 | `-deny RULES` | — | Comma-separated `tool=pattern` rules to deny, e.g. `"run_shell=rm *,read_file=.env"`. Wins over `-allow` |
 | `-pure` | `false` | Ignore project config for permissions; built-in defaults plus `-allow`/`-deny` only |
+| `-no-verify` | `false` | Skip the self-check verify round (finish accepted without the extra verification turn). Saves 1-2 model calls; strong models only. Loop guards stay on |
 | `-mcp SERVERS` | - | MCP servers as `"name=cmd args...;name2=https://host/mcp"` over stdio JSON-RPC or Streamable HTTP. Tools appear as `mcp__name__tool`. A server that fails to start is skipped with a warning |
 
 ## Output and debugging

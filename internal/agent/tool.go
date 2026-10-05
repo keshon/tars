@@ -170,6 +170,28 @@ func (r *Registry) TodoProgress() (done int, open []string) {
 // is Concurrent so it does not clear this cache.
 const maxIdenticalAttempts = 3
 
+// rehydrateTodo restores the checklist from history into the fresh
+// registry. The todo tool takes the full list per call, so replaying
+// the LAST todo call's args restores exact state through the normal
+// Run path (validation included, no policy side effects — Registry.Run
+// invokes the tool directly). Best-effort: stale args fail validation
+// and the tracker stays empty, exactly as before.
+func (a *Agent) rehydrateTodo(ctx context.Context, history []llm.Message) {
+	if a.cfg.Tools == nil {
+		return
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		calls := history[i].ToolCalls
+		for j := len(calls) - 1; j >= 0; j-- {
+			if calls[j].Name != "todo" {
+				continue
+			}
+			_, _ = a.cfg.Tools.Run(ctx, "todo", calls[j].Arguments)
+			return
+		}
+	}
+}
+
 // executeToolCalls runs one step's tool calls and accounts for them:
 // repeat detection, refusal short-circuits, policy gates, concurrent vs
 // exclusive scheduling, result collection, mutation bookkeeping, loop

@@ -451,6 +451,9 @@ func (m *model) refreshContent() {
 		}
 		content += strings.Join(renderLive(m.live, m.styles, m.vp.Width), "\n")
 	}
+	// Breathing room: one trailing blank line inside the viewport so the
+	// last text line never touches the divider when scrolled to bottom.
+	content += "\n"
 	heights := make([]int, len(parts))
 	for i, p := range parts {
 		heights[i] = strings.Count(p, "\n") + 1

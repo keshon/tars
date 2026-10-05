@@ -148,6 +148,11 @@ type model struct {
 	// dialog is the open modal, if any (dialog.go). While open it
 	// replaces the transcript body and eats all keys but close/quit.
 	dialog *dialog
+	// sessions is the open sessions screen, if any (sessions.go): a
+	// browsable past-task list with rename/delete. Like a dialog it
+	// replaces the body and owns its keys; unlike a dialog it borrows
+	// the note input for rename entry.
+	sessions *sessionsState
 	// Status facts snapshotted from cfg at construction for /status:
 	// backend/workspace identity and budgets the run was given.
 	backendKind string

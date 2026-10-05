@@ -35,7 +35,7 @@ from `-api-key`, `-api-key-env`, or environment (`TARS_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`,
 `TOGETHER_API_KEY`, `ANTHROPIC_API_KEY`).
 
-State lands in `.agent/tasks/<id>/` after every step; `-resume` picks up
+State lands in `.tars/tasks/<id>/` after every step; `-resume` picks up
 an interrupted run there.
 
 ## Evals

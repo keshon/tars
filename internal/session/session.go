@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/keshon/tars/internal/llm"
@@ -82,4 +83,31 @@ func Load(path string) ([]llm.Message, error) {
 		return nil, fmt.Errorf("session log %s holds no valid events", path)
 	}
 	return last, nil
+}
+
+// TitleFor derives the default display title: the first user message,
+// first line, trimmed, capped at 60 runes. Loop nudges ([harness]
+// provenance) are history, not conversation, and never title.
+// Shapes locally instead of sharing workspace.TitleLine:
+// package-layers forbids session from importing workspace, and the
+// twin is eight lines, not a seam.
+func TitleFor(history []llm.Message) string {
+	for _, msg := range history {
+		if msg.Role != llm.RoleUser || strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		if strings.HasPrefix(msg.Content, "[harness] ") {
+			continue
+		}
+		line := msg.Content
+		if i := strings.IndexByte(line, '\n'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(strings.ReplaceAll(line, "\r", ""))
+		if r := []rune(line); len(r) > 60 {
+			line = string(r[:60])
+		}
+		return line
+	}
+	return ""
 }

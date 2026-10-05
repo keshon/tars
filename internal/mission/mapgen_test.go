@@ -11,13 +11,13 @@ func TestBuildMap_TreeHistogramAndManifests(t *testing.T) {
 	ws := testWS(t)
 	root := ws.Root()
 	files := map[string]string{
-		"go.mod":               "module example\n\ngo 1.22\n",
-		"README.md":            "# Example\nA test project.\n",
-		"main.go":              "package main\n",
-		"src/game.js":          "loop()",
-		"src/util.js":          "x",
-		"node_modules/x/y.js":  "junk",
-		".agent/tasks/a/x.txt": "junk",
+		"go.mod":              "module example\n\ngo 1.22\n",
+		"README.md":           "# Example\nA test project.\n",
+		"main.go":             "package main\n",
+		"src/game.js":         "loop()",
+		"src/util.js":         "x",
+		"node_modules/x/y.js": "junk",
+		".tars/tasks/a/x.txt": "junk",
 	}
 	for p, content := range files {
 		full := filepath.Join(root, p)
@@ -46,7 +46,7 @@ func TestBuildMap_TreeHistogramAndManifests(t *testing.T) {
 			t.Fatalf("map missing %q:\n%s", want, m)
 		}
 	}
-	for _, banned := range []string{"node_modules", ".agent"} {
+	for _, banned := range []string{"node_modules", ".tars"} {
 		if strings.Contains(m, banned) {
 			t.Fatalf("map leaked %s:\n%s", banned, m)
 		}

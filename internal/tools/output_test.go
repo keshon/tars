@@ -21,8 +21,8 @@ func TestSpill_WritesFullContent(t *testing.T) {
 	if string(data) != content {
 		t.Fatal("spill content mismatch")
 	}
-	if !strings.HasPrefix(p, filepath.Join(root, ".agent", "output")) {
-		t.Fatalf("spill outside .agent/output: %s", p)
+	if !strings.HasPrefix(p, filepath.Join(root, ".tars", "output")) {
+		t.Fatalf("spill outside .tars/output: %s", p)
 	}
 }
 
