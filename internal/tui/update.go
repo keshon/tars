@@ -96,6 +96,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.input.Focus(), waitEvents(m))
 	case tea.MouseMsg:
+		if m.actionBarVisible() && msg.Y >= m.termH-m.actionBarRows() && msg.Y < m.termH && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			for _, cell := range m.footerCells() {
+				if msg.Y == m.termH-m.actionBarRows()+cell.row && msg.X >= cell.start && msg.X < cell.end {
+					return m.footerKey(tea.KeyMsg{Type: cell.action.key})
+				}
+			}
+			return m, nil
+		}
 		if m.state == stPermission || m.state == stAsk {
 			var cmd tea.Cmd
 			m.gateVP, cmd = m.gateVP.Update(msg)
@@ -117,18 +125,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.Action != tea.MouseActionPress {
 					return m, nil
 				}
-				row := (msg.Y - 6) / 2
-				if msg.Y < 6 || row >= max((m.vp.Height-5)/2, 1) {
+				row := (msg.Y - 5) / 2
+				if msg.Y < 5 || row >= max((m.vp.Height-2)/2, 1) {
 					return m, nil
 				}
 				m.nav.cursor = m.nav.offset + row
 			default:
 				return m, nil
 			}
-			m.nav.clamp(max((m.vp.Height-5)/2, 1))
+			m.nav.clamp(max((m.vp.Height-2)/2, 1))
 			m.navFocused = true
 			m.input.Blur()
 			return m, nil
+		}
+		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.X >= navigatorWidth+3 && msg.Y >= 3 && msg.Y < 3+m.vp.Height && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			m.navFocused = false
+			return m, m.input.Focus()
 		}
 		// An overlay freezes the background: scroll resumes on close.
 		if m.dialog != nil || m.sessions != nil {
@@ -244,7 +256,7 @@ func (m *model) fitBottom() {
 	if m.queued != "" && m.state != stPermission && m.state != stAsk {
 		lines++
 	}
-	if m.sessions != nil {
+	if m.sessions != nil || m.dialog != nil {
 		lines = 1
 	}
 	oldWidth := m.vp.Width
@@ -252,7 +264,10 @@ func (m *model) fitBottom() {
 	if oldWidth != m.vp.Width {
 		m.refreshContent()
 	}
-	h := m.termH - 7 - lines
+	h := m.termH - 6 - lines
+	if m.actionBarVisible() {
+		h -= m.actionBarRows()
+	}
 	if h < 1 {
 		h = 1
 	}
@@ -262,7 +277,7 @@ func (m *model) fitBottom() {
 		m.refreshGate()
 	}
 	if m.sessions != nil {
-		width := m.termW - 1
+		width := m.termW
 		if width >= 90 {
 			width = min(44, (width-3)/2)
 		}
@@ -356,7 +371,7 @@ func (m *model) handleEvent(ev api.Event) {
 		kind, _ := ev.Fields["kind"].(string)
 		prompt, _ := ev.Fields["prompt"].(string)
 		m.gate = prompt
-		m.gateVP = viewport.New(max(m.termW-1, 1), max(m.vp.Height, 1))
+		m.gateVP = viewport.New(max(m.termW, 1), max(m.vp.Height, 1))
 		if m.sessions != nil {
 			m.closeSessions()
 		}
@@ -449,6 +464,9 @@ func (m *model) handleEvent(ev api.Event) {
 	}
 }
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyF1 || msg.Type == tea.KeyF2 || msg.Type == tea.KeyF3 || msg.Type == tea.KeyF4 || msg.Type == tea.KeyF5 || msg.Type == tea.KeyF6 || msg.Type == tea.KeyF7 || msg.Type == tea.KeyF10 {
+		return m.footerKey(msg)
+	}
 	if msg.Type == tea.KeyCtrlQ || msg.Type == tea.KeyCtrlC {
 		m.quit = true
 		m.cancel()
@@ -557,13 +575,9 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Type == tea.KeyCtrlG {
-		// Global: compact/full view works in every state and never
-		// reaches the input (the textarea binds no ctrl+g). Collapses
-		// thinking summaries and long tool results alike.
-		m.compact = !m.compact
-		m.refreshContent()
-		return m, nil
+		return m.footerKey(tea.KeyMsg{Type: tea.KeyF3})
 	}
+
 	switch m.state {
 	case stPermission:
 		return m.gateKey(msg)

@@ -6,31 +6,33 @@ import (
 	"time"
 )
 
-// statusLine renders run facts: steps, context meter, elapsed,
-// first-token time, per-run tool/file counts, follow hint. State lives
-// in the header brand (motion = working) — this row reports, never
-// announces.
+// statusLine describes the current input; run metrics have their own row.
 func (m *model) statusLine() string {
-	follow := ""
-	if !m.follow {
-		follow = "  Ctrl+End latest"
-	}
-	counts := ""
-	if m.toolsUsed > 0 {
-		counts = fmt.Sprintf("  tools %d", m.toolsUsed)
-		if len(m.filesTouched) > 0 {
-			counts += fmt.Sprintf("  files %d", len(m.filesTouched))
-		}
-	}
 	if m.sessions != nil {
-		return m.styles.status.Render("Search: type  List: ↑↓ choose  Enter open")
+		return m.styles.status.Render("Type to search  ↑↓ select  Enter open  Esc back")
 	}
-	if m.state == stDone && (m.sess == nil || (m.steps == 0 && m.tokens == 0 && m.toolsUsed == 0 && m.elapsed == 0)) {
-		return m.styles.status.Render(m.actionHint())
+	if m.dialog != nil {
+		return m.styles.status.Render("Esc close  F1 close help")
 	}
-	return m.styles.status.Render(m.actionHint() + "  " + fmt.Sprintf(
-		m.statusWord()+"  step %d/%d  %s  elapsed %s%s%s%s",
-		m.steps, m.maxSteps, m.meter(), formatElapsed(m.elapsed), m.ttft(), counts, follow))
+	hint := m.actionHint()
+	if !m.follow && m.state == stDone {
+		hint += "  Scrolled up"
+	}
+	return m.styles.status.Render(hint)
+}
+
+func (m *model) runFacts() string {
+	if m.sessions != nil || m.dialog != nil || (m.state == stDone && m.steps == 0 && m.tokens == 0 && m.toolsUsed == 0 && m.elapsed == 0) {
+		return ""
+	}
+	facts := fmt.Sprintf("step %d/%d  %s  elapsed %s%s", m.steps, m.maxSteps, m.meter(), formatElapsed(m.elapsed), m.ttft())
+	if m.toolsUsed > 0 {
+		facts += fmt.Sprintf("  tools %d", m.toolsUsed)
+	}
+	if len(m.filesTouched) > 0 {
+		facts += fmt.Sprintf("  files %d", len(m.filesTouched))
+	}
+	return facts
 }
 
 // ttft renders time-to-first-token once streaming starts: the latency
@@ -138,7 +140,7 @@ func kTokens(n int) string {
 
 // dividerLine splits history from the bottom zone with a dim rule.
 func (m *model) dividerLine() string {
-	w := max(m.termW-1, 0)
+	w := max(m.termW, 0)
 	if w < minWrapWidth {
 		w = minWrapWidth
 	}

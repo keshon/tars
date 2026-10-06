@@ -85,7 +85,7 @@ func writeChatMode(stateFile string, plan bool) error {
 
 func (m *model) actionHint() string {
 	if m.navFocused {
-		return "↑↓ choose  Enter open  Esc input  Ctrl+N new"
+		return "↑↓ choose  Enter open  Tab input"
 	}
 	switch m.state {
 	case stPermission:
@@ -93,10 +93,14 @@ func (m *model) actionHint() string {
 	case stAsk:
 		return "Enter answer  Ctrl+O newline  Esc stop"
 	case stRunning:
-		return "Enter queue  Ctrl+O newline  Esc stop  Ctrl+End latest"
+		return "Enter queue  Ctrl+O newline  Esc stop"
 	case stStopping:
 		return "Stopping…  draft is preserved  Ctrl+Q quit"
 	default:
-		return "Enter send  Ctrl+O newline  Ctrl+N new  Ctrl+P chats  /help"
+		hint := "Enter send  Ctrl+O newline"
+		if m.sidebarVisible() {
+			hint += "  Tab switch pane"
+		}
+		return hint
 	}
 }

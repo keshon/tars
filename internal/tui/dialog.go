@@ -33,11 +33,14 @@ type dialog struct {
 func (m *model) openDialog(title string, lines []string) {
 	m.dialog = &dialog{title: title, lines: lines}
 	m.pushOverlay(ovDialog)
+	m.input.Blur()
+	m.fitBottom()
 }
 
 func (m *model) closeDialog() {
 	m.dialog = nil
 	m.popOverlay()
+	m.fitBottom()
 }
 
 // dialogView renders the open dialog centered in the viewport area:
@@ -78,19 +81,18 @@ func renderBox(rows []string, availW, availH int) string {
 			bw = n
 		}
 	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("8")).
-		Padding(0, 1).
-		// Width covers padding: content gets bw back, so nothing
-		// re-wraps inside the box.
-		Width(bw + 2).
-		Render(strings.Join(rows, "\n"))
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	framed := []string{border.Render("╭" + strings.Repeat("─", bw+2) + "╮")}
+	for _, row := range rows {
+		framed = append(framed, border.Render("│ ")+cellLine(row, bw)+border.Render(" │"))
+	}
+	framed = append(framed, border.Render("╰"+strings.Repeat("─", bw+2)+"╯"))
+	box := strings.Join(framed, "\n")
 	top := (availH - lipgloss.Height(box)) / 2
 	if top < 0 {
 		top = 0
 	}
-	return strings.Repeat("\n", top) + box
+	return strings.Repeat("\n", top) + lipgloss.PlaceHorizontal(availW, lipgloss.Center, box)
 }
 
 // helpSection groups rows under a title for the two-column help:
@@ -104,6 +106,9 @@ type helpSection struct {
 func helpSections() []helpSection {
 	return []helpSection{
 		{"keys", [][2]string{
+			{"F1 / F2 / F3", "help / sessions / details"},
+			{"F4 / F5 / F6 / F7", "new / mode / sidebar / latest"},
+			{"F10", "quit"},
 			{"Ctrl+Q", "quit"},
 			{"Esc", "stop run, stay in chat"},
 			{"Enter", "queue a follow-up during a run"},

@@ -543,7 +543,7 @@ func consecutiveBlanks(s string) int {
 
 func TestViewportSizedWithoutTTY(t *testing.T) {
 	m := sizeModel(t, testModel())
-	if !m.ready || m.vp.Width != 79 {
+	if !m.ready || m.vp.Width != 80 {
 		t.Fatalf("viewport not sized: %+v", m.vp)
 	}
 }
@@ -639,6 +639,7 @@ func TestCaretBlinkRouted(t *testing.T) {
 // a blank line sits between content and rule at the bottom.
 func TestTranscriptBreathesBeforeDivider(t *testing.T) {
 	m := sizeModel(t, testModel())
+	m.state = stDone
 	for _, b := range renderHistory(compactTestHistory(15)) {
 		m.appendBlock(b)
 	}
@@ -712,7 +713,7 @@ func TestFollowUnfollowsOnScroll(t *testing.T) {
 	if mm.follow {
 		t.Fatal("pgup must unfollow")
 	}
-	if !strings.Contains(mm.View(), "Ctrl+End") {
+	if !strings.Contains(mm.View(), "7Latest") {
 		t.Fatal("unfollowed state must show jump hint")
 	}
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
@@ -1458,8 +1459,8 @@ func TestWithoutPrintHooks_Silent(t *testing.T) {
 
 func TestDialogFitsViewport(t *testing.T) {
 	m := sizeModel(t, testModel())
-	m.vp.Width, m.vp.Height = 26, 8
 	m.openDialog("status", m.statusLines())
+	m.vp.Width, m.vp.Height = 26, 8
 	out := m.dialogView()
 	lines := strings.Split(out, "\n")
 	if len(lines) > 8 {
@@ -1510,7 +1511,7 @@ func TestBottomZoneHeights(t *testing.T) {
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if mm := updated.(*model); mm.vp.Height != 16 {
-		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - gap - input)", mm.vp.Height)
+		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - metrics - input - actions)", mm.vp.Height)
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
@@ -1526,9 +1527,9 @@ func TestBottomZoneHeights(t *testing.T) {
 	if mm = updated.(*model); mm.vp.Height != 16 {
 		t.Fatalf("composing viewport height = %d, want 16", mm.vp.Height)
 	}
-	// The bottom row stays unused to prevent Windows console scrolling.
-	if n := len(strings.Split(mm.View(), "\n")); n != 23 {
-		t.Fatalf("view is %d lines, want 23", n)
+	// The frame uses every row, including the footer at the bottom edge.
+	if n := len(strings.Split(mm.View(), "\n")); n != 24 {
+		t.Fatalf("view is %d lines, want 24", n)
 	}
 }
 
@@ -2069,7 +2070,7 @@ func TestStatusLineShowsStepBudget(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.steps = 7
 	m.maxSteps = 40
-	if line := m.statusLine(); !strings.Contains(line, "step 7/40") {
+	if line := m.runFacts(); !strings.Contains(line, "step 7/40") {
 		t.Fatalf("status line missing step budget: %q", line)
 	}
 }
@@ -2119,15 +2120,15 @@ func TestStatusShowsTTFT(t *testing.T) {
 	m := testModel()
 	m.state = stRunning
 	m.started = time.Now().Add(-100 * time.Second)
-	if got := m.statusLine(); strings.Contains(got, "ttft") {
+	if got := m.runFacts(); strings.Contains(got, "ttft") {
 		t.Fatalf("status shows ttft before streaming: %q", got)
 	}
 	m.firstToken = m.started.Add(7 * time.Second)
-	if got := m.statusLine(); !strings.Contains(got, "ttft 00:07") {
+	if got := m.runFacts(); !strings.Contains(got, "ttft 00:07") {
 		t.Fatalf("status missing ttft: %q", got)
 	}
 	m.state = stDone
-	if got := m.statusLine(); strings.Contains(got, "ttft") {
+	if got := m.runFacts(); strings.Contains(got, "ttft") {
 		t.Fatalf("status shows ttft when done: %q", got)
 	}
 }
@@ -2164,8 +2165,8 @@ func TestStatusBrand_RightAligned(t *testing.T) {
 	if header == "" {
 		t.Fatal("header missing brand line")
 	}
-	if n := lipgloss.Width(header); n != 159 {
-		t.Fatalf("header width = %d, want 159 (clock right, one column reserved)", n)
+	if n := lipgloss.Width(header); n != 160 {
+		t.Fatalf("header width = %d, want 160 (clock at right edge)", n)
 	}
 	// Fixed two-line zone: the blocked input stays visible while
 	// running (empty transcript here, so "> " can only be the box).

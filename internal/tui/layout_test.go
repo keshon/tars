@@ -15,7 +15,7 @@ func TestResponsiveNavigator(t *testing.T) {
 	m.state = stDone
 	m.input.SetValue("unfinished draft")
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	if !m.sidebarVisible() || m.vp.Width != 88 {
+	if !m.sidebarVisible() || m.vp.Width != 89 {
 		t.Fatalf("wide viewport: %d", m.vp.Width)
 	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
@@ -27,12 +27,12 @@ func TestResponsiveNavigator(t *testing.T) {
 		t.Fatal("sidebar keys edited draft")
 	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
-	if m.sidebarVisible() || m.vp.Width != 119 || !m.input.Focused() {
+	if m.sidebarVisible() || m.vp.Width != 120 || !m.input.Focused() {
 		t.Fatal("hidden sidebar failed to restore input")
 	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if m.sidebarVisible() || m.vp.Width != 79 || m.input.Value() != "unfinished draft" {
+	if m.sidebarVisible() || m.vp.Width != 80 || m.input.Value() != "unfinished draft" {
 		t.Fatal("narrow resize lost draft or space")
 	}
 }
@@ -107,11 +107,11 @@ func TestFramesFitTerminalCells(t *testing.T) {
 				m.openSessions()
 			}
 			lines := strings.Split(m.View(), "\n")
-			if len(lines) != size[1]-1 {
+			if len(lines) != size[1] {
 				t.Fatalf("size %v: %d rows", size, len(lines))
 			}
 			for _, line := range lines {
-				if lipgloss.Width(line) >= size[0] {
+				if lipgloss.Width(line) > size[0] {
 					t.Fatalf("size %v: overflowing line %q", size, line)
 				}
 			}

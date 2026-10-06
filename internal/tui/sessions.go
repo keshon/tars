@@ -551,7 +551,7 @@ func (m *model) deleteSelected() {
 // solid amber at rest — motion alone tells working from idle, so no
 // state word is needed anywhere near it.
 func (m *model) headerLine() string {
-	w := max(m.termW-1, 0)
+	w := max(m.termW, 0)
 	clock := time.Now().Format("15:04:05")
 	if m.state != stDone {
 		clock = "elapsed " + formatElapsed(m.elapsed)
@@ -626,7 +626,7 @@ func (m *model) refreshNavigator() {
 			break
 		}
 	}
-	m.nav.clamp(max((m.vp.Height-5)/2, 1))
+	m.nav.clamp(max((m.vp.Height-2)/2, 1))
 }
 func (s *sessionsState) clamp(visible int) {
 	s.cursor = max(0, min(s.cursor, len(s.entries)-1))
@@ -670,7 +670,7 @@ func (m *model) browserMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if s.mode != sessList {
 		return m, nil
 	}
-	width := max(m.termW-1, 1)
+	width := max(m.termW, 1)
 	if width >= 90 {
 		width = min(44, (width-3)/2)
 	}

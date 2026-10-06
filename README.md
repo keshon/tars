@@ -36,7 +36,10 @@ the searchable session browser, Tab switches between sidebar and input,
 Ctrl+B toggles the sidebar, and Ctrl+N starts a new chat when idle. Enter
 opens saved history without running the model; send a follow-up to continue.
 In the browser, Ctrl+R renames and Ctrl+D stages deletion. Ctrl+O adds a
-newline to the chat input. Up/Down always move within the input;
+newline to the chat input. The footer displays function-key numbers beside colored labels and keeps F1 Help, F2 Sessions, F3 Details,
+F4 New, F5 Mode, F6 Sidebar, F7 Latest, and F10 Quit in fixed positions;
+click a button or press its function key. Narrow terminals use two rows.
+Unavailable actions are dimmed during prompts. Up/Down always move within the input;
 Alt+Up/Down recall submitted inputs and restore the draft. Ctrl+End jumps to the latest message; Ctrl+U
 clears the draft explicitly. Esc preserves idle drafts and stops active runs.
 Drafts and input history stay with each chat while the TUI is open.

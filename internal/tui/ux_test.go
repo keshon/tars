@@ -39,7 +39,7 @@ func TestPermissionDecisionAlwaysHasVisibleContext(t *testing.T) {
 	if m.gstage != gsPermit || strings.Contains(m.View(), "note>") {
 		t.Fatal("rejection did not close")
 	}
-	if len(strings.Split(m.View(), "\n")) >= m.termH {
+	if len(strings.Split(m.View(), "\n")) > m.termH {
 		t.Fatal("gate overflowed terminal")
 	}
 }
@@ -221,7 +221,7 @@ func TestPromptTransitionsFitWideAndNarrowTerminals(t *testing.T) {
 			t.Fatalf("note hidden at width %d", width)
 		}
 		m.handleEvent(api.Event{Name: "input_answered"})
-		if m.sidebarVisible() && m.vp.Width != width-32 {
+		if m.sidebarVisible() && m.vp.Width != width-31 {
 			t.Fatalf("chat did not refit: %d", m.vp.Width)
 		}
 	}

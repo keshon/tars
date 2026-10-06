@@ -15,17 +15,24 @@ func (m *model) View() string {
 	}
 	topRule, bottomRule, spacer := m.dividerLine(), m.dividerLine(), ""
 	if m.sidebarVisible() {
-		column, width := navigatorWidth+1, m.termW-1
-		topRule = m.styles.dim.Render(strings.Repeat("─", column) + "┬" + strings.Repeat("─", width-column-1))
+		column, width := navigatorWidth+1, m.termW
+		topRule = m.paneRule(column, "SESSIONS", m.navFocused) + m.styles.dim.Render("┬") + m.paneRule(width-column-1, "CHAT", !m.navFocused)
 		bottomRule = m.styles.dim.Render(strings.Repeat("─", column) + "┴" + strings.Repeat("─", width-column-1))
 		spacer = strings.Repeat(" ", column) + m.styles.dim.Render("│")
+	}
+	if facts := m.runFacts(); facts != "" {
+		if m.sidebarVisible() {
+			spacer += " "
+		}
+		spacer += m.styles.dim.Render(facts)
 	}
 	body := m.vp.View()
 	if m.state == stPermission || m.state == stAsk {
 		body = m.gateVP.View()
 	}
 	if m.sidebarVisible() {
-		divider := strings.Repeat(m.styles.dim.Render(" \u2502 ")+"\n", max(m.vp.Height-1, 0)) + m.styles.dim.Render(" \u2502 ")
+		borderStyle := m.styles.dim
+		divider := strings.Repeat(borderStyle.Render(" │ ")+"\n", max(m.vp.Height-1, 0)) + borderStyle.Render(" │ ")
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), divider, body)
 	}
 	if m.dialog != nil {
@@ -33,8 +40,11 @@ func (m *model) View() string {
 	} else if m.sessions != nil {
 		body = m.sessionsView()
 	}
+	body = cellFrame(body, max(m.termW, 0), m.vp.Height)
 	var bottom string
-	if m.sessions != nil {
+	if m.dialog != nil {
+		bottom = m.styles.dim.Render("Draft preserved")
+	} else if m.sessions != nil {
 		// The screen owns its keys, so it owns the bottom bar too:
 		// leaving the chat input visible underneath suggests typing
 		// works there (it doesn't — every key belongs to the list)
@@ -62,11 +72,12 @@ func (m *model) View() string {
 			bottom = m.input.View()
 		}
 	}
-	if m.queued != "" && m.sessions == nil && m.state != stPermission && m.state != stAsk {
-		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, max(m.termW-1, 0)) + "\n" + bottom
+	if m.queued != "" && m.sessions == nil && m.dialog == nil && m.state != stPermission && m.state != stAsk {
+		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, max(m.termW, 0)) + "\n" + bottom
 	}
-	// Leave the bottom row and rightmost column unused. Writing the last
-	// terminal cell can trigger automatic wrapping and scroll the whole
-	// screen on Windows consoles, even with the alternate screen enabled.
-	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+"\n"+spacer+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW-1, 0), max(m.termH-1, 0))
+	if m.actionBarVisible() {
+		bottom += "\n" + m.actionBar()
+	}
+	// Fill the terminal exactly; the renderer owns cursor placement and wrapping.
+	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+"\n"+spacer+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW, 0), max(m.termH, 0))
 }

@@ -38,7 +38,7 @@ func (m *model) sidebarVisible() bool {
 		m.sessions == nil && m.dialog == nil && m.state != stPermission && m.state != stAsk
 }
 func (m *model) fitColumns() {
-	width := m.termW - 1
+	width := m.termW
 	if m.sidebarVisible() {
 		width -= navigatorWidth + 3
 	} else {
@@ -54,27 +54,11 @@ func (m *model) identityLine() string {
 	if m.limit > 0 {
 		identity += "  context " + kTokens(m.limit)
 	}
-	hints := "Ctrl+P sessions"
-	if m.sessions != nil {
-		hints = "type to search  ↑↓ select  Esc back"
-	} else if m.dialog != nil {
-		hints = "Esc close"
-	} else if m.termW >= navigatorMinWidth {
-		if m.sidebarHidden {
-			hints += "  Ctrl+B show sidebar"
-		} else {
-			hints += "  Tab switch pane  Ctrl+B hide sidebar"
-		}
-	}
-	return cellLine(m.styles.dim.Render(identity+"   "+hints), max(m.termW-1, 0))
+	return cellLine(m.styles.dim.Render(identity), max(m.termW, 0))
 }
 func (m *model) sidebarView() string {
-	title := "CHATS"
-	if m.navFocused {
-		title += "  focus"
-	}
-	rows := []string{m.styles.hunk.Render(title), m.styles.dim.Render("Ctrl+N new  " + filepath.Base(m.wsRoot)), ""}
-	visible := max((m.vp.Height-5)/2, 1)
+	rows := []string{m.styles.dim.Render(filepath.Base(m.wsRoot)), ""}
+	visible := max((m.vp.Height-2)/2, 1)
 	m.nav.clamp(visible)
 	end := min(m.nav.offset+visible, len(m.nav.entries))
 	for i := m.nav.offset; i < end; i++ {
@@ -92,16 +76,8 @@ func (m *model) sidebarView() string {
 		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+m.entryState(e)+"  "+ageString(e.updated), navigatorWidth)))
 	}
 	if len(m.nav.entries) == 0 {
-		rows = append(rows, m.styles.dim.Render("No saved chats yet"))
+		rows = append(rows, m.styles.dim.Render("No saved sessions yet"))
 	}
-	for len(rows) < m.vp.Height-2 {
-		rows = append(rows, "")
-	}
-	hint := "Tab choose  Ctrl+P browse"
-	if m.navFocused {
-		hint = "Enter open  Ctrl+P browse"
-	}
-	rows = append(rows, m.styles.dim.Render(hint), m.styles.dim.Render("Ctrl+N new  Esc input"))
 	return cellFrame(strings.Join(rows, "\n"), navigatorWidth, m.vp.Height)
 }
 func (m *model) entryState(e sessionEntry) string {
@@ -126,7 +102,7 @@ func (m *model) entryState(e sessionEntry) string {
 }
 func (m *model) browserList(width int) string {
 	s := m.sessions
-	rows := []string{m.styles.hunk.Render("Saved chats"), s.filter.View(), ""}
+	rows := []string{m.styles.hunk.Render("Saved sessions"), s.filter.View(), ""}
 	m.clampOffset()
 	for i := s.offset; i < min(s.offset+m.sessVisible(), len(s.entries)); i++ {
 		e := s.entries[i]
@@ -136,15 +112,15 @@ func (m *model) browserList(width int) string {
 		}
 		line := cellLine(mark+e.title, width)
 		if i == s.cursor {
-			line = m.styles.hunk.Bold(true).Render(line)
+			line = m.styles.hunk.Bold(true).Reverse(true).Render(line)
 		}
 		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+m.entryState(e)+"  "+nonEmpty(e.mode)+"  "+ageString(e.updated), width)), "")
 	}
 	if len(s.entries) == 0 {
 		if s.filter.Value() != "" {
-			rows = append(rows, "No chats match this search.")
+			rows = append(rows, "No sessions match this search.")
 		} else {
-			rows = append(rows, "No saved chats yet.")
+			rows = append(rows, "No saved sessions yet.")
 		}
 	}
 	pos := ""
@@ -189,7 +165,7 @@ func (m *model) browserPreview(width int) string {
 	return strings.Join(rows, "\n")
 }
 func (m *model) browserView() string {
-	width, height := max(m.termW-1, 0), m.vp.Height
+	width, height := max(m.termW, 0), m.vp.Height
 	if width >= 90 {
 		left := min(44, (width-3)/2)
 		divider := strings.Repeat(m.styles.dim.Render(" │ ")+"\n", max(height-1, 0)) + m.styles.dim.Render(" │ ")
@@ -213,16 +189,16 @@ func (m *model) navigatorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "down", "pgup", "pgdown":
 		step := 1
 		if msg.String() == "pgup" || msg.String() == "pgdown" {
-			step = max((m.vp.Height-5)/2, 1)
+			step = max((m.vp.Height-2)/2, 1)
 		}
 		if msg.String() == "up" || msg.String() == "pgup" {
 			step = -step
 		}
 		m.nav.cursor += step
-		m.nav.clamp(max((m.vp.Height-5)/2, 1))
+		m.nav.clamp(max((m.vp.Height-2)/2, 1))
 	case "enter":
 		if m.state != stDone {
-			m.appendBlock(markerBlock("Stop the run before switching chats."))
+			m.appendBlock(markerBlock("Stop the run before switching sessions."))
 			return m, nil
 		}
 		if len(m.nav.entries) == 0 {
