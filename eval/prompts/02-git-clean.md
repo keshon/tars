@@ -1,5 +1,8 @@
 # 02 — Git clean (control)
 
+Automated run from the repository root: `go run ./cmd/eval -only 02 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **Stresses:** baseline — should match the good run in `a6bf9516`.
 
 **Run:**

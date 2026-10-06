@@ -17,16 +17,33 @@ TARS relies on trustworthy skills, extensions and repositories. Files like
 and this cannot be protected against — only contained with approvals and
 isolation.
 
+## User attachments and approvals
+
+Model tool calls go through policy; explicit user attachments are a separate
+path. TUI `@path` references do not invoke read_file approval or sensitive-path
+filtering. They intentionally send the selected file to the configured model
+backend, which may be hosted. TUI references must remain inside the workspace
+after symlink resolution and satisfy the documented text/image limits. CLI/RPC
+image paths use the workspace's textual guard, like the file tools.
+
+The default policy asks for sensitive reads and known destructive shell or
+background command shapes. Explicit Deny cannot be approved away. CLI/RPC
+`-yes` auto-approves mission plans but denies permission Ask requests;
+it does not authorize every tool. TUI permission requests remain interactive.
+All frontends remember an Always approval for the exact tool/resource pair
+for the current run only. These grants are not saved with the session.
+
 ## Network probes
 
-`check_url` and `webfetch` are GET-only and send no credentials: no
+`check_url`, `webfetch`, `fetch_raw`, and `search_web` use GET requests and send no credentials: no
 `Authorization`, `Cookie`, or `Proxy-Authorization` header leaves the
 process (asserted by `TestHealthProbes_SendNoCredentials`), and the child
-environment is scrubbed before any shell runs. `webfetch` refuses
+environment is scrubbed before any shell runs. `webfetch` and `fetch_raw` refuse
 non-public URLs before dialing (loopback, intranet names, non-global IPs
 including legacy `inet_aton` spellings). It validates redirects and every
 resolved address, then connects to a validated literal IP to prevent DNS
-rebinding. Environment proxies are disabled. `check_url` permits loopback
+rebinding. Web search uses the same public-destination transport.
+Environment proxies are disabled. `check_url` permits loopback
 because probing a just-started dev server is its job, and returns only a
 status plus a 512-byte prefix. A health probe must never become a
 credential or intranet oracle: any new network tool keeps these rules.

@@ -14,13 +14,30 @@ Frozen scenarios for a weak local model, scored by a program.
 ```bash
 go run ./cmd/eval -dry                          # validate probes, no model calls
 go run ./cmd/eval                               # everything, once each
-go run ./cmd/eval -only 0 -runs 3               # probes 03-10, three runs each
+go run ./cmd/eval -tier signal -runs 3          # signal tier, three runs each
+go run ./cmd/eval -only 05 -runs 3              # probe 05, three runs
+go run ./cmd/eval -tier smoke                  # quick smoke subset
 go run ./cmd/eval -require-model qwen           # refuse to start on other weights
 ```
 
-Each run writes `results/<timestamp>/` containing `results.jsonl`, `meta.json`
+Each invocation writes `eval/results/<timestamp>/` by default, containing `results.jsonl`, `meta.json`
 recording which model produced the numbers, and a full request/response trace
 per run.
+
+`-only` is a substring match on the probe filename, not a numeric range:
+`-only 0` selects 01–09, while `-only 10` selects 10. `-dry` validates the
+whole directory even if `-only` is set; `-tier` filters its printed list.
+Run from the repository root because probe/seed paths are repository-relative.
+Automated runs copy fixtures, create requested Git seeds, and supply scripted
+replies; prefer them over editing the checked-in fixture manually.
+
+The runner accepts backend/auth/context flags like the agent. `-jobs` defaults
+to 1; exclusive probes hold their shared resource alone. The runner locks its
+output directory against another invocation; `-force` bypasses that lock only
+when you deliberately accept overlapping runs. `-out` changes the result root.
+`-probes` selects another probe directory, `-max-tokens` sets the response
+budget, and `-dry-sampler` enables DRY for a controlled comparison. Exact flags
+are available with `go run ./cmd/eval -h`.
 
 `-runs` matters. A weak model is stochastic, and a single pass is close to no
 evidence. Step counts are recorded for every run whether or not the probe
@@ -76,7 +93,7 @@ the rollback tail itself must restore the workspace without a cleanup helper.
 Every probe must be able to fail — a probe that passes on an empty run
 measures nothing. Rules are enforced two ways: `loadProbes` rejects a
 probe with nothing asserted, and the table below records why each probe
-cannot pass vacuously (reviewed 2026-10-03, P7 item 3).
+cannot pass vacuously (criteria are maintained with the probe write-ups).
 
 | Probe | Why it cannot pass on an empty run |
 |---|---|

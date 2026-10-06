@@ -21,12 +21,17 @@ cmd/eval           probe runner and scorer
 internal/agent     the loop. Tool interface, Registry, repeat detection,
                    budgets, history compaction. Knows nothing about
                    koboldcpp or the filesystem.
-internal/llm       Client interface, one backend, the GBNF grammar.
+internal/llm       Client interface, backend dialects, streaming and image encoding,
+                   GBNF/JSON-schema structured output.
                    Every backend quirk lives here.
 internal/tools     concrete tools: file, shell, search, process, delegation,
                    webfetch (SSRF-validated), MCP stdio + HTTP clients,
                    edit hardening, command probes, JSON reducers
 internal/roles     the five kinds of agent this project builds
+internal/api       Session events, GateHub, cancellation-aware gate transport
+internal/tui       Bubble Tea v2 model, transcript, sessions, composer and popups
+internal/audit     JSONL approval-decision records
+internal/checks    deterministic file checks (formatting and secret findings)
 internal/permission allow/ask/deny policy for tool calls (leaf package)
 internal/events    JSONL run/step event output for -mode json
 internal/session   bounded JSONL checkpoints next to state.json
@@ -121,12 +126,19 @@ rotate at 16 MiB, retaining the previous log.
 
 ### Budgets
 
-Every bound has a default in `agent.New` or the `Runner` methods: 25 steps per
-run, 15 per mission worker, 12 per subagent, 8 per inspector, 8192 generation
+Every bound has a default in `agent.New` or the `Runner` methods: a 25-step
+base direct budget, 15 per mission worker, 12 per subagent, 8 per inspector, 8192 generation
 tokens, 6000 characters of `<think>` deliberation per response before a
 wrap-up round (at most 2 per run), 2 stuck steps before a nudge, 2 fix attempts
 and 1 replan per mission. Total worker runs per mission are bounded by
 construction: `subtasks × (1 + fixes) × (1 + replans)`.
+
+CLI/TUI interactive runs enable checklist-driven step funding: newly
+acknowledged work can add up to one extra base budget, with two extra closing
+steps when the checklist is completed. Workers and delegates stay fixed-budget.
+The RPC environment currently does not enable this funding or pass a custom
+CLI step limit. `-max-steps` sets a base budget, not an immutable hard cap for
+interactive CLI/TUI checklist work.
 
 ## The five roles
 
@@ -145,6 +157,33 @@ An inspector gets a registry without the mutating tools rather than a prompt
 asking it not to mutate. A subagent cannot delegate, so delegation cannot
 recurse. A planner is an inspector with a different job: investigate and
 propose, change nothing — enforced by the same tool-set removal.
+
+## Frontends and terminal state
+
+Print/JSON mode, the stdio RPC server, and the TUI share role construction and
+session events. `internal/api` delivers typed events and transports suspended
+questions through GateHub. A gate belongs to the active run context; cancelling
+or closing the transport releases it. Policy Deny never becomes a question,
+and Ask without a live approval handler fails closed.
+
+The TUI owns presentation and input routing. A responsive Sessions pane and
+search browser open saved conversations without generating; drafts and a single
+queued follow-up remain per-chat in memory. Help, session search, and permission
+prompts own their keys while open. Run metrics and the Braille spinner live in
+the header; the function-key footer owns a fixed set of action slots.
+
+Command/file suggestions replace the bottom of the transcript with a bounded
+popup. Enter executes a selected command or inserts a path; Tab only inserts.
+The picker does not move the composer caret. Text references are checked,
+bounded workspace snapshots appended to the user prompt, distinct from image
+attachments. Transcript rendering hides that attachment envelope when reopening
+history. Snapshots stay in the model transcript, so retry reuses the same turn.
+
+On Windows, a native console input adapter keeps Shift+Enter modifiers intact
+while sending encoded key/mouse/resize records through the Charm decoder.
+Other platforms use Bubble Tea's normal input path. The native underline caret
+belongs to the terminal. Rendering uses v2 View/Cursor state rather than a
+synthetic blinking character. User controls are in [docs/tui.md](docs/tui.md).
 
 ## Mission mode
 
@@ -180,9 +219,11 @@ failure, and more attempts will not fix a plan.
 
 `internal/llm` owns every backend quirk. Three are worth knowing about:
 
-**Grammar.** Requests carry a GBNF grammar that blocks a model from emitting
+**Grammar.** Kobold requests can carry a content GBNF grammar that blocks a model from emitting
 its native tool-call template as plain text. It constrains the first character
-only; it is a patch for two observed shapes, not a response envelope.
+only; it is a patch for observed shapes, not a response envelope.
+Mission plans/verdicts carry both GBNF and JSON-schema descriptions: local
+Kobold uses grammar, while llama/OpenAI use response_format.
 
 **koboldcpp decides tool calls itself.** The server runs its own reasoning pass
 to choose whether to emit a tool call and which one. That decision is not

@@ -3,7 +3,10 @@
 `agent -serve` speaks line-delimited JSON-RPC on stdin and writes event
 lines plus id-responses on stdout. Human chatter always goes to stderr,
 so stdout parses cleanly. Single-flight: one run and one pending gate at
-a time; anything else reports an error instead of queueing.
+a time; overlapping run/gate requests report an error instead of queueing.
+This is TARS's compact JSON-RPC-style envelope, not a full JSON-RPC 2.0
+implementation: requests use id/method/params without a required jsonrpc
+field, and errors carry message rather than a standard numeric code.
 
 ## Methods
 
@@ -17,11 +20,13 @@ a time; anything else reports an error instead of queueing.
   pipeline instead). `"images": ["shot.png"]` attaches workspace-relative
   pictures like CLI `-image`. Each run gets a fresh task dir and snapshot, like
   the CLI. Answers arrive as `{"id": 1, "result": {"answer": "..."}}`
-  or `{"id": 1, "error": {"message": "..."}}`.
+  or `{"id": 1, "error": {"message": "..."}}`. The request
+  supports task/mission/images only; it does not resume an existing session.
 - `respond` answers the currently suspended gate with raw text. The
-  y/a/n and approve/reject mappings live server-side, exactly as on
-  the CLI: reply `"y"` to allow, anything else to deny; reply `"y"` to
-  approve a plan, `"n"` to reject, anything else as a revision note.
+  permission and approve/reject mappings live server-side. For permissions,
+  `"y"`, `"yes"`, `"a"`, and `"always"` allow the pending call; other replies
+  deny it. `"a"` and `"always"` also allow the same tool/resource pair for the
+  rest of that run. Reply `"y"` to approve a plan, `"n"` to reject, anything else as a revision note.
 - `cancel` aborts the in-flight run. A second `run` while one is active
   is refused; `respond` with no gate pending is refused.
 
@@ -69,10 +74,23 @@ report-only, never gates. Loop-generated harness notices surface as
 overflow/budget/stuck/todo/closing): the same `[harness]`-marked text the model
 saw, so observers can audit every intervention. Streamed content
 chunks surface as `delta` events (display-only; the step event
-carries the authoritative text and replaces whatever was live). All flags that
-shape a CLI run (`-backend`, `-workspace`, `-allow`, `-mcp`, `-yes`,
-`-reasoning-budget`, …) shape `-serve` identically — it is the same
-harness behind a different front door.
+carries the authoritative text and replaces whatever was live). Serve mode shares backend/authentication/context configuration, workspace,
+permissions, MCP discovery, response/reasoning budgets, streaming, audit logging,
+and verification settings with the CLI. `-yes` skips mission plan approval and
+auto-denies permission Ask requests. CLI/TUI `-max-steps` and checklist funding
+are not passed into the serve environment: RPC uses the default fixed direct
+budget. `-plan`, `-resume`, `-fork`, initial CLI task/images, session browsing,
+slash commands, and inline `@` expansion are not RPC request features. Mission
+selection and images come from each run request. Stdout remains protocol output
+regardless of `-mode`.
+
+## Client behavior
+
+Keep stdin open when a run can ask for permission, clarification, or plan
+approval. Respond only after awaiting_input, and continue reading until the
+original run ID receives its result/error. Respond and cancel requests get
+separate `{"ok": true}` results; a cancel acknowledgement does not mean
+process cleanup has finished. Wait for the run response before starting again.
 
 ## Example
 
@@ -82,3 +100,12 @@ printf '%s\n' \
   go run ./cmd/agent -serve -backend-kind llama -backend http://127.0.0.1:8080 -workspace ./site |
   while IFS= read -r line; do echo "$line" | jq -c '{event, id, result}'; done
 ```
+
+PowerShell one-shot (read-only, no interactive replies):
+
+```powershell
+'{"id":1,"method":"run","params":{"task":"what files are here?"}}' |
+  go run ./cmd/agent -serve -backend-kind llama -backend http://127.0.0.1:8080 -workspace .
+```
+
+One-shot EOF denies future gates; use a persistent client for interactive runs.

@@ -1,5 +1,8 @@
 # 19 — Snapshot revert
 
+Automated run from the repository root: `go run ./cmd/eval -only 19 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **Stresses:** the harness snapshot path (`snapshot.Track`/`Revert`), not the
 model. The eval runner git-initializes the throwaway workspace, captures the
 pre-run diff, and after scoring asserts the tree is restored exactly.
@@ -21,7 +24,7 @@ go run ./cmd/eval -only 19
   so the probe fails rather than passing vacuously)
 - Seed files lost, changed, or agent files surviving the revert
 
-**Note:** production `snapshot.Revert` keeps untracked files (a
-model-created file must never be silently deleted). The eval workspace is
-throwaway, so the probe additionally runs `git clean -fd` — exact tree
-equality needs untracked output gone too.
+**Note:** production `snapshot.Revert` restores pre-existing untracked files
+and removes newly created nonignored files. Ignored paths, `.tars` state and
+Git history are excluded. The eval tail uses the production restore directly;
+there is no extra `git clean` hiding incomplete rollback.

@@ -62,9 +62,11 @@ tool whose whole job is to run somewhere unattended.
 only if it is cgo-free, widely used, and earns its weight — `golang.org/x/sys`
 qualifies because Windows job objects have no standard-library equivalent and
 without them a stopped dev server can survive, still holding its port. The
-Charm terminal stack (Bubble Tea, Lipgloss, Bubbles) qualifies for `-tui`
+Charm terminal stack (Bubble Tea v2, Lipgloss v2, Bubbles v2,
+and their input/ANSI helpers) qualifies for `-tui`
 only: writing a fullscreen renderer on raw ANSI escapes is a second project,
-and the agent loop, tools, and backends stay dependency-free regardless.
+and the agent loop and model transports do not import the terminal stack.
+Process cleanup in the tools package uses the Windows system dependency.
 
 ## Building agents
 
@@ -81,9 +83,11 @@ recurse.
 
 ## Verification
 
-**[invariant]** Completion is measured, never reported. Nothing asks the model
-whether it finished; a command runs or a file is read. A model that describes
-writing a file in its answer text has not written it.
+**[invariant]** File effects and verification results are measured rather than inferred
+from the model's report. The default self-check is another model turn; it is
+not a mechanical acceptance test. Direct runs need an explicit verify command
+for that evidence, and mission checks are only as strong as their declared
+criteria. A model describing a file write has not written a file.
 
 **[invariant]** A repeat that can be detected is refused, not discouraged.
 Soft nudges do not stop a weak model repeating itself; an error result does,

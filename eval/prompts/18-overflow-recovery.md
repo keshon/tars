@@ -1,5 +1,8 @@
 # 18 — Overflow recovery
 
+Automated run from the repository root: `go run ./cmd/eval -only 18 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **Stresses:** the `IsOverflow` recovery path in `agent.run` — compact and
 continue instead of dying on a context-window error.
 

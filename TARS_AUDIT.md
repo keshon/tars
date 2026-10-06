@@ -1,5 +1,11 @@
 # TARS Codebase Audit
 
+> Historical, unversioned overview. This is not the current implementation
+> contract. Use [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md),
+> and [the dated audit with its implementation follow-up](docs/audit-2026-10-06.md).
+> Original observations are retained below; later changes may supersede them.
+
+
 ## Overview
 TARS is a local agentic system designed around a single, robust execution loop. The architecture prioritizes observability and reliability by measuring actual filesystem and tool effects rather than relying on the LLM's self-reported progress.
 

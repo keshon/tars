@@ -1,5 +1,8 @@
 # 12 — ask_user ambiguity
 
+Automated run from the repository root: `go run ./cmd/eval -only 12 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **Stresses:** clarify a vague improvement request before editing, then follow
 one scripted human answer.
 

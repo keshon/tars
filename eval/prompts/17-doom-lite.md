@@ -1,5 +1,8 @@
 # 17 — doom-lite (the motivating stress case)
 
+Automated run from the repository root: `go run ./cmd/eval -only 17 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **What it stresses:** everything at once — this is the task shape that
 made the reactive loop collapse (loops, broken code, lost goals) and
 motivated mission mode. Not expected to pass every run on a 12–25B
@@ -32,7 +35,7 @@ step counts, produced files, and whether the result renders anything.
 | renderer subtask fails check → fix worker converges | the loop working on genuinely hard content |
 | replan produces a meaningfully different decomposition | best case for a weak model |
 | mission FAILED with facts after budget exhaustion | acceptable outcome — read the ledger, that's the data |
-| any subtask attempted >3 times or >1 replan | BUG — budgets must bound by construction |
+| any subtask attempted >3 times within one plan or >1 replan | BUG — budgets must bound by construction |
 
 **Pass (utopian)** = mission DONE and index.html shows a moving
 first-person view. **Pass (realistic)** = ≥3 subtasks done with passing
@@ -42,3 +45,8 @@ final report whose facts accurately describe whatever state it reached.
 Save the ledger (`mission.json`) from each run — comparing decompositions
 across runs shows whether plan quality or worker quality is the current
 bottleneck, which decides where the next engineering effort goes.
+
+The automated probe checks canvas/script references and script existence. It
+does not prove rendering, collision, or playability; perform those browser
+checks separately. A failed mission is scored as failure even if its partial
+outputs are useful to inspect.

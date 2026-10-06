@@ -6,10 +6,10 @@ work through observed file changes and optional command checks. Mission
 subtasks have explicit checks; direct runs use `-verify-cmd` for mechanical
 verification. Repeat guards and step budgets bound every run.
 
-Dependencies are the standard library plus `golang.org/x/sys` (Windows job
-objects have no standard-library equivalent) and, for `-tui` only, the
-Charm terminal stack (Bubble Tea, Lipgloss, Bubbles — pure Go, no cgo).
-The agent loop, tools, and backends stay dependency-free. See `go.mod`.
+The runtime is pure Go, without cgo. The terminal UI uses Bubble Tea v2,
+Bubbles v2, Lipgloss v2, and the Charm input/ANSI helpers; Windows process
+cleanup uses `golang.org/x/sys`. The agent loop and model transports do not
+depend on the terminal stack. Exact versions live in [go.mod](go.mod).
 
 ## Requirements
 
@@ -30,43 +30,41 @@ tasks receive a recommendation. `-plan` proposes without touching
 anything; `-mode json` emits machine-readable step events; `-tui` renders
 the same run fullscreen with live transcript and inline gate prompts.
 
-Start an empty chat with `go run ./cmd/agent -tui`. Wide terminals show a
-session sidebar; narrower terminals keep the chat full-width. Ctrl+P opens
-the searchable session browser, Tab switches between sidebar and input,
-Ctrl+B toggles the sidebar, and Ctrl+N starts a new chat when idle. Enter
-opens saved history without running the model; send a follow-up to continue.
-In the browser, Ctrl+R renames and Ctrl+D stages deletion. Shift+Enter adds a
-newline to the chat input; Ctrl+O is a fallback for terminals without modifier reporting. The footer displays function-key numbers beside colored labels and keeps F1 Help, F2 Sessions, F3 Details,
-F4 New, F5 Mode, F6 Sidebar, F7 Latest, and F10 Quit in fixed positions;
-click a button or press its function key. Narrow terminals use two rows.
-Unavailable actions are dimmed during prompts. Up/Down move within the input;
-Alt+Up/Down recall submitted inputs and restore the draft. Ctrl+End jumps to the latest message; Ctrl+U
-clears the draft explicitly. Esc preserves idle drafts and stops active runs.
-Drafts and input history stay with each chat while the TUI is open.
+## Terminal UI
 
-F1 and `/help` open the same categorized help modal. Tab or Left/Right
-changes category; Up/Down, PgUp/PgDn, and the mouse wheel scroll its content.
+```bash
+go run ./cmd/agent -tui
+```
 
-Type `/` to suggest commands, or `@` to browse workspace files. Up/Down
-selects a suggestion, Tab inserts it, and Esc dismisses the picker. Enter
-runs a selected command or inserts a selected file path. With the picker
-closed, Enter submits the draft. Directory suggestions let you browse deeper;
-paths with spaces are quoted automatically. For example, `review @internal/tui/input.go`
-includes that file's contents in the message. Images use the existing vision
-attachment path. Text references must be UTF-8, at most 32 KiB each and
-64 KiB combined per message; binary files and paths outside the workspace
-are rejected. File snapshots stay in model history, while the transcript
-shows the original message. Queued references resolve when their turn starts.
+Start without a task to open an empty chat. Enter sends a message;
+Shift+Enter adds a line, with Ctrl+O as a fallback. Type `/` for command
+suggestions or `@` for workspace files. Enter runs the highlighted command
+or inserts a file path; Tab only inserts. Text references include bounded
+file snapshots; images require a vision-capable backend.
 
-During a run, Enter queues a follow-up. Its preview stays above the input;
-Ctrl+E moves it back into an empty input for editing, and Ctrl+X cancels it.
-It runs after a successful response when the input is empty; failures and
-interruptions keep it available. Permission and question prompts own a
-scrollable preview (PgUp/PgDn) so their context stays beside the controls.
-Ctrl+Q quits from every screen. `/mode plan` and `/mode act` switch the
-idle chat mode; the header shows it and saved chats remember it.
+F1 opens categorized help. F2 opens the searchable session browser; wide
+terminals also show a compact Sessions pane. The function-key footer exposes
+Help, Sessions, Details, New, Mode, Sidebar, Latest, and Quit. During a run,
+you can queue one follow-up, edit it, or stop the run without losing the chat.
 
-All flags are in [docs/cli.md](docs/cli.md). Remote-provider keys resolve
+On Windows, keep KoboldCPP in its own terminal:
+
+1. Edit the executable/model paths in [run-kobold.cmd](run-kobold.cmd) if needed.
+2. Run `run-kobold.cmd` and wait for the model to finish loading.
+3. In another terminal, run `run-tui.cmd`. It checks the server and rebuilds
+   `agent.exe` before opening the UI.
+
+The supplied launcher uses Qwen3.5-9B-Q4_K_M, a 16,384-token server context,
+and a 4,096-token response budget. These are launcher settings; the CLI's
+response default is 8,192. Server output stays in the server terminal.
+See [the terminal guide](docs/tui.md) for keys, commands, file references,
+permissions, sessions, and terminal troubleshooting.
+
+## Backend and saved runs
+
+All flags and backend examples are in [docs/cli.md](docs/cli.md).
+The [documentation index](docs/README.md) links the current guides and archived audits.
+The stdio integration protocol is in [docs/rpc.md](docs/rpc.md). Remote-provider keys resolve
 from `-api-key`, `-api-key-env`, or environment (`TARS_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`,
 `TOGETHER_API_KEY`, `ANTHROPIC_API_KEY`).
@@ -100,6 +98,8 @@ go run ./cmd/eval -only 0 -require-model qwen
 - `internal/agent`, `internal/mission`, `internal/roles` — the loop, the
   plan-execute-verify pipeline, the agent kinds
 - `internal/llm`, `internal/tools`, `internal/prompts` — backends, tools, prompts
+- `internal/api`, `internal/tui` — shared session events/gates and terminal UI
+- `internal/audit`, `internal/checks` — approval records and deterministic findings
 - `internal/permission`, `internal/session`, `internal/snapshot`,
   `internal/events` — policy, session log, workspace checkpoints, JSONL output
 

@@ -1,11 +1,15 @@
 # 15 — mission mode smoke test
 
+Automated run from the repository root: `go run ./cmd/eval -only 15 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 **What it stresses:** the whole mission pipeline on a task that is easy
 per-subtask but multi-file: grammar-constrained plan generation, the
 approval gate, fresh-context workers, mechanical checks, the final
 verify pass. This is also the **live gate for the grammar bet** — run it
 with `-debug` the first time and confirm in `agent-debug.log` that the
-plan request carries a `"grammar"` field and the response is plan JSON,
+plan request carries structured-output constraints (GBNF on KoboldCPP,
+JSON schema on llama/OpenAI) and the response is plan JSON,
 not prose.
 
 ## Run
@@ -38,9 +42,12 @@ regenerate path. Use `-yes` on repeat runs.
 
 **Pass** = mission reaches DONE, all three files exist with real content,
 the button actually increments (open index.html), and each worker ran in
-a fresh context (worker state files in `.agent/tasks/<id>/workers/` each
+a fresh context (worker state files in `sandbox/mission-smoke/.tars/tasks/<id>/workers/` each
 start from the compiled seed, not from another worker's transcript).
 
 Also worth one Ctrl+C mid-execute followed by
-`go run ./cmd/agent -resume .agent/tasks/<id>` to confirm the mission
+`go run ./cmd/agent -workspace sandbox/mission-smoke -resume sandbox/mission-smoke/.tars/tasks/<id>` to confirm the mission
 resumes at the interrupted subtask instead of restarting.
+
+The automated probe checks file references and click-handler content; a passing
+score does not replace the manual browser check that the button increments.

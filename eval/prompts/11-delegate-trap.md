@@ -1,5 +1,8 @@
 # 11 - Delegate restraint
 
+Automated run from the repository root: `go run ./cmd/eval -only 11 -runs 1`.
+The runner supplies a throwaway workspace and any declared Git seed or replies.
+
 Tests whether a small, cohesive edit stays in the current context.
 
 Task: add `Bye() string` returning `"bye"` to `sample.go`.

@@ -21,5 +21,7 @@ Treat it differently from a normal command:
 4. Fix the real cause, then repeat from step 1 (start a new background
    process — the old one may need `stop_background` first if it's still
    holding the port).
-5. Leave it running with `stop_background` only if it's no longer needed
-   — otherwise leave it up so the person can use it themselves.
+5. Use `stop_background` when checks no longer need the server. Managed
+   background processes are cleaned up when the frontend exits; do not promise
+   that a server will survive TARS closing. For a persistent server, give the
+   user the startup command to run in a separate terminal.
