@@ -35,8 +35,8 @@ session sidebar; narrower terminals keep the chat full-width. Ctrl+P opens
 the searchable session browser, Tab switches between sidebar and input,
 Ctrl+B toggles the sidebar, and Ctrl+N starts a new chat when idle. Enter
 opens saved history without running the model; send a follow-up to continue.
-In the browser, Ctrl+R renames and Ctrl+D stages deletion. Ctrl+O adds a
-newline to the chat input. The footer displays function-key numbers beside colored labels and keeps F1 Help, F2 Sessions, F3 Details,
+In the browser, Ctrl+R renames and Ctrl+D stages deletion. Shift+Enter adds a
+newline to the chat input; Ctrl+O is a fallback for terminals without modifier reporting. The footer displays function-key numbers beside colored labels and keeps F1 Help, F2 Sessions, F3 Details,
 F4 New, F5 Mode, F6 Sidebar, F7 Latest, and F10 Quit in fixed positions;
 click a button or press its function key. Narrow terminals use two rows.
 Unavailable actions are dimmed during prompts. Up/Down always move within the input;

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/permission"
@@ -34,6 +34,10 @@ const (
 // history. Esc is handled by the stager (back), never the widget.
 func newNote() textinput.Model {
 	ti := textinput.New()
+	ti.SetVirtualCursor(false)
+	style := ti.Styles()
+	style.Cursor.Shape = tea.CursorUnderline
+	ti.SetStyles(style)
 	ti.Prompt = "note> "
 	ti.CharLimit = 240
 	return ti
@@ -42,7 +46,7 @@ func newNote() textinput.Model {
 // gateKey handles keys while a permission gate is open, one stage at
 // a time. It answers through resolveGate only: every exit path tears
 // the overlay down, so a answered gate can never strand a stage.
-func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) gateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	defer m.fitBottom()
 	if msg.String() == "ctrl+q" {
 		// Quit works from every gate stage: letters are answers here.
@@ -62,8 +66,8 @@ func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case gsReject:
-		switch msg.Type {
-		case tea.KeyEnter:
+		switch msg.String() {
+		case "enter":
 			note := strings.TrimSpace(m.note.Value())
 			ans := "n"
 			if note != "" {
@@ -74,12 +78,12 @@ func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.resolveGate(ans)
 			return m, nil
-		case tea.KeyEsc:
+		case "esc":
 			m.note.Blur()
 			m.note.SetValue("")
 			m.gstage = gsPermit
 			return m, nil
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
@@ -198,7 +202,7 @@ func (m *model) refreshGate() {
 	}
 	rows := []string{m.styles.gate.Render(title), ""}
 	for _, line := range strings.Split(m.gate, "\n") {
-		rows = append(rows, reflow(line, max(m.gateVP.Width-1, 1))...)
+		rows = append(rows, reflow(line, max(m.gateVP.Width()-1, 1))...)
 	}
 	m.gateVP.SetContent(strings.Join(rows, "\n"))
 }

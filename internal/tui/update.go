@@ -5,18 +5,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 )
 
 func (m *model) Init() tea.Cmd {
-	// cursor.Blink seeds the movie-terminal caret: BlinkMsg chains
-	// through input.Update, so one seed blinks forever. Routed in
-	// Update explicitly — the catch-all would drop it.
-	return tea.Batch(waitEvents(m), tick(), cursor.Blink)
+	// The terminal owns the native caret's blink and shape.
+	return tea.Batch(waitEvents(m), tick(m.busy()))
 }
 func waitEvents(m *model) tea.Cmd {
 	return func() tea.Msg {
@@ -32,8 +29,12 @@ func waitEvents(m *model) tea.Cmd {
 		return eventMsg(ev)
 	}
 }
-func tick() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+func tick(active bool) tea.Cmd {
+	interval := time.Second
+	if active {
+		interval = 100 * time.Millisecond
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -49,7 +50,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state != stDone {
 			m.elapsed = time.Since(m.started).Round(time.Second)
 		}
-		return m, tick()
+		if m.busy() {
+			m.spinnerFrame = (m.spinnerFrame + 1) % len(activityFrames)
+		} else {
+			m.spinnerFrame = 0
+		}
+		return m, tick(m.busy())
 	case eventMsg:
 		if m.state != stStopping {
 			m.handleEvent(api.Event(msg))
@@ -96,10 +102,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.input.Focus(), waitEvents(m))
 	case tea.MouseMsg:
-		if m.actionBarVisible() && msg.Y >= m.termH-m.actionBarRows() && msg.Y < m.termH && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		if m.actionBarVisible() && msg.Mouse().Y >= m.termH-m.actionBarRows() && msg.Mouse().Y < m.termH && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 			for _, cell := range m.footerCells() {
-				if msg.Y == m.termH-m.actionBarRows()+cell.row && msg.X >= cell.start && msg.X < cell.end {
-					return m.footerKey(tea.KeyMsg{Type: cell.action.key})
+				if msg.Mouse().Y == m.termH-m.actionBarRows()+cell.row && msg.Mouse().X >= cell.start && msg.Mouse().X < cell.end {
+					return m.footerKey(tea.KeyPressMsg{Code: cell.action.key})
 				}
 			}
 			return m, nil
@@ -112,33 +118,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessions != nil {
 			return m.browserMouse(msg)
 		}
-		if m.sidebarVisible() && msg.X < navigatorWidth && msg.Y >= 3 && msg.Y < 3+m.vp.Height {
+		if m.sidebarVisible() && msg.Mouse().X < navigatorWidth && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.vp.Height() {
 			if m.state == stPermission || m.state == stAsk {
 				return m, nil
 			}
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
+			switch msg.Mouse().Button {
+			case tea.MouseWheelUp:
 				m.nav.cursor--
-			case tea.MouseButtonWheelDown:
+			case tea.MouseWheelDown:
 				m.nav.cursor++
-			case tea.MouseButtonLeft:
-				if msg.Action != tea.MouseActionPress {
+			case tea.MouseLeft:
+				if !isMouseClick(msg) {
 					return m, nil
 				}
-				row := (msg.Y - 5) / 2
-				if msg.Y < 5 || row >= max((m.vp.Height-2)/2, 1) {
+				row := msg.Mouse().Y - 3
+				if msg.Mouse().Y < 3 || row >= m.navigatorRows() || m.nav.offset+row >= len(m.nav.entries) {
 					return m, nil
 				}
 				m.nav.cursor = m.nav.offset + row
 			default:
 				return m, nil
 			}
-			m.nav.clamp(max((m.vp.Height-2)/2, 1))
+			m.nav.clamp(m.navigatorRows())
 			m.navFocused = true
 			m.input.Blur()
 			return m, nil
 		}
-		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.X >= navigatorWidth+3 && msg.Y >= 3 && msg.Y < 3+m.vp.Height && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.Mouse().X >= navigatorWidth+3 && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.vp.Height() && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 			m.navFocused = false
 			return m, m.input.Focus()
 		}
@@ -149,13 +155,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The input never consumes mouse messages, so scroll works in
 		// every state: wheel in ask/done used to fall through and die.
 		return m.scrollViewport(msg)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	default:
-		// Widget messages the router doesn't name (the cursor's
-		// unexported blink seed included) reach the focused input:
-		// the standard bubbletea pattern, scoped to focus so
-		// background states never leak keystrokes anywhere.
+		// Clipboard and other widget messages reach the focused input.
+		// Background panes never consume the active composer's input.
 		if m.state == stPermission && m.gstage == gsReject {
 			var cmd tea.Cmd
 			m.note, cmd = m.note.Update(msg)
@@ -174,6 +178,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.input.Focused() {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
+			m.fitInput()
+			m.fitBottom()
 			return m, cmd
 		}
 	}
@@ -182,10 +188,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) width(msg tea.WindowSizeMsg) {
 	m.termW, m.termH = msg.Width, msg.Height
 	if !m.ready {
-		m.vp = viewport.New(msg.Width, msg.Height)
+		m.vp = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(msg.Height))
 		m.ready = true
 	} else {
-		m.vp.Width = msg.Width
+		m.vp.SetWidth(msg.Width)
 	}
 	// Cap the answer box like a chat input, not a fullscreen editor.
 	maxRows := msg.Height / 4
@@ -199,9 +205,9 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 	m.fitInput()
 	m.fitBottom()
 	m.input.SetWidth(max(msg.Width-5, 1))
-	m.note.Width = max(msg.Width-10, 1)
+	m.note.SetWidth(max(msg.Width-10, 1))
 	if m.sessions != nil {
-		m.sessions.filter.Width = max(msg.Width-14, 1)
+		m.sessions.filter.SetWidth(max(msg.Width-14, 1))
 	}
 	// Height follows the terminal too: without a refit here a resize
 	// leaves a stale viewport height, clipping content by the delta.
@@ -214,7 +220,11 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 // fitInput sizes the answer box to its content: one row for short
 // answers, growing to MaxHeight, then scrolling internally.
 func (m *model) fitInput() {
-	m.input.SetHeight(min(max(m.input.LineCount(), 1), max(m.input.MaxHeight, 1)))
+	if m.ready {
+		// DynamicHeight counts wrapped rows and clamps the scroll offset when
+		// the composer grows, keeping earlier lines visible after a newline.
+		m.input.SetWidth(max(m.termW-5, 1))
+	}
 }
 
 // fitBottom resizes the viewport so transcript + status + bottom bar
@@ -223,14 +233,6 @@ func (m *model) fitInput() {
 func (m *model) fitBottom() {
 	if !m.ready {
 		return
-	}
-	switch m.state {
-	case stAsk:
-		m.input.Prompt = "Answer> "
-	case stRunning:
-		m.input.Prompt = "Next> "
-	default:
-		m.input.Prompt = "Task> "
 	}
 	m.input.SetWidth(max(m.termW-5, 1))
 	// Done budgets the input box only (the hint moved right into the
@@ -259,9 +261,9 @@ func (m *model) fitBottom() {
 	if m.sessions != nil || m.dialog != nil {
 		lines = 1
 	}
-	oldWidth := m.vp.Width
+	oldWidth := m.vp.Width()
 	m.fitColumns()
-	if oldWidth != m.vp.Width {
+	if oldWidth != m.vp.Width() {
 		m.refreshContent()
 	}
 	h := m.termH - 6 - lines
@@ -271,8 +273,9 @@ func (m *model) fitBottom() {
 	if h < 1 {
 		h = 1
 	}
-	m.vp.Height = h
-	m.gateVP.Width, m.gateVP.Height = m.vp.Width, h
+	m.vp.SetHeight(h)
+	m.gateVP.SetWidth(m.vp.Width())
+	m.gateVP.SetHeight(h)
 	if m.state == stPermission || m.state == stAsk {
 		m.refreshGate()
 	}
@@ -281,7 +284,7 @@ func (m *model) fitBottom() {
 		if width >= 90 {
 			width = min(44, (width-3)/2)
 		}
-		m.sessions.filter.Width = max(width-10, 1)
+		m.sessions.filter.SetWidth(max(width-10, 1))
 	}
 }
 
@@ -371,7 +374,7 @@ func (m *model) handleEvent(ev api.Event) {
 		kind, _ := ev.Fields["kind"].(string)
 		prompt, _ := ev.Fields["prompt"].(string)
 		m.gate = prompt
-		m.gateVP = viewport.New(max(m.termW, 1), max(m.vp.Height, 1))
+		m.gateVP = viewport.New(viewport.WithWidth(max(m.termW, 1)), viewport.WithHeight(max(m.vp.Height(), 1)))
 		if m.sessions != nil {
 			m.closeSessions()
 		}
@@ -463,19 +466,20 @@ func (m *model) handleEvent(ev api.Event) {
 		}
 	}
 }
-func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyF1 || msg.Type == tea.KeyF2 || msg.Type == tea.KeyF3 || msg.Type == tea.KeyF4 || msg.Type == tea.KeyF5 || msg.Type == tea.KeyF6 || msg.Type == tea.KeyF7 || msg.Type == tea.KeyF10 {
+func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10":
 		return m.footerKey(msg)
 	}
-	if msg.Type == tea.KeyCtrlQ || msg.Type == tea.KeyCtrlC {
+	if msg.String() == "ctrl+q" || msg.String() == "ctrl+c" {
 		m.quit = true
 		m.cancel()
 		return m, tea.Quit
 	}
 	if m.state == stPermission || m.state == stAsk {
-		if msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown || msg.Type == tea.KeyCtrlEnd {
+		if msg.String() == "pgup" || msg.String() == "pgdown" || msg.String() == "ctrl+end" {
 			var cmd tea.Cmd
-			if msg.Type == tea.KeyCtrlEnd {
+			if msg.String() == "ctrl+end" {
 				m.gateVP.GotoBottom()
 				return m, nil
 			}
@@ -484,23 +488,23 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.sessions == nil && m.dialog == nil && m.state != stPermission {
-		switch msg.Type {
-		case tea.KeyCtrlEnd:
+		switch msg.String() {
+		case "ctrl+end":
 			m.vp.GotoBottom()
 			m.follow = true
 			return m, nil
-		case tea.KeyCtrlU:
+		case "ctrl+u":
 			m.input.SetValue("")
 			m.fitInput()
 			m.fitBottom()
 			return m, nil
-		case tea.KeyCtrlX:
+		case "ctrl+x":
 			if m.queued != "" {
 				m.queued = ""
 				m.fitBottom()
 				return m, nil
 			}
-		case tea.KeyCtrlE:
+		case "ctrl+e":
 			if m.queued != "" && m.state != stAsk {
 				if m.input.Value() != "" {
 					m.appendBlock(markerBlock("Keep or clear the current draft before editing the queue."))
@@ -514,8 +518,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.sessions == nil && m.dialog == nil && !m.navFocused && (m.state == stDone || m.state == stAsk || m.state == stRunning) && msg.Alt && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
-		m.historyWalk(msg.Type == tea.KeyUp)
+	if m.sessions == nil && m.dialog == nil && !m.navFocused && (m.state == stDone || m.state == stAsk || m.state == stRunning) && msg.Mod.Contains(tea.ModAlt) && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+		m.historyWalk(msg.Code == tea.KeyUp)
 		m.fitInput()
 		m.fitBottom()
 		return m, nil
@@ -574,16 +578,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Type == tea.KeyCtrlG {
-		return m.footerKey(tea.KeyMsg{Type: tea.KeyF3})
+	if msg.String() == "ctrl+g" {
+		return m.footerKey(tea.KeyPressMsg{Code: tea.KeyF3})
 	}
 
 	switch m.state {
 	case stPermission:
 		return m.gateKey(msg)
 	case stAsk:
-		switch msg.Type {
-		case tea.KeyEsc:
+		switch msg.String() {
+		case "esc":
 			if answer := m.input.Value(); answer != "" {
 				if m.gateDraft != "" {
 					answer = m.gateDraft + "\n" + answer
@@ -597,16 +601,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stStopping
 			m.fitBottom()
 			return m, nil
-		case tea.KeyPgUp, tea.KeyPgDown:
+		case "pgup", "pgdown":
 			// Paging scrolls the transcript in every state; the
 			// input keeps arrows and typing only.
 			return m.scrollViewport(msg)
-		case tea.KeyEnter:
+		case "enter":
 			m.pushHistory(strings.TrimSpace(m.input.Value()))
 			_ = m.hub.Respond(m.input.Value())
 			m.state = stRunning
 			return m, nil
-		case tea.KeyCtrlC, tea.KeyCtrlQ:
+		case "ctrl+c", "ctrl+q":
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
@@ -618,15 +622,15 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.fitBottom()
 		return m, cmd
 	case stDone:
-		switch msg.Type {
-		case tea.KeyPgUp, tea.KeyPgDown:
+		switch msg.String() {
+		case "pgup", "pgdown":
 			// Same routing as ask: paging belongs to the transcript.
 			return m.scrollViewport(msg)
-		case tea.KeyEnter:
+		case "enter":
 			return m.followUp()
-		case tea.KeyEsc:
+		case "esc":
 			return m, nil
-		case tea.KeyCtrlC, tea.KeyCtrlQ:
+		case "ctrl+c", "ctrl+q":
 			// Quit lives on ctrl+q (and ctrl+c): a letter key must
 			// never quit, or words starting with q ("queen") become
 			// untypable on an empty box. Empty+enter still quits.
@@ -641,12 +645,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.fitBottom()
 		return m, cmd
 	default:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyCtrlQ:
+		switch msg.String() {
+		case "ctrl+c", "ctrl+q":
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
-		case tea.KeyEsc:
+		case "esc":
 			if m.state != stStopping {
 				m.interrupted = true
 				m.cancel()
@@ -654,7 +658,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.fitBottom()
 			}
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			if m.state == stStopping {
 				return m, nil
 			}
@@ -672,7 +676,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fitInput()
 			m.fitBottom()
 			return m, nil
-		case tea.KeyPgUp, tea.KeyPgDown:
+		case "pgup", "pgdown":
 			return m.scrollViewport(msg)
 		}
 		var cmd tea.Cmd
@@ -682,3 +686,5 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 }
+
+func isMouseClick(msg tea.MouseMsg) bool { _, ok := msg.(tea.MouseClickMsg); return ok }

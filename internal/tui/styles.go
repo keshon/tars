@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // styles is the whole palette. All role styling lives here: no style
 // literals elsewhere, so a future theme is one struct, not a hunt.

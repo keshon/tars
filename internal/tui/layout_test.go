@@ -1,38 +1,84 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/keshon/tars/internal/api"
 )
+
+func TestCompactSessionRowsSharePagingAndMouseGeometry(t *testing.T) {
+	m := testModel()
+	m.state = stDone
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.navFocused = true
+	m.input.Blur()
+	for i := 0; i < 40; i++ {
+		m.nav.entries = append(m.nav.entries, sessionEntry{
+			title: fmt.Sprintf("Session %02d", i), mode: "Act", status: "Saved",
+			updated: time.Now().Add(-2 * time.Minute), msgs: i + 1,
+		})
+	}
+	view := ansi.Strip(m.sidebarView())
+	if strings.Contains(view, "Saved") || strings.Count(view, "Session ") != m.navigatorRows() {
+		t.Fatal("session rows repeated status or wasted available space")
+	}
+	rows := strings.Split(view, "\n")
+	if !strings.Contains(ansi.Strip(m.sidebarDetails()), "Act  1 message") || strings.TrimSpace(string([]rune(rows[0])[navigatorWidth-4:])) != "2m" {
+		t.Fatal("selected details or aligned age missing")
+	}
+	for _, label := range []string{"NAME", "AGE", "tars"} {
+		if strings.Contains(view, label) {
+			t.Fatalf("redundant pane label remains: %s", label)
+		}
+	}
+	frame := strings.Split(ansi.Strip(m.View().Content), "\n")
+	footer := 3 + m.vp.Height()
+	if rule := []rune(frame[footer-1]); string(rule[navigatorWidth:navigatorWidth+2]) != "─┤" {
+		t.Fatal("session footer rule left a gap before the vertical divider")
+	}
+	if !strings.Contains(frame[footer], "Act  1 message") || !strings.Contains(frame[footer+1], "┴") {
+		t.Fatal("empty line separates session details from the bottom rule")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.nav.cursor != m.navigatorRows() || m.nav.offset != 1 {
+		t.Fatal("paging did not use compact row capacity")
+	}
+	m.Update(tea.MouseClickMsg{X: 5, Y: 3, Button: tea.MouseLeft})
+	if m.nav.cursor != m.nav.offset {
+		t.Fatal("click missed the first visible compact row")
+	}
+}
 
 func TestResponsiveNavigator(t *testing.T) {
 	m := testModel()
 	m.state = stDone
 	m.input.SetValue("unfinished draft")
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	if !m.sidebarVisible() || m.vp.Width != 89 {
-		t.Fatalf("wide viewport: %d", m.vp.Width)
+	if !m.sidebarVisible() || m.vp.Width() != 120-navigatorWidth-3 {
+		t.Fatalf("wide viewport: %d", m.vp.Width())
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
 	if !m.navFocused || m.input.Focused() {
 		t.Fatal("sidebar did not own focus")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m.handleKey(tea.KeyPressMsg{Text: string("x")})
 	if m.input.Value() != "unfinished draft" {
 		t.Fatal("sidebar keys edited draft")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
-	if m.sidebarVisible() || m.vp.Width != 120 || !m.input.Focused() {
+	m.handleKey(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	if m.sidebarVisible() || m.vp.Width() != 120 || !m.input.Focused() {
 		t.Fatal("hidden sidebar failed to restore input")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
+	m.handleKey(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if m.sidebarVisible() || m.vp.Width != 80 || m.input.Value() != "unfinished draft" {
+	if m.sidebarVisible() || m.vp.Width() != 80 || m.input.Value() != "unfinished draft" {
 		t.Fatal("narrow resize lost draft or space")
 	}
 }
@@ -46,19 +92,19 @@ func TestBrowserSearchUsesWorkspace(t *testing.T) {
 	writeSessionState(t, root, "bbb", userHistory("speed up search"))
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.openSessions()
-	m.sessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("repair")})
+	m.sessionsKey(tea.KeyPressMsg{Text: string("repair")})
 	if len(m.sessions.entries) != 1 || m.sessions.entries[0].id != "aaa" {
 		t.Fatal("search did not filter workspace sessions")
 	}
 	if m.sessions.mode != sessList {
 		t.Fatal("typing r accidentally renamed")
 	}
-	m.sessionsKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m.sessionsKey(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if m.sessions.mode != sessRename {
 		t.Fatal("rename shortcut failed")
 	}
-	m.sessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
-	m.sessionsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m.sessionsKey(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m.sessionsKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.sessions != nil {
 		t.Fatal("browser did not close")
 	}
@@ -70,7 +116,7 @@ func TestNavigatorCannotSwitchDuringRun(t *testing.T) {
 	m.nav.entries = []sessionEntry{{id: "aaa", title: "Saved task", dir: "aaa"}}
 	m.navFocused = true
 	m.stateFile = "active/state.json"
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.stateFile != "active/state.json" || m.state != stRunning || m.sessions != nil {
 		t.Fatal("browse interrupted active run")
 	}
@@ -86,8 +132,8 @@ func TestSidebarWheelSelectsWithoutScrollingChat(t *testing.T) {
 	m := testModel()
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.nav.entries = []sessionEntry{{id: "a"}, {id: "b"}}
-	m.Update(tea.MouseMsg{X: 5, Y: 6, Button: tea.MouseButtonWheelDown})
-	if m.nav.cursor != 1 || !m.navFocused || m.input.Focused() || m.vp.YOffset != 0 {
+	m.Update(tea.MouseWheelMsg{X: 5, Y: 6, Button: tea.MouseWheelDown})
+	if m.nav.cursor != 1 || !m.navFocused || m.input.Focused() || m.vp.YOffset() != 0 {
 		t.Fatal("sidebar wheel reached the chat or failed to select")
 	}
 }
@@ -106,7 +152,7 @@ func TestFramesFitTerminalCells(t *testing.T) {
 			if browser {
 				m.openSessions()
 			}
-			lines := strings.Split(m.View(), "\n")
+			lines := strings.Split(m.View().Content, "\n")
 			if len(lines) != size[1] {
 				t.Fatalf("size %v: %d rows", size, len(lines))
 			}

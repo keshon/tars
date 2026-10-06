@@ -1,13 +1,14 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type footerAction struct {
-	key                tea.KeyType
+	key                rune
 	name, label, short string
 	enabled            bool
 }
@@ -29,6 +30,8 @@ func (m *model) footerActions() []footerAction {
 		{tea.KeyF5, "F5", "Mode", "Mode", idle && !m.mission},
 		{tea.KeyF6, "F6", "Sidebar", "Pane", chat && m.termW >= navigatorMinWidth},
 		{tea.KeyF7, "F7", "Latest", "End", chat},
+		{tea.KeyF8, "F8", "", "", false},
+		{tea.KeyF9, "F9", "", "", false},
 		{tea.KeyF10, "F10", "Quit", "Quit", true},
 	}
 }
@@ -77,31 +80,31 @@ func (m *model) actionBar() string {
 			row += " "
 		}
 		label := cell.action.label
-		if cell.end-cell.start < len(strings.TrimPrefix(cell.action.name, "F"))+len(label) {
+		number := strings.TrimPrefix(cell.action.name, "F")
+		if cell.end-cell.start < len(number)+1+len(label) {
 			label = cell.action.short
 		}
 		if cell.action.key == tea.KeyF3 && !m.compact {
 			label = "Less"
 		}
-		number := strings.TrimPrefix(cell.action.name, "F")
-		numberStyle := m.styles.dim
-		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("8"))
+		numberStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#77818E")).Background(lipgloss.Color("#20262E"))
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#77818E")).Background(lipgloss.Color("#282E36"))
 		if cell.action.enabled {
-			numberStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Bold(true)
-			labelStyle = labelStyle.Background(lipgloss.Color("6"))
+			numberStyle = numberStyle.Foreground(lipgloss.Color("#DCE5EF")).Background(lipgloss.Color("#303944")).Bold(true)
+			labelStyle = labelStyle.Foreground(lipgloss.Color("#F1F4F8")).Background(lipgloss.Color("#526F91"))
 		}
-		row += numberStyle.Render(number) + labelStyle.Render(cellLine(label, cell.end-cell.start-len(number)))
+		row += numberStyle.Render(number) + labelStyle.Render(cellLine(" "+label, cell.end-cell.start-len(number)))
 	}
 	return strings.Join(append(rows, row), "\n")
 }
 
-func (m *model) footerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) footerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	for _, action := range m.footerActions() {
-		if action.key == msg.Type && !action.enabled {
+		if action.key == msg.Code && !action.enabled {
 			return m, nil
 		}
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyF1:
 		if m.dialog != nil {
 			m.closeDialog()
@@ -109,7 +112,7 @@ func (m *model) footerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openDialog("Help", []string{
 				"F1 Help   F2 Sessions   F3 Details   F4 New",
 				"F5 Plan/Act mode   F6 Sidebar   F7 Latest",
-				"Enter send / queue / answer   Ctrl+O newline",
+				"Enter send / queue / answer   Shift+Enter newline",
 				"Up/Down edit   Alt+Up/Down input history",
 				"Tab switch pane   Esc stop run / go back",
 				"Ctrl+E edit queue   Ctrl+X cancel queue",

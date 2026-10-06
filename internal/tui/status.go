@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// statusLine describes the current input; run metrics have their own row.
+// statusLine describes the current input; run metrics belong in the header.
 func (m *model) statusLine() string {
 	if m.sessions != nil {
 		return m.styles.status.Render("Type to search  ↑↓ select  Enter open  Esc back")
@@ -78,41 +78,18 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, sec)
 }
 
-// brand renders TARS: one amber letter bouncing back and forth while
-// running, the whole word amber at rest. It lives in the header now —
-// motion alone tells working from idle.
-func (m *model) brand() string {
-	if m.state == stRunning {
-		return m.spinner()
-	}
-	return m.styles.gate.Render("TARS") + " "
-}
+// The application name stays static; activity belongs beside the run status.
+func (m *model) brand() string { return m.styles.gate.Render("TARS") + " " }
 
-// spinner animates the brand while a run is in flight, else nothing:
-// paired with elapsed, time-since-submit stays visible while the
-// backend is silent. ASCII-only (zero font risk), no extra messages or
-// goroutines: the frame index falls out of elapsed.
+var activityFrames = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+func (m *model) busy() bool { return m.state == stRunning || m.state == stStopping }
+
 func (m *model) spinner() string {
-	if m.state != stRunning {
+	if !m.busy() {
 		return ""
 	}
-	active := pingPong(int(m.elapsed.Seconds()))
-	var b strings.Builder
-	for i, r := range "TARS" {
-		if i == active {
-			b.WriteString(m.styles.gate.Render(string(r)))
-		} else {
-			b.WriteString(string(r))
-		}
-	}
-	return b.String() + " "
-}
-
-// pingPong bounces 0-1-2-3-2-1 over a 6s period: the bounce reads
-// calmer than a hard jump back to T.
-func pingPong(s int) int {
-	frames := []int{0, 1, 2, 3, 2, 1}
-	return frames[s%len(frames)]
+	return m.styles.gate.Render(string(activityFrames[m.spinnerFrame%len(activityFrames)]))
 }
 
 // meter renders the context fill from the latest backend-reported prompt

@@ -3,8 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -12,24 +13,24 @@ func TestFooterActionsKeepDraftAndToggleScreens(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("draft\nsecond line")
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF1})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
 	if m.dialog == nil || m.dialog.title != "Help" {
 		t.Fatal("help did not open")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF1})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
 	if m.dialog != nil || m.input.Value() != "draft\nsecond line" {
 		t.Fatal("help lost draft")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF2})
 	if m.sessions == nil {
 		t.Fatal("chats did not open")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF2})
 	if m.sessions != nil || m.input.Value() != "draft\nsecond line" {
 		t.Fatal("chats lost draft")
 	}
 	before := m.compact
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF3})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF3})
 	if m.compact == before {
 		t.Fatal("details did not toggle")
 	}
@@ -40,13 +41,13 @@ func TestFooterActionsCannotHidePendingPrompts(t *testing.T) {
 		m := sizeModel(t, testModel())
 		m.state = state
 		before := m.compact
-		for _, key := range []tea.KeyType{tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4, tea.KeyF5, tea.KeyF6, tea.KeyF7} {
-			m.handleKey(tea.KeyMsg{Type: key})
+		for _, key := range []rune{tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4, tea.KeyF5, tea.KeyF6, tea.KeyF7} {
+			m.handleKey(tea.KeyPressMsg{Code: key})
 		}
 		if m.dialog != nil || m.sessions != nil || m.state != state || m.compact != before {
 			t.Fatal("function key hid prompt")
 		}
-		m.handleKey(tea.KeyMsg{Type: tea.KeyF10})
+		m.handleKey(tea.KeyPressMsg{Code: tea.KeyF10})
 		if !m.quit {
 			t.Fatal("quit blocked on prompt")
 		}
@@ -58,7 +59,7 @@ func TestActionBarCellsAndMouseShareGeometry(t *testing.T) {
 		m := sizeModel(t, testModel())
 		m.state = stDone
 		m.width(tea.WindowSizeMsg{Width: width, Height: 24})
-		rows := strings.Split(ansi.Strip(m.View()), "\n")
+		rows := strings.Split(ansi.Strip(m.View().Content), "\n")
 		top := len(rows) - m.actionBarRows()
 		for _, cell := range m.footerCells() {
 			bar := rows[top+cell.row]
@@ -69,7 +70,7 @@ func TestActionBarCellsAndMouseShareGeometry(t *testing.T) {
 				t.Fatal("button separator missing")
 			}
 			if cell.action.key == tea.KeyF2 {
-				m.Update(tea.MouseMsg{X: cell.start, Y: top + cell.row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+				m.Update(tea.MouseClickMsg{X: cell.start, Y: top + cell.row, Button: tea.MouseLeft})
 				if m.sessions == nil {
 					t.Fatalf("chat button click missed at width %d", width)
 				}
@@ -83,19 +84,45 @@ func TestFocusAndMetricsHaveDedicatedPlaces(t *testing.T) {
 	m.state = stDone
 	m.width(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.steps, m.maxSteps = 7, 25
-	if strings.Contains(m.statusLine(), "step") || !strings.Contains(m.View(), "step 7/25") {
+	if strings.Contains(m.statusLine(), "step") || !strings.Contains(m.View().Content, "step 7/25") {
 		t.Fatal("metrics mixed with key hints")
 	}
-	if !strings.Contains(ansi.Strip(m.View()), "▸ CHAT") {
+	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
+	if !strings.Contains(rows[1], "step 7/25") || strings.Count(strings.Join(rows, "\n"), "step 7/25") != 1 {
+		t.Fatal("run metrics must appear once in the top status row")
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "▸ CHAT") {
 		t.Fatal("input focus not identified")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if !strings.Contains(ansi.Strip(m.View()), "▸ SESSIONS") || !m.navFocused {
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
+	if !strings.Contains(ansi.Strip(m.View().Content), "▸ SESSIONS") || !m.navFocused {
 		t.Fatal("chat pane focus not identified")
 	}
-	m.Update(tea.MouseMsg{X: 60, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m.Update(tea.MouseClickMsg{X: 60, Y: 5, Button: tea.MouseLeft})
 	if m.navFocused || !m.input.Focused() {
 		t.Fatal("click did not return focus to input")
+	}
+}
+
+func TestHeaderPrioritizesRunMetricsOnNarrowTerminals(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stRunning
+	m.steps, m.maxSteps = 2, 25
+	m.tokens, m.limit = 4100, 16400
+	m.elapsed = 32 * time.Second
+	m.toolsUsed = 1
+	m.modelName = "Qwen3.5-9B-Q4_K_M"
+	for _, width := range []int{80, 120} {
+		m.width(tea.WindowSizeMsg{Width: width, Height: 30})
+		line := ansi.Strip(m.identityLine())
+		for _, fact := range []string{"step 2/25", "ctx 4.1k / 16.4k (25%)", "elapsed 00:32"} {
+			if !strings.Contains(line, fact) {
+				t.Fatalf("header at width %d lost %q: %q", width, fact, line)
+			}
+		}
+		if strings.Contains(line, "context ") {
+			t.Fatal("context limit duplicated beside run metrics")
+		}
 	}
 }
 
@@ -105,12 +132,12 @@ func TestHelpKeepsFooterOnLastRowAndHidesComposer(t *testing.T) {
 	m.input.SetValue("first\nsecond\nthird")
 	m.fitInput()
 	m.fitBottom()
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF1})
-	rows := strings.Split(ansi.Strip(m.View()), "\n")
-	if !strings.Contains(rows[len(rows)-1], "10Quit") || strings.Contains(m.View(), "Task>") || !strings.Contains(m.View(), "Draft preserved") {
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
+	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
+	if !strings.Contains(rows[len(rows)-1], "10 Quit") || strings.Contains(ansi.Strip(m.View().Content), "first") || !strings.Contains(m.View().Content, "Draft preserved") {
 		t.Fatal("help moved footer or exposed active composer")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF1})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
 	if m.input.Value() != "first\nsecond\nthird" || m.input.Height() != 3 || !m.input.Focused() {
 		t.Fatal("help did not restore composer")
 	}
@@ -120,15 +147,15 @@ func TestFooterModeAndNewPreserveDraft(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("unsent task")
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF5})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF5})
 	if !m.plan || m.input.Value() != "unsent task" {
 		t.Fatal("mode change lost draft")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF5})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF5})
 	if m.plan {
 		t.Fatal("mode did not toggle back")
 	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyF4})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF4})
 	if m.input.Value() != "unsent task" {
 		t.Fatal("new on unsaved chat lost draft")
 	}
@@ -138,7 +165,7 @@ func TestSidebarHasOneHeadingAndNoShortcutCluster(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.width(tea.WindowSizeMsg{Width: 120, Height: 30})
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.View().Content)
 	if strings.Count(view, "SESSIONS") != 1 || strings.Contains(m.sidebarView(), "Ctrl+") || strings.Contains(m.identityLine(), "Chat input") {
 		t.Fatal("duplicate chat heading or shortcut clutter")
 	}

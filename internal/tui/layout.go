@@ -2,16 +2,15 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
 const (
-	navigatorWidth    = 28
+	navigatorWidth    = 36
 	navigatorMinWidth = 110
 )
 
@@ -47,39 +46,82 @@ func (m *model) fitColumns() {
 		}
 		m.navFocused = false
 	}
-	m.vp.Width = max(width, 1)
+	m.vp.SetWidth(max(width, 1))
 }
 func (m *model) identityLine() string {
-	identity := m.modeName() + "  " + m.statusWord() + "  " + nonEmpty(m.modelName)
-	if m.limit > 0 {
-		identity += "  context " + kTokens(m.limit)
+	identity := m.statusWord()
+	if facts := m.runFacts(); facts != "" {
+		// Put run progress before model details so it survives narrow terminals.
+		identity += "  " + facts + "  " + nonEmpty(m.modelName)
+	} else {
+		identity += "  " + nonEmpty(m.modelName)
+		if m.limit > 0 {
+			identity += "  context " + kTokens(m.limit)
+		}
 	}
-	return cellLine(m.styles.dim.Render(identity), max(m.termW, 0))
+	return cellLine(m.styles.dim.Render(m.modeName()+"  ")+cellLine(m.spinner(), 1)+m.styles.dim.Render(" "+identity), max(m.termW, 0))
 }
+func (m *model) navigatorRows() int { return max(m.vp.Height()-1, 1) }
+
 func (m *model) sidebarView() string {
-	rows := []string{m.styles.dim.Render(filepath.Base(m.wsRoot)), ""}
-	visible := max((m.vp.Height-2)/2, 1)
+	rows := []string{}
+	visible := m.navigatorRows()
 	m.nav.clamp(visible)
 	end := min(m.nav.offset+visible, len(m.nav.entries))
 	for i := m.nav.offset; i < end; i++ {
 		e := m.nav.entries[i]
 		mark := "  "
+		switch m.entryState(e) {
+		case "Working", "Stopping":
+			mark = "* "
+		case "Needs input":
+			mark = "? "
+		case "Failed", "Unreadable":
+			mark = "! "
+		}
 		if m.navFocused && i == m.nav.cursor {
 			mark = "› "
-		} else if sameSession(e.dir, m.stateFile) {
+		} else if sameSession(e.dir, m.stateFile) && mark == "  " {
 			mark = "• "
 		}
-		line := cellLine(mark+e.title, navigatorWidth)
+		age := strings.TrimSuffix(ageString(e.updated), " ago")
+		if age == "just now" {
+			age = "now"
+		}
+		age = cellLine(age, 4)
+		line := cellLine(mark+e.title, navigatorWidth-5)
 		if m.navFocused && i == m.nav.cursor {
 			line = m.styles.hunk.Bold(true).Reverse(true).Render(line)
 		}
-		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+m.entryState(e)+"  "+ageString(e.updated), navigatorWidth)))
+		rows = append(rows, line+" "+m.styles.dim.Render(age))
 	}
 	if len(m.nav.entries) == 0 {
 		rows = append(rows, m.styles.dim.Render("No saved sessions yet"))
 	}
-	return cellFrame(strings.Join(rows, "\n"), navigatorWidth, m.vp.Height)
+	for len(rows) < m.vp.Height()-1 {
+		rows = append(rows, "")
+	}
+	rows = append(rows, m.styles.dim.Render(strings.Repeat("─", navigatorWidth)))
+	return cellFrame(strings.Join(rows, "\n"), navigatorWidth, m.vp.Height())
 }
+
+func (m *model) sidebarDetails() string {
+	if len(m.nav.entries) == 0 {
+		return "No session selected"
+	}
+	m.nav.clamp(m.navigatorRows())
+	e := m.nav.entries[m.nav.cursor]
+	noun := "messages"
+	if e.msgs == 1 {
+		noun = "message"
+	}
+	details := fmt.Sprintf("%s  %d %s", nonEmpty(e.mode), e.msgs, noun)
+	if state := m.entryState(e); state != "" {
+		details = state + "  " + details
+	}
+	return m.styles.dim.Render(cellLine(details, navigatorWidth))
+}
+
 func (m *model) entryState(e sessionEntry) string {
 	if sameSession(e.dir, m.stateFile) {
 		switch m.state {
@@ -95,10 +137,10 @@ func (m *model) entryState(e sessionEntry) string {
 			}
 		}
 	}
-	if e.status != "" {
+	if e.status != "" && e.status != "Saved" {
 		return e.status
 	}
-	return "Saved"
+	return ""
 }
 func (m *model) browserList(width int) string {
 	s := m.sessions
@@ -114,7 +156,7 @@ func (m *model) browserList(width int) string {
 		if i == s.cursor {
 			line = m.styles.hunk.Bold(true).Reverse(true).Render(line)
 		}
-		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+m.entryState(e)+"  "+nonEmpty(e.mode)+"  "+ageString(e.updated), width)), "")
+		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+strings.TrimSpace(m.entryState(e)+"  "+nonEmpty(e.mode))+"  "+ageString(e.updated), width)), "")
 	}
 	if len(s.entries) == 0 {
 		if s.filter.Value() != "" {
@@ -147,7 +189,7 @@ func (m *model) browserPreview(width int) string {
 		return ""
 	}
 	e := s.entries[s.cursor]
-	rows := []string{m.styles.hunk.Render(e.title), m.styles.dim.Render(m.entryState(e) + "  " + e.mode), ""}
+	rows := []string{m.styles.hunk.Render(e.title), m.styles.dim.Render(strings.TrimSpace(m.entryState(e) + "  " + e.mode)), ""}
 	if e.preview != "" {
 		rows = append(rows, reflow(e.preview, max(width, 8))...)
 	} else {
@@ -165,7 +207,7 @@ func (m *model) browserPreview(width int) string {
 	return strings.Join(rows, "\n")
 }
 func (m *model) browserView() string {
-	width, height := max(m.termW, 0), m.vp.Height
+	width, height := max(m.termW, 0), m.vp.Height()
 	if width >= 90 {
 		left := min(44, (width-3)/2)
 		divider := strings.Repeat(m.styles.dim.Render(" │ ")+"\n", max(height-1, 0)) + m.styles.dim.Render(" │ ")
@@ -176,7 +218,7 @@ func (m *model) browserView() string {
 	// Small terminals keep the browser usable without squeezing the transcript.
 	return cellFrame(m.browserList(width), width, height)
 }
-func (m *model) navigatorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) navigatorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 		m.quit = true
 		m.cancel()
@@ -189,13 +231,13 @@ func (m *model) navigatorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "down", "pgup", "pgdown":
 		step := 1
 		if msg.String() == "pgup" || msg.String() == "pgdown" {
-			step = max((m.vp.Height-2)/2, 1)
+			step = m.navigatorRows()
 		}
 		if msg.String() == "up" || msg.String() == "pgup" {
 			step = -step
 		}
 		m.nav.cursor += step
-		m.nav.clamp(max((m.vp.Height-2)/2, 1))
+		m.nav.clamp(m.navigatorRows())
 	case "enter":
 		if m.state != stDone {
 			m.appendBlock(markerBlock("Stop the run before switching sessions."))

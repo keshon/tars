@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/audit"
@@ -86,14 +86,15 @@ type model struct {
 	// maxSteps is the run's step budget for the meter: the loop default,
 	// since the Interactive role never overrides it. Display only — the
 	// loop enforces its own copy.
-	maxSteps int
-	started  time.Time
-	elapsed  time.Duration
-	ready    bool
-	answer   string
-	runErr   error
-	styles   styles
-	quit     bool
+	maxSteps     int
+	started      time.Time
+	elapsed      time.Duration
+	spinnerFrame int
+	ready        bool
+	answer       string
+	runErr       error
+	styles       styles
+	quit         bool
 	// interrupted marks a run stopped by esc rather than completion;
 	// its doneMsg renders neutrally instead of as an error.
 	interrupted bool
@@ -275,7 +276,6 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	}
 	m.refreshNavigator()
 	m.input = newInput()
-	m.input.Prompt = "> "
 	env := withoutPrintHooks(cfg.Env)
 	env.Gate = nil
 	env.GateContext = audit.ContextHook(cfg.AuditPath, "tui", m.contextGate(hub, cfg.Env.WS))
@@ -297,7 +297,12 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 			},
 		})
 	}
-	prog := tea.NewProgram(m, tea.WithContext(uiCtx), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	inputOptions, restoreInput, err := consoleInput(uiCtx)
+	if err != nil {
+		return "", err
+	}
+	defer restoreInput()
+	prog := tea.NewProgram(m, append(inputOptions, tea.WithContext(uiCtx))...)
 	m.send = func(msg tea.Msg) {
 		if done, ok := msg.(doneMsg); ok {
 			select {

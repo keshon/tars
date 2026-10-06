@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/keshon/tars/internal/llm"
 )
@@ -582,9 +582,9 @@ func (m *model) refreshContent() {
 	prevBreak := false
 	for _, b := range m.blocks {
 		if b.breakBefore && len(parts) > 0 && !prevBreak {
-			parts = append(parts, turnRule(m.vp.Width, m.styles))
+			parts = append(parts, turnRule(m.vp.Width(), m.styles))
 		}
-		parts = append(parts, renderBlock(b, m.styles, !m.compact, m.vp.Width))
+		parts = append(parts, renderBlock(b, m.styles, !m.compact, m.vp.Width()))
 		prevBreak = b.breakBefore
 	}
 	content := strings.Join(parts, "\n\n")
@@ -592,7 +592,7 @@ func (m *model) refreshContent() {
 		if content != "" {
 			content += "\n\n"
 		}
-		content += strings.Join(renderLive(m.live, m.styles, m.vp.Width), "\n")
+		content += strings.Join(renderLive(m.live, m.styles, m.vp.Width()), "\n")
 	}
 	heights := make([]int, len(parts))
 	for i, p := range parts {
@@ -604,7 +604,7 @@ func (m *model) refreshContent() {
 	// parts (appends, hide toggles) keep the offset: appends land
 	// below by construction.
 	if !m.follow && len(heights) > 0 && len(heights) == len(m.partLines) {
-		oldTop := m.vp.YOffset
+		oldTop := m.vp.YOffset()
 		acc, idx := 0, 0
 		// Parts join with one blank line between them: the viewport
 		// offset of part i is its content plus i separators.
@@ -618,19 +618,19 @@ func (m *model) refreshContent() {
 		}
 		m.vp.SetContent(content)
 		off := oldTop + shift
-		if maxOff := strings.Count(content, "\n") + 1 - m.vp.Height; maxOff > 0 && off > maxOff {
+		if maxOff := strings.Count(content, "\n") + 1 - m.vp.Height(); maxOff > 0 && off > maxOff {
 			off = maxOff
 		}
 		if off < 0 {
 			off = 0
 		}
-		m.vp.YOffset = off
+		m.vp.SetYOffset(off)
 	} else {
 		m.vp.SetContent(content)
 		if m.follow {
 			m.vp.GotoBottom()
 		} else if len(heights) == 0 {
-			m.vp.YOffset = 0
+			m.vp.SetYOffset(0)
 		}
 	}
 	m.partLines = heights

@@ -1,7 +1,8 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/textarea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // truncate shortens display strings with a marker (R5). Rune-based:
@@ -15,17 +16,20 @@ func truncate(s string, n int) string {
 
 // newInput builds the answer box: multiline, capped at a few rows.
 // Enter submits (handled by the model, never reaching the widget);
-// ctrl+o inserts a newline instead. Shift+enter would be the familiar
-// spelling, but Windows consoles deliver it indistinguishably from
-// enter — and bubbletea has no KeyShiftEnter to catch it with where
-// it is distinguishable. ctrl+o is unambiguous everywhere.
+// Shift+Enter inserts a newline; Ctrl+O remains a terminal fallback.
 func newInput() textarea.Model {
 	ta := textarea.New()
 	ta.Prompt = "> "
+	ta.SetVirtualCursor(false)
+	style := ta.Styles()
+	style.Cursor.Shape = tea.CursorUnderline
+	ta.SetStyles(style)
 	ta.MaxHeight = 6
+	ta.DynamicHeight = true
+	ta.MaxContentHeight = 4096
 	// Line numbers default on in bubbles and render as a phantom "1"
 	// in the empty box — it looks like content but submits nothing.
 	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetKeys("ctrl+o")
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "ctrl+o")
 	return ta
 }

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/audit"
@@ -136,7 +136,7 @@ func TestPermissionKeysAnswer(t *testing.T) {
 	for !mm.hub.HasPending() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	updated, _ = mm.Update(tea.KeyPressMsg{Text: string([]rune{'y'})})
 	mm = updated.(*model)
 	if mm.state != stRunning {
 		t.Fatalf("state = %v after y", mm.state)
@@ -174,7 +174,7 @@ func TestAskEnterSubmits(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	mm.input.SetValue("assumed")
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm = updated.(*model)
 	select {
 	case rep := <-answered:
@@ -197,7 +197,7 @@ func TestDoneQuits(t *testing.T) {
 		t.Fatalf("state = %v answer = %q", mm.state, mm.answer)
 	}
 	// Empty follow-up quits; the program no longer exits on done.
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm = updated.(*model)
 	if mm.quit {
 		t.Fatal("empty enter in done state must do nothing")
@@ -236,7 +236,7 @@ func TestFollowUpResumes(t *testing.T) {
 	updated, _ := m.Update(doneMsg{answer: "done"})
 	mm := updated.(*model)
 	mm.input.SetValue("and then?")
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm = updated.(*model)
 	if mm.state != stRunning {
 		t.Fatalf("state = %v, want running", mm.state)
@@ -305,7 +305,7 @@ func TestCommand_HelpAndUnknown(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("/help")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.quit || mm.state != stDone {
 		t.Fatalf("help must not quit or resume: quit=%v state=%v", mm.quit, mm.state)
@@ -328,7 +328,7 @@ func TestCommand_HelpAndUnknown(t *testing.T) {
 	mm2 := sizeModel(t, testModel())
 	mm2.state = stDone
 	mm2.input.SetValue("/nope")
-	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if mm := updated.(*model); mm.quit || mm.state != stDone {
 		t.Fatal("unknown command must not quit or resume")
 	}
@@ -338,7 +338,7 @@ func TestCommand_Quit(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("/quit")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if mm := updated.(*model); !mm.quit {
 		t.Fatal("/quit must quit")
 	}
@@ -350,7 +350,7 @@ func TestCommand_BareNewResetsToChat(t *testing.T) {
 	m.blocks = []block{answerBlock("old transcript")}
 	m.stateFile = "some/state.json"
 	m.input.SetValue("/new")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.quit || mm.state != stDone {
 		t.Fatal("bare /new must reset and stay")
@@ -367,7 +367,7 @@ func TestCommand_BareNewResetsToChat(t *testing.T) {
 		return nil, errors.New("fresh path taken")
 	}
 	mm.input.SetValue("fresh task")
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm2 := updated.(*model)
 	found := false
 	for _, b := range mm2.blocks {
@@ -410,7 +410,7 @@ func TestFollowUp_AttachesImages(t *testing.T) {
 	m.ctx = context.Background()
 	m.state = stDone
 	m.input.SetValue("what is this @shot.png")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if gotTask != "what is this" || len(gotImages) != 1 {
 		t.Fatalf("task=%q images=%v", gotTask, gotImages)
@@ -453,7 +453,7 @@ func TestCommand_NewStartsFresh(t *testing.T) {
 	m.ctx = context.Background()
 	m.state = stDone
 	m.input.SetValue("/new second")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.state != stRunning {
 		t.Fatalf("state = %v, want running", mm.state)
@@ -543,7 +543,7 @@ func consecutiveBlanks(s string) int {
 
 func TestViewportSizedWithoutTTY(t *testing.T) {
 	m := sizeModel(t, testModel())
-	if !m.ready || m.vp.Width != 80 {
+	if !m.ready || m.vp.Width() != 80 {
 		t.Fatalf("viewport not sized: %+v", m.vp)
 	}
 }
@@ -555,13 +555,13 @@ func TestHistory_ExplicitRecallRestoresDraft(t *testing.T) {
 	m.pushHistory("second")
 	m.input.SetValue("draft\nsecond line")
 	for _, want := range []string{"second", "first"} {
-		m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
 		if m.input.Value() != want {
 			t.Fatalf("recall %q, want %q", m.input.Value(), want)
 		}
 	}
 	for _, want := range []string{"second", "draft\nsecond line"} {
-		m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+		m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModAlt})
 		if m.input.Value() != want {
 			t.Fatalf("recall %q, want %q", m.input.Value(), want)
 		}
@@ -574,15 +574,15 @@ func TestHistory_ArrowsNeverRecallAtEditorEdges(t *testing.T) {
 		m.state = state
 		m.pushHistory("old")
 		m.input.SetValue("first line")
-		m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+		m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 		m.Update(keyRunes('x'))
 		draft := m.input.Value()
 		if draft != "first line\nx" {
 			t.Fatalf("newline failed: %q", draft)
 		}
-		for _, direction := range []tea.KeyType{tea.KeyUp, tea.KeyDown} {
+		for _, direction := range []rune{tea.KeyUp, tea.KeyDown} {
 			for i := 0; i < 6; i++ {
-				m.Update(tea.KeyMsg{Type: direction})
+				m.Update(tea.KeyPressMsg{Code: direction})
 			}
 			if m.input.Value() != draft || m.input.Height() < 2 {
 				t.Fatalf("state %d: arrows replaced multiline draft: %q", state, m.input.Value())
@@ -593,7 +593,7 @@ func TestHistory_ArrowsNeverRecallAtEditorEdges(t *testing.T) {
 	m.state = stDone
 	m.pushHistory("old")
 	m.input.SetValue("single line")
-	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.input.Value() != "single line" {
 		t.Fatal("down erased idle draft")
 	}
@@ -618,20 +618,27 @@ func TestInputHidesLineNumbers(t *testing.T) {
 	}
 }
 
-// The caret blinks: blink messages must reach the input — the Update
-// catch-all would silently drop them and the caret would sit dead.
-// (Chaining itself is bubbles' clock, covered by its own tests; a zero
-// BlinkMsg is correctly rejected by the cursor, so routing — not a
-// follow-up command — is what's asserted here.)
-func TestCaretBlinkRouted(t *testing.T) {
+func TestNativeUnderlineCaretTracksComposerAndHidesOnHelp(t *testing.T) {
 	m := sizeModel(t, testModel())
-	updated, _ := m.Update(cursor.BlinkMsg{})
-	if updated == nil {
-		t.Fatal("Update dropped BlinkMsg")
+	m.state = stDone
+	m.input.SetValue("first\nsecond")
+	m.input.CursorEnd()
+	m.fitInput()
+	m.fitBottom()
+	v := m.View()
+	if v.Cursor == nil || v.Cursor.Shape != tea.CursorUnderline || v.Cursor.Y != m.termH-m.actionBarRows()-1 {
+		t.Fatalf("incorrect native composer cursor: %+v", v.Cursor)
 	}
-	mm := updated.(*model)
-	if mm.input.Value() != "" {
-		t.Fatal("blink must never alter content")
+	if v.Cursor.X != 2+len("second") {
+		t.Fatalf("caret did not follow text: %+v", v.Cursor)
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
+	if m.View().Cursor != nil {
+		t.Fatal("help exposed background caret")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
+	if m.View().Cursor == nil || m.input.Value() != "first\nsecond" {
+		t.Fatal("closing help lost caret or draft")
 	}
 }
 
@@ -644,7 +651,7 @@ func TestTranscriptBreathesBeforeDivider(t *testing.T) {
 		m.appendBlock(b)
 	}
 	m.vp.GotoBottom()
-	lines := strings.Split(m.View(), "\n")
+	lines := strings.Split(m.View().Content, "\n")
 	// The transcript divider is the last rule: the header owns the
 	// first, so scan from the bottom.
 	div := -1
@@ -655,7 +662,7 @@ func TestTranscriptBreathesBeforeDivider(t *testing.T) {
 		}
 	}
 	if div < 1 {
-		t.Fatalf("no divider in view:\n%s", m.View())
+		t.Fatalf("no divider in view:\n%s", m.View().Content)
 	}
 	if strings.TrimSpace(lines[div-1]) != "" {
 		t.Fatalf("line above divider = %q, want blank", lines[div-1])
@@ -666,7 +673,7 @@ func TestNewlineKey(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("a")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	mm := updated.(*model)
 	if !strings.Contains(mm.input.Value(), "\n") {
 		t.Fatalf("ctrl+o must insert newline, got %q", mm.input.Value())
@@ -675,7 +682,7 @@ func TestNewlineKey(t *testing.T) {
 
 func TestInterruptStaysInChat(t *testing.T) {
 	m := sizeModel(t, testModel())
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	mm := updated.(*model)
 	if mm.quit {
 		t.Fatal("esc must interrupt, not quit")
@@ -708,15 +715,15 @@ func TestFollowUnfollowsOnScroll(t *testing.T) {
 	if !m.follow {
 		t.Fatal("follow expected while at bottom")
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	mm := updated.(*model)
 	if mm.follow {
 		t.Fatal("pgup must unfollow")
 	}
-	if !strings.Contains(mm.View(), "7Latest") {
+	if !strings.Contains(ansi.Strip(mm.View().Content), "7 End") {
 		t.Fatal("unfollowed state must show jump hint")
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl})
 	mm = updated.(*model)
 	if !mm.follow {
 		t.Fatal("end must re-arm follow")
@@ -729,9 +736,9 @@ func TestNewBlocksRespectUnfollow(t *testing.T) {
 		m.appendBlock(markerBlock("block"))
 	}
 	m.follow = false
-	y0 := m.vp.YOffset
+	y0 := m.vp.YOffset()
 	m.appendBlock(markerBlock("new block while reading"))
-	if m.vp.YOffset != y0 {
+	if m.vp.YOffset() != y0 {
 		t.Fatal("new block yanked a scrolled-up viewport")
 	}
 }
@@ -758,7 +765,7 @@ func TestQuitNeedsCtrlQ(t *testing.T) {
 		t.Fatal("q must type, never quit")
 	}
 	// Quit lives on ctrl+q, with or without a draft.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
 	if mm := updated.(*model); !mm.quit {
 		t.Fatal("ctrl+q must quit")
 	}
@@ -777,7 +784,7 @@ func TestDialogQDoesNotClose(t *testing.T) {
 func TestAskCtrlQQuits(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stAsk
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
 	if mm := updated.(*model); !mm.quit {
 		t.Fatal("ctrl+q must quit from ask")
 	}
@@ -803,7 +810,7 @@ func TestScrollRoutedInEveryState(t *testing.T) {
 			t.Fatalf("state %v: follow expected while at bottom", state)
 		}
 		m.state = state
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 		if mm := updated.(*model); mm.follow {
 			t.Fatalf("state %v: pgup must unfollow", state)
 		}
@@ -814,41 +821,43 @@ func TestScrollRoutedInEveryState(t *testing.T) {
 		m.appendBlock(markerBlock("block"))
 	}
 	m.state = stDone
-	wheel := tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}
+	wheel := tea.MouseWheelMsg{Button: tea.MouseWheelUp}
 	updated, _ := m.Update(wheel)
 	if mm := updated.(*model); mm.follow {
 		t.Fatal("wheel-up in done state must unfollow")
 	}
 }
 
-func TestSpinnerOnlyWhileRunning(t *testing.T) {
-	m := testModel()
+func TestSpinnerBelongsToStatusAndBrandStaysStatic(t *testing.T) {
+	m := sizeModel(t, testModel())
 	m.state = stRunning
-	m.elapsed = 0
-	// Frame 0: the T lights amber, the rest rides plain.
-	if got := m.spinner(); got != m.styles.gate.Render("T")+"ARS " {
-		t.Fatalf("spinner = %q", got)
+	brand := m.brand()
+	first := m.spinner()
+	if !strings.Contains(m.identityLine(), "⠋") {
+		t.Fatal("spinner missing from run status")
 	}
-	m.elapsed = 2 * time.Second
-	if got := m.spinner(); got != "TA"+m.styles.gate.Render("R")+"S " {
-		t.Fatalf("spinner = %q, want frame advance", got)
+	if strings.Contains(m.headerLine(), "⠋") {
+		t.Fatal("spinner placed in title")
 	}
-	// Ping-pong, not wrap: second 4 lights R again, not T.
-	m.elapsed = 4 * time.Second
-	if got := m.spinner(); got != "TA"+m.styles.gate.Render("R")+"S " {
-		t.Fatalf("spinner = %q, want the bounce back", got)
+	m.Update(tickMsg(time.Now()))
+	if m.spinner() == first || m.brand() != brand {
+		t.Fatal("spinner did not advance or brand changed")
 	}
+	for _, state := range []runState{stAsk, stPermission, stDone} {
+		m.state = state
+		if m.spinner() != "" || m.brand() != brand {
+			t.Fatal("paused or idle state animates")
+		}
+	}
+	m.state = stStopping
+	if m.spinner() == "" {
+		t.Fatal("stopping has no activity indicator")
+	}
+	m.state = stRunning
+	width := lipgloss.Width(m.identityLine())
 	m.state = stDone
-	if got := m.spinner(); got != "" {
-		t.Fatalf("spinner outside running = %q", got)
-	}
-	// The header carries the brand now: the lit letter renders amber,
-	// so match the plain tail beside the session title.
-	m = sizeModel(t, testModel())
-	m.state = stRunning
-	m.elapsed = 0
-	if view := m.View(); !strings.Contains(view, "ARS //") {
-		t.Fatalf("header missing brand: %q", view)
+	if lipgloss.Width(m.identityLine()) != width {
+		t.Fatal("activity moved the header layout")
 	}
 }
 
@@ -878,7 +887,7 @@ func TestEmptyStart_SubmitBegins(t *testing.T) {
 	// No session, no state: first line starts fresh, like /new.
 	m.state = stDone
 	m.input.SetValue("hello?")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.state != stRunning {
 		t.Fatalf("state = %v, want running", mm.state)
@@ -945,7 +954,7 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 	expanded := renderBlock(thinkBlock(long), st, true, 80)
 	// Wrapping splits phrases across rail-indented lines: normalize
 	// all whitespace before matching.
-	flat := strings.Join(strings.Fields(expanded), " ")
+	flat := strings.Join(strings.Fields(ansi.Strip(expanded)), " ")
 	if !strings.Contains(flat, "Second line of musing") {
 		t.Fatalf("expanded thinking must show all: %q", expanded)
 	}
@@ -968,11 +977,11 @@ func TestThinkToggleKey(t *testing.T) {
 	if !m.compact {
 		t.Fatal("history starts compact")
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	if mm := updated.(*model); mm.compact {
 		t.Fatal("ctrl+g must open full view")
 	} else {
-		updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+		updated, _ = mm.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 		if mm := updated.(*model); !mm.compact {
 			t.Fatal("ctrl+g again must compact")
 		}
@@ -981,7 +990,7 @@ func TestThinkToggleKey(t *testing.T) {
 	mm := sizeModel(t, testModel())
 	mm.state = stDone
 	mm.input.SetValue("ed")
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	updated, _ = mm.Update(tea.KeyPressMsg{Text: string([]rune{'t'})})
 	if mm := updated.(*model); !mm.compact || mm.input.Value() != "edt" {
 		t.Fatalf("t must type, not toggle: compact=%v value=%q", mm.compact, mm.input.Value())
 	}
@@ -1002,7 +1011,7 @@ func TestHelpMentionsThinkKey(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("/help")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	found := false
 	for _, b := range mm.blocks {
@@ -1068,8 +1077,8 @@ func awaitReply(t *testing.T, ch chan agent.SuspendReply) agent.SuspendReply {
 	}
 }
 
-func keyRunes(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+func keyRunes(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Text: string([]rune{r})}
 }
 
 func TestGateStages_AlwaysConfirm(t *testing.T) {
@@ -1087,7 +1096,7 @@ func TestGateStages_AlwaysConfirm(t *testing.T) {
 		t.Fatalf("confirm must name the gated call: %q", got)
 	}
 	// Esc backs out, still pending.
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	mm = updated.(*model)
 	if mm.gstage != gsPermit || !mm.hub.HasPending() {
 		t.Fatal("esc must return to permit, still pending")
@@ -1095,7 +1104,7 @@ func TestGateStages_AlwaysConfirm(t *testing.T) {
 	// Enter on confirm answers "a" and tears the overlay down.
 	updated, _ = mm.Update(keyRunes('a'))
 	mm = updated.(*model)
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm = updated.(*model)
 	if rep := awaitReply(t, answered); rep.Answer != "a" {
 		t.Fatalf("reply = %+v", rep)
@@ -1120,7 +1129,7 @@ func TestGateStages_RejectNote(t *testing.T) {
 		updated, _ = mm.Update(keyRunes(r))
 		mm = updated.(*model)
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm = updated.(*model)
 	if rep := awaitReply(t, answered); rep.Answer != "n: use cat" {
 		t.Fatalf("reply = %+v", rep)
@@ -1143,7 +1152,7 @@ func TestGateRejectEmptyNoteDenies(t *testing.T) {
 	mm, answered := openPermissionGate(t)
 	updated, _ := mm.Update(keyRunes('n'))
 	mm = updated.(*model)
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if rep := awaitReply(t, answered); rep.Answer != "n" {
 		t.Fatalf("reply = %+v, want plain deny", rep)
 	}
@@ -1380,7 +1389,7 @@ func TestRenderBlockWrapsToWidth(t *testing.T) {
 	// Wrapped continuations sit on the 6-wide speaker rail, under the
 	// tag bracket — aligned, not new.
 	out = renderBlock(userBlock("aaa bbb ccc ddd eee fff"), st, false, 20)
-	lines := strings.Split(out, "\n")
+	lines := strings.Split(ansi.Strip(out), "\n")
 	if len(lines) < 2 || !strings.HasPrefix(lines[0], "YOU") {
 		t.Fatalf("speaker header missing: %q", out)
 	}
@@ -1395,7 +1404,7 @@ func TestPreReadyBlocksRender(t *testing.T) {
 	m := testModel() // never sized: not ready
 	m.appendBlock(markerBlock("early"))
 	mm := sizeModel(t, m)
-	if view := mm.View(); !strings.Contains(view, "early") {
+	if view := mm.View().Content; !strings.Contains(view, "early") {
 		t.Fatalf("pre-ready block missing: %q", view)
 	}
 }
@@ -1406,7 +1415,7 @@ func TestStatusPostsToHistory(t *testing.T) {
 	m.limit = 131072
 	m.tokens = 12400
 	m.input.SetValue("/status")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.dialog != nil {
 		t.Fatal("status must post to history, not a modal")
@@ -1460,7 +1469,8 @@ func TestWithoutPrintHooks_Silent(t *testing.T) {
 func TestDialogFitsViewport(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.openDialog("status", m.statusLines())
-	m.vp.Width, m.vp.Height = 26, 8
+	m.vp.SetWidth(26)
+	m.vp.SetHeight(8)
 	out := m.dialogView()
 	lines := strings.Split(out, "\n")
 	if len(lines) > 8 {
@@ -1501,8 +1511,8 @@ func TestDividerExactWidth(t *testing.T) {
 	m.appendBlock(userBlock("hi"))
 	m.appendBlock(answerBlock("there"))
 	line := m.dividerLine()
-	if n := lipgloss.Width(line); n != m.vp.Width {
-		t.Fatalf("divider %d cols, want viewport %d", n, m.vp.Width)
+	if n := lipgloss.Width(line); n != m.vp.Width() {
+		t.Fatalf("divider %d cols, want viewport %d", n, m.vp.Width())
 	}
 }
 
@@ -1510,25 +1520,25 @@ func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 16 {
-		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - metrics - input - actions)", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height() != 16 {
+		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - metrics - input - actions)", mm.vp.Height())
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 16 {
-		t.Fatalf("running viewport height = %d, want 16", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height() != 16 {
+		t.Fatalf("running viewport height = %d, want 16", mm.vp.Height())
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm = updated.(*model); mm.vp.Height != 16 {
-		t.Fatalf("composing viewport height = %d, want 16", mm.vp.Height)
+	if mm = updated.(*model); mm.vp.Height() != 16 {
+		t.Fatalf("composing viewport height = %d, want 16", mm.vp.Height())
 	}
 	// The frame uses every row, including the footer at the bottom edge.
-	if n := len(strings.Split(mm.View(), "\n")); n != 24 {
+	if n := len(strings.Split(mm.View().Content, "\n")); n != 24 {
 		t.Fatalf("view is %d lines, want 24", n)
 	}
 }
@@ -1677,7 +1687,7 @@ func TestRetryRerunsLastTurn(t *testing.T) {
 	m.runErr = errors.New("boom")
 	m.state = stDone
 	m.input.SetValue("/retry")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.state != stRunning {
 		t.Fatalf("state = %v, want running", mm.state)
@@ -1693,7 +1703,7 @@ func TestRetryRefusesWhenOk(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.input.SetValue("/retry")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
 	if mm.state != stDone {
 		t.Fatalf("state = %v, want done", mm.state)
@@ -1713,7 +1723,7 @@ func TestTurnSeparators(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.appendBlock(answerBlock("first"))
 	m.appendBlock(userBlock("❯ second"))
-	if n := strings.Count(m.vp.View(), "─"); n != m.vp.Width {
+	if n := strings.Count(m.vp.View(), "─"); n != m.vp.Width() {
 		t.Fatalf("one full-width rule expected, got %d dashes", n)
 	}
 	// Marker-then-echo shares one turn: no double rule.
@@ -1906,18 +1916,18 @@ func TestLiveUnfollowedStability(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		m.appendBlock(markerBlock("filler"))
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	mm := updated.(*model)
 	if mm.follow {
 		t.Fatal("setup: pgup must unfollow")
 	}
-	y0 := mm.vp.YOffset
+	y0 := mm.vp.YOffset()
 	for _, chunk := range []string{"a", "b", "c", "d", "e"} {
 		updated, _ = mm.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": chunk}}))
 		mm = updated.(*model)
 	}
-	if mm.vp.YOffset != y0 {
-		t.Fatalf("live growth below moved offset %d -> %d", y0, mm.vp.YOffset)
+	if mm.vp.YOffset() != y0 {
+		t.Fatalf("live growth below moved offset %d -> %d", y0, mm.vp.YOffset())
 	}
 	if mm.live != "abcde" {
 		t.Fatalf("live = %q", mm.live)
@@ -1993,17 +2003,17 @@ func TestToggleHoldsPosition(t *testing.T) {
 		m.appendBlock(markerBlock("filler"))
 	}
 	m.appendBlock(thinkBlock("reasoning " + strings.Repeat("y", 300)))
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	mm := updated.(*model)
 	if mm.follow {
 		t.Fatal("setup: pgup must unfollow")
 	}
-	y0 := mm.vp.YOffset
+	y0 := mm.vp.YOffset()
 	first := strings.Split(mm.vp.View(), "\n")[0]
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	mm = updated.(*model)
-	if mm.vp.YOffset != y0 {
-		t.Fatalf("growth below moved offset %d -> %d", y0, mm.vp.YOffset)
+	if mm.vp.YOffset() != y0 {
+		t.Fatalf("growth below moved offset %d -> %d", y0, mm.vp.YOffset())
 	}
 	if got := strings.Split(mm.vp.View(), "\n")[0]; got != first {
 		t.Fatal("growth below changed the first line")
@@ -2014,22 +2024,22 @@ func TestToggleHoldsPosition(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		m2.appendBlock(markerBlock("filler"))
 	}
-	updated, _ = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+	updated, _ = m2.Update(tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl})
 	mm2 := updated.(*model)
-	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	updated, _ = mm2.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	mm2 = updated.(*model)
 	if mm2.follow {
 		t.Fatal("setup: pgup must unfollow")
 	}
 	before := mm2.vp.View()
 	first2 := strings.Split(before, "\n")[0]
-	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ = mm2.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	mm2 = updated.(*model)
 	if got := strings.Split(mm2.vp.View(), "\n")[0]; got != first2 {
 		t.Fatalf("growth above moved first line:\nwas  %q\nnow  %q", first2, got)
 	}
 	// Collapse back: byte-identical view returns.
-	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	updated, _ = mm2.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	if got := updated.(*model).vp.View(); got != before {
 		t.Fatal("collapse must restore the exact view")
 	}
@@ -2157,7 +2167,7 @@ func TestStatusBrand_RightAligned(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	mm := updated.(*model)
 	var header string
-	for _, ln := range strings.Split(mm.View(), "\n") {
+	for _, ln := range strings.Split(mm.View().Content, "\n") {
 		if strings.Contains(ln, "//") {
 			header = ln
 		}
@@ -2170,13 +2180,13 @@ func TestStatusBrand_RightAligned(t *testing.T) {
 	}
 	// Fixed two-line zone: the blocked input stays visible while
 	// running (empty transcript here, so "> " can only be the box).
-	if !strings.Contains(mm.View(), "> ") {
+	if !strings.Contains(mm.View().Content, "> ") {
 		t.Fatal("running must keep the blocked input box")
 	}
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	// Brand owns TARS alone: exactly one occurrence on the row.
-	if view := updated.(*model).View(); strings.Count(view, "TARS") != 1 {
+	if view := updated.(*model).View().Content; strings.Count(view, "TARS") != 1 {
 		t.Fatalf("done header must show one brand: %q", view)
 	}
 }

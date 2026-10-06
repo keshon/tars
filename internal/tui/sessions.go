@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/session"
@@ -157,7 +157,7 @@ func (m *model) sessChrome() int {
 func (m *model) sessVisible() int {
 	availH := m.termH - 3
 	if m.ready {
-		availH = m.vp.Height
+		availH = m.vp.Height()
 	}
 	if n := (availH - m.sessChrome()) / 3; n > 0 {
 		return n
@@ -200,9 +200,13 @@ func (m *model) openSessions() {
 	m.refreshNavigator()
 	filter := textinput.New()
 	filter.Prompt = "Search > "
+	filter.SetVirtualCursor(false)
+	style := filter.Styles()
+	style.Cursor.Shape = tea.CursorUnderline
+	filter.SetStyles(style)
 	filter.Placeholder = "title or session ID"
 	filter.CharLimit = 80
-	filter.Width = max(m.termW-14, 1)
+	filter.SetWidth(max(m.termW-14, 1))
 	filter.Focus()
 	m.sessions = &sessionsState{entries: m.nav.entries, all: m.nav.entries, root: m.sessionRoot(), filter: filter}
 	m.pushOverlay(ovSessions)
@@ -235,7 +239,7 @@ func (m *model) resetNote() {
 // sessionsKey handles keys while the screen is open. Letters are
 // Search accepts typing; ctrl+r/ctrl+d are list commands — except rename mode, where the
 // borrowed note input owns every key but esc/enter, like gsReject.
-func (m *model) sessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.sessions
 	if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 		m.quit = true
@@ -243,11 +247,11 @@ func (m *model) sessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if s.mode == sessRename {
-		switch msg.Type {
-		case tea.KeyEnter:
+		switch msg.String() {
+		case "enter":
 			m.commitRename()
 			return m, nil
-		case tea.KeyEsc:
+		case "esc":
 			m.resetNote()
 			s.mode = sessList
 			return m, nil
@@ -626,7 +630,7 @@ func (m *model) refreshNavigator() {
 			break
 		}
 	}
-	m.nav.clamp(max((m.vp.Height-2)/2, 1))
+	m.nav.clamp(m.navigatorRows())
 }
 func (s *sessionsState) clamp(visible int) {
 	s.cursor = max(0, min(s.cursor, len(s.entries)-1))
@@ -674,19 +678,19 @@ func (m *model) browserMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if width >= 90 {
 		width = min(44, (width-3)/2)
 	}
-	if msg.X >= width || msg.Y < 3 || msg.Y >= 3+m.vp.Height {
+	if msg.Mouse().X >= width || msg.Mouse().Y < 3 || msg.Mouse().Y >= 3+m.vp.Height() {
 		return m, nil
 	}
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
+	switch msg.Mouse().Button {
+	case tea.MouseWheelUp:
 		s.cursor--
-	case tea.MouseButtonWheelDown:
+	case tea.MouseWheelDown:
 		s.cursor++
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionPress || msg.Y < 6 {
+	case tea.MouseLeft:
+		if !isMouseClick(msg) || msg.Mouse().Y < 6 {
 			return m, nil
 		}
-		row := (msg.Y - 6) / 3
+		row := (msg.Mouse().Y - 6) / 3
 		if row >= m.sessVisible() || s.offset+row >= len(s.entries) {
 			return m, nil
 		}

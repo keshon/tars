@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -50,7 +50,7 @@ func (m *model) dialogView() string {
 	d := m.dialog
 	availW, availH := m.termW, m.termH-3
 	if m.ready {
-		availW, availH = m.vp.Width, m.vp.Height
+		availW, availH = m.vp.Width(), m.vp.Height()
 	}
 	inner := availW - 6
 	if inner < 10 {
@@ -115,7 +115,7 @@ func helpSections() []helpSection {
 			{"Ctrl+C", "abort (quits mid-run)"},
 			{"Y / N / A", "answer permission"},
 			{"Enter", "submits"},
-			{"Ctrl+O", "newline"},
+			{"Shift+Enter / Ctrl+O", "newline"},
 			{"Ctrl+P", "search saved sessions"},
 			{"Ctrl+B", "show/hide sidebar"},
 			{"Tab", "switch sidebar/input"},

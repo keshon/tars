@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/snapshot"
@@ -207,6 +207,7 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.cancel = cancel
 	m.ctx = runCtx
 	m.state = stRunning
+	m.spinnerFrame = 0
 	m.navFocused = false
 	m.refreshNavigator()
 	m.input.Focus()
