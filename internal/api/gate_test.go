@@ -114,3 +114,62 @@ func TestGateHub_EmitsToolResource(t *testing.T) {
 		t.Fatalf("fields = %v", got)
 	}
 }
+
+func TestGateCloseReleasesPendingAndRejectsFuture(t *testing.T) {
+	ready := make(chan struct{})
+	hub := NewGateHub(func(name string, _ map[string]any) {
+		if name == "awaiting_input" {
+			close(ready)
+		}
+	})
+	done := make(chan error, 1)
+	go func() { _, err := hub.Suspender()(context.Background(), agent.SuspendRequest{}); done <- err }()
+	<-ready
+	hub.Close()
+	hub.Close()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("closed input returned a valid answer")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close stranded gate")
+	}
+	if _, err := hub.Suspender()(context.Background(), agent.SuspendRequest{}); err == nil {
+		t.Fatal("future gate allowed")
+	}
+}
+
+func TestGateClosePreservesSubmittedAnswer(t *testing.T) {
+	ready := make(chan struct{})
+	hub := NewGateHub(func(name string, _ map[string]any) {
+		if name == "awaiting_input" {
+			close(ready)
+		}
+	})
+	done := make(chan agent.SuspendReply, 1)
+	fail := make(chan error, 1)
+	go func() {
+		rep, err := hub.Suspender()(context.Background(), agent.SuspendRequest{})
+		if err != nil {
+			fail <- err
+		} else {
+			done <- rep
+		}
+	}()
+	<-ready
+	if err := hub.Respond("accepted"); err != nil {
+		t.Fatal(err)
+	}
+	hub.Close()
+	select {
+	case rep := <-done:
+		if rep.Answer != "accepted" {
+			t.Fatal(rep)
+		}
+	case err := <-fail:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("answer lost on close")
+	}
+}

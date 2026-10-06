@@ -17,7 +17,7 @@ import (
 	"github.com/keshon/tars/internal/workspace"
 )
 
-// followUp sends the input line as a resumed turn. Empty input quits;
+// followUp sends a non-empty input line as a resumed turn;
 // the saved transcript carries the conversation, so every follow-up is
 // a continuation, not a fresh run. A /command runs locally instead.
 func (m *model) followUp() (tea.Model, tea.Cmd) {
@@ -27,9 +27,7 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		return m.command(text)
 	}
 	if text == "" {
-		m.quit = true
-		m.cancel()
-		return m, tea.Quit
+		return m, nil
 	}
 	m.pushHistory(text)
 	// @paths attach before anything else runs: a missing file stays
@@ -80,7 +78,7 @@ func splitAttachments(ws *workspace.Workspace, text string) (string, []string, e
 		raw := tok
 		if strings.HasPrefix(tok, "@\"") && strings.HasSuffix(tok, "\"") && len(tok) > 3 {
 			quoted = true
-			raw = "@" + tok[2 : len(tok)-1]
+			raw = "@" + tok[2:len(tok)-1]
 		}
 		if !strings.HasPrefix(raw, "@") || len(raw) == 1 {
 			kept = append(kept, tok)
@@ -171,6 +169,9 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	// retry restarts from last known-good, not partial failure).
 	// runErr clears: a new turn has no result yet, and /retry gates on it.
 	// Live state clears too: a new turn starts with no partial text.
+	m.alwaysMu.Lock()
+	m.always = map[[2]string]bool{}
+	m.alwaysMu.Unlock()
 	m.retryRun = run
 	m.runErr = nil
 	m.live, m.liveCut, m.livePainted = "", false, 0
@@ -187,7 +188,7 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.cancel = cancel
 	m.ctx = runCtx
 	m.state = stRunning
-	m.input.Blur()
+	m.input.Focus()
 	m.fitBottom()
 	m.started = time.Now()
 	m.steps = 0
@@ -282,7 +283,11 @@ func (m *model) compactNow() (tea.Model, tea.Cmd) {
 func (m *model) startFresh(task string, images []string) error {
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
-	stateFile := filepath.Join(workspace.TaskDir(taskID), "state.json")
+	taskDir := workspace.TaskDir(taskID)
+	if m.ws != nil {
+		taskDir = filepath.Join(m.ws.Root(), taskDir)
+	}
+	stateFile := filepath.Join(taskDir, "state.json")
 	_ = workspace.WriteSessionTitle(filepath.Dir(stateFile), workspace.TitleLine(task))
 	sess, err := m.newSession(task, stateFile, images)
 	if err != nil {

@@ -1,9 +1,9 @@
 package tools
 
 import (
-	"bytes"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,20 +18,23 @@ const stopGrace = 3 * time.Second
 // syncBuffer is an io.Writer safe for a running process to write to while
 // check_background concurrently reads it.
 type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu    sync.Mutex
+	head  strings.Builder
+	tail  strings.Builder
+	total int
 }
 
 func (s *syncBuffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.buf.Write(p)
+	appendBounded(&s.head, &s.tail, &s.total, p)
+	return len(p), nil
 }
 
 func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.buf.String()
+	return boundedOutput(s.head.String(), s.tail.String(), s.total)
 }
 
 type bgProc struct {

@@ -106,7 +106,8 @@ func helpSections() []helpSection {
 	return []helpSection{
 		{"keys", [][2]string{
 			{"ctrl+q", "quit"},
-			{"q / esc", "stop run, stay in chat"},
+			{"esc", "stop run, stay in chat"},
+			{"enter", "queue a follow-up during a run"},
 			{"ctrl+c", "abort (quits mid-run)"},
 			{"y / n / a", "answer permission"},
 			{"enter", "submits"},
@@ -175,7 +176,10 @@ func (m *model) statusLines() []string {
 	}
 	// Run-local scope matters: these grants die with the process.
 	allowed := "none"
-	if n := len(m.always); n > 0 {
+	m.alwaysMu.Lock()
+	n := len(m.always)
+	m.alwaysMu.Unlock()
+	if n > 0 {
 		allowed = strconv.Itoa(n) + " (this run only)"
 	}
 	return kvRows([]string{

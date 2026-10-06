@@ -2,14 +2,16 @@ package mission
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/keshon/tars/internal/permission"
+	"github.com/keshon/tars/internal/tools"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -94,6 +96,8 @@ func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output str
 		}
 		if _, err := os.Stat(full); err == nil {
 			return fmt.Sprintf("file %s still exists", c.Path), false
+		} else if !os.IsNotExist(err) {
+			return fmt.Sprintf("cannot check absence of %s: %v", c.Path, err), false
 		}
 		return fmt.Sprintf("file %s is absent", c.Path), true
 
@@ -110,16 +114,17 @@ func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output str
 			return fmt.Sprintf("check path rejected: %v", err), false
 		}
 		const maxRead = 256 * 1024
-		data, err := os.ReadFile(full)
+		f, err := os.Open(full)
 		if err != nil {
 			return fmt.Sprintf("cannot read %s: %v", c.Path, err), false
 		}
-		body := data
-		if len(body) > maxRead {
-			body = body[:maxRead]
+		defer f.Close()
+		body, err := io.ReadAll(io.LimitReader(f, maxRead))
+		if err != nil {
+			return fmt.Sprintf("cannot read %s: %v", c.Path, err), false
 		}
 		if !strings.Contains(string(body), needle) {
-			return fmt.Sprintf("file %s (%d bytes) does not contain %q", c.Path, len(data), needle), false
+			return fmt.Sprintf("file %s (%d bytes) does not contain %q", c.Path, len(body), needle), false
 		}
 		return fmt.Sprintf("file %s contains %q", c.Path, needle), true
 
@@ -138,7 +143,7 @@ func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output str
 		if err != nil {
 			return fmt.Sprintf("bad check URL: %v", err), false
 		}
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := tools.NetworkClient(true)
 		resp, err := client.Do(req)
 		if err != nil {
 			return fmt.Sprintf("GET %s failed: %v", c.URL, err), false
@@ -159,17 +164,7 @@ func RunCheck(ctx context.Context, c Check, ws *workspace.Workspace) (output str
 // returns combined output. Shared by shell checks and main.go's
 // -verify-cmd hook so the two can never drift apart.
 func RunShellCommand(ctx context.Context, command, dir string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, checkShellTimeout)
-	defer cancel()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return tools.RunCommand(ctx, command, dir, checkShellTimeout)
 }
 
 // DerivedChecks returns checks the harness derives from a subtask's own
@@ -215,4 +210,51 @@ func RunDerivedChecks(ctx context.Context, sub *Subtask, ws *workspace.Workspace
 		}
 	}
 	return "", true
+}
+
+// Model-generated checks have the same permissions as their equivalent tools.
+// RunCheck remains the ungated primitive for trusted, frozen eval criteria.
+func (r *Runner) runCheck(ctx context.Context, c Check) (string, bool) {
+	if err := ctx.Err(); err != nil {
+		return err.Error(), false
+	}
+	tool, resource := "", ""
+	args := map[string]string{}
+	switch c.Type {
+	case "shell":
+		tool, resource = "run_shell", c.Cmd
+		args["command"] = c.Cmd
+	case "content_contains", "file_exists", "file_absent":
+		tool, resource = "read_file", c.Path
+		args["path"] = c.Path
+	case "http":
+		tool, resource = "check_url", c.URL
+		args["url"] = c.URL
+	}
+	if tool != "" {
+		policy := r.Env.Policy
+		if len(policy.Rules) == 0 {
+			policy = permission.Default()
+		}
+		effect := policy.Evaluate(tool, resource)
+		if effect == permission.Ask {
+			data, _ := json.Marshal(args)
+			var err error
+			switch {
+			case r.Env.GateContext != nil:
+				effect, err = r.Env.GateContext(ctx, tool, resource, data)
+			case r.Env.Gate != nil:
+				effect, err = r.Env.Gate(tool, resource, data)
+			default:
+				effect = permission.Deny
+			}
+			if err != nil {
+				return fmt.Sprintf("check approval failed: %v", err), false
+			}
+		}
+		if effect != permission.Allow {
+			return fmt.Sprintf("check blocked by policy (%s on %s)", tool, resource), false
+		}
+	}
+	return RunCheck(ctx, c, r.WS)
 }

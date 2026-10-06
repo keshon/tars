@@ -131,6 +131,7 @@ func (a *Agent) handleFinish(ctx context.Context, st *runState, step int, resp l
 		}
 		if a.cfg.Verify != nil {
 			if out, ok := a.cfg.Verify(ctx); ok {
+				a.report.Verification = TruncateMiddle(out, 8192)
 				if out == "" {
 					out = "(no output)"
 				}
@@ -160,7 +161,7 @@ func (a *Agent) handleFinish(ctx context.Context, st *runState, step int, resp l
 	// the finish and quote the model's own claim back at it. Bounded
 	// by MaxZeroWriteRefusals: a few cheap in-context retries beat a
 	// fresh fix worker that has to rediscover the whole subtask.
-	if a.cfg.VerifyOnZeroWrites && st.mutatingSucceeded == 0 {
+	if (a.cfg.VerifyOnZeroWrites || claimsFileEffects(resp.Message.Content)) && st.mutatingSucceeded == 0 {
 		if st.zeroWriteFinishes < MaxZeroWriteRefusals {
 			st.zeroWriteFinishes++
 			history = a.nudge(history, NudgeRefusal, fmt.Sprintf(prompts.AnnouncedNotWritten,

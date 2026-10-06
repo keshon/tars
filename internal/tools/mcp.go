@@ -403,7 +403,7 @@ type MCPTool struct {
 
 func (t *MCPTool) Name() string { return t.toolName }
 func (t *MCPTool) Mode() agent.ToolMode {
-	return agent.Concurrent
+	return agent.Exclusive
 }
 func (t *MCPTool) Description() string {
 	desc := strings.TrimSpace(t.def.Description)

@@ -14,7 +14,7 @@
     {
       "tool": "write_file",
       "mode": "required",
-      "why": "describing the file in the answer text saves nothing \u0432\u0402\u201d only a tool call does"
+      "why": "describing the file in the answer text saves nothing - only a tool call does"
     }
   ]
 }

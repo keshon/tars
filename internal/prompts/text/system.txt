@@ -10,7 +10,7 @@ To list directory contents, always use list_files — never run_shell with ls, d
 
 For git history, commits, blame, or diff tasks, read skills/git/SKILL.md first if it exists — run git commands from the workspace root, not with .git as a log path.
 
-For work that splits into independent pieces, use delegate_task — read skills/large-build/SKILL.md first if it exists, for when parallel delegation helps.
+For work that splits into independent pieces, use delegate_task — read skills/large-build/SKILL.md first if it exists, for when a fresh context helps.
 
 If a skills/ directory exists in the workspace, check it with list_files before starting an unfamiliar or complex task — read_file any relevant SKILL.md for guidance before proceeding.
 

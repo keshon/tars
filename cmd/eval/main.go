@@ -92,7 +92,9 @@ type Probe struct {
 
 	// Seed is a directory copied in as the starting workspace, relative to
 	// the repo root. Empty means start from an empty directory.
-	Seed string `json:"seed"`
+	Seed    string   `json:"seed"`
+	Git     bool     `json:"git,omitempty"`
+	Replies []string `json:"replies,omitempty"`
 
 	// Verify is the workspace verdict. Every check must pass.
 	Verify []mission.Check `json:"verify"`
@@ -276,7 +278,7 @@ func treeSnapshot(dir string) map[string]string {
 			return nil
 		}
 		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if parts[0] == ".git" {
+		if parts[0] == ".git" || parts[0] == ".tars" {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -306,14 +308,6 @@ func checkSnapshotRevert(dir string, preRun map[string]string, snapPath string) 
 	}
 	if err := snapshot.Revert(dir); err != nil {
 		return []string{"snapshot: revert failed: " + err.Error()}
-	}
-	// snapshot.Revert deliberately keeps untracked files — in production a
-	// model-created file must never be silently deleted. The eval
-	// workspace is throwaway, so the probe goes further: exact tree
-	// equality needs untracked agent output gone too.
-	cmd := exec.Command("git", "-C", dir, "clean", "-fd")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return []string{"snapshot: clean untracked failed: " + strings.TrimSpace(string(out))}
 	}
 	after := treeSnapshot(dir)
 	var missing, extra, changed []string
@@ -722,12 +716,13 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 	// tree is recorded for the post-revert comparison.
 	var preRun map[string]string
 	var snapPath string
-	if p.SnapshotRevert {
+	if p.SnapshotRevert || p.Git {
 		if err := gitInit(work); err != nil {
 			res.RunError = "git init: " + err.Error()
 			return res
 		}
 		preRun = treeSnapshot(work)
+		snapshot.Track(work, filepath.Join(runDir, "snapshots"))
 		snapPath = filepath.Join(runDir, fmt.Sprintf("%s-snapshot.diff", p.Name))
 	}
 
@@ -790,7 +785,13 @@ func runOnce(ctx context.Context, p Probe, run int, runDir, backendKind, backend
 		// Whether ask_user was called at all stays visible in the trace,
 		// which is what probe 12 measures.
 		env := evalEnv(modelClient, ws, procs, contextLimit, maxTokens, record)
+		replyIndex := 0
 		a := roles.Interactive(env, "", "", func(string) (string, error) {
+			if replyIndex < len(p.Replies) {
+				reply := p.Replies[replyIndex]
+				replyIndex++
+				return reply, nil
+			}
 			return "This is an automated evaluation run; no human is available. " +
 				"State your assumption and proceed with the smallest reasonable action.", nil
 		}, nil)

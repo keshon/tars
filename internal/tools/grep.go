@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/permission"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -38,6 +39,7 @@ func (GrepFiles) Schema() json.RawMessage {
 			"path": {"type": "string", "description": "directory to search, recursive"},
 			"pattern": {"type": "string", "description": "regular expression"},
 			"glob": {"type": "string", "description": "optional filename glob filter, e.g. *.go"}
+			,"include_ignored": {"type":"boolean", "description":"include generated and hidden directories; default false"}
 		},
 		"required": ["path", "pattern"]
 	}`)
@@ -74,16 +76,17 @@ func looksBinary(f *os.File) (bool, error) {
 	return false, nil
 }
 
-func (t GrepFiles) Run(_ context.Context, args json.RawMessage) (string, error) {
+func (t GrepFiles) Run(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
-		Path    string `json:"path"`
-		Pattern string `json:"pattern"`
-		Glob    string `json:"glob"`
+		Path           string `json:"path"`
+		Pattern        string `json:"pattern"`
+		Glob           string `json:"glob"`
+		IncludeIgnored bool   `json:"include_ignored"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("bad arguments: %w", err)
 	}
-	if err := rejectUnknownFields(args, "path", "pattern", "glob"); err != nil {
+	if err := rejectUnknownFields(args, "path", "pattern", "glob", "include_ignored"); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(in.Path) == "" {
@@ -101,10 +104,37 @@ func (t GrepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 		return "", err
 	}
 
+	var files map[string]bool
+	if !in.IncludeIgnored {
+		files, err = t.WS.FileSet(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+	dirs := workspace.FileDirectories(files)
+	skippedSensitive := 0
 	var out strings.Builder
 	matches := 0
 	walkErr := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || matches >= grepMaxMatches {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		if matches >= grepMaxMatches {
+			return filepath.SkipAll
+		}
+		if info.IsDir() {
+			if dirs != nil {
+				rel, _ := filepath.Rel(t.WS.Root(), p)
+				if !dirs[rel] {
+					return filepath.SkipDir
+				}
+			}
+			if p != root && !in.IncludeIgnored && (info.Name() == ".git" || info.Name() == ".tars" || (files == nil && workspace.IgnoredDirectory(info.Name()))) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if in.Glob != "" {
@@ -112,13 +142,30 @@ func (t GrepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 				return nil
 			}
 		}
-		f, err := os.Open(p)
+		relPath, _ := filepath.Rel(t.WS.Root(), p)
+		if files != nil && !files[relPath] {
+			return nil
+		}
+		resolved, err := t.WS.Resolve(relPath)
 		if err != nil {
-			return nil // unreadable file (permissions, etc) — skip, not fatal
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if permission.SensitivePath(p) {
+			skippedSensitive++
+			return nil
+		}
+		f, err := os.Open(resolved)
+		if err != nil {
+			return err
 		}
 		defer f.Close()
 
-		if binary, err := looksBinary(f); err != nil || binary {
+		if binary, err := looksBinary(f); err != nil {
+			return err
+		} else if binary {
 			return nil
 		}
 
@@ -127,6 +174,9 @@ func (t GrepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		lineNum := 0
 		for scanner.Scan() && matches < grepMaxMatches {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			lineNum++
 			line := scanner.Text()
 			if re.MatchString(line) {
@@ -137,12 +187,15 @@ func (t GrepFiles) Run(_ context.Context, args json.RawMessage) (string, error) 
 				matches++
 			}
 		}
-		return nil
+		return scanner.Err()
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return out.String(), fmt.Errorf("search incomplete: %w", walkErr)
 	}
-	if matches == 0 {
+	if skippedSensitive > 0 {
+		fmt.Fprintf(&out, "(skipped %d sensitive files; use read_file to request permission)\n", skippedSensitive)
+	}
+	if matches == 0 && skippedSensitive == 0 {
 		return "no matches", nil
 	}
 	if matches >= grepMaxMatches {

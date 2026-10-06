@@ -19,12 +19,15 @@ package workspace
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 )
 
 type Workspace struct {
-	root string
+	root         string
+	instructions string
 }
 
 func New(root string) (*Workspace, error) {
@@ -32,10 +35,45 @@ func New(root string) (*Workspace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	return &Workspace{root: abs}, nil
+	w := &Workspace{root: abs}
+	var dirs []string
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		path := filepath.Join(dirs[i], "AGENTS.md")
+		f, err := os.Open(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, 64*1024+1))
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > 64*1024 {
+			return nil, fmt.Errorf("instructions exceed 64 KiB: %s", path)
+		}
+		w.instructions += "\n\nProject instructions (" + path + "):\n" + string(data)
+	}
+	return w, nil
 }
 
 func (w *Workspace) Root() string { return w.root }
+
+// Instructions returns ancestor and root AGENTS.md files, outermost first.
+func (w *Workspace) Instructions() string {
+	if w == nil {
+		return ""
+	}
+	return w.instructions
+}
 
 // Resolve turns a path relative to the workspace into an absolute path,
 // refusing anything that would escape the workspace root.

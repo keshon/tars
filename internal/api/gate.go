@@ -14,10 +14,12 @@ import (
 // suspension or answer while one is open reports an error instead of
 // deadlocking or queuing.
 type GateHub struct {
-	mu      sync.Mutex
-	pending bool
-	replyCh chan agent.SuspendReply
-	emit    func(name string, fields map[string]any)
+	mu       sync.Mutex
+	pending  bool
+	answered bool
+	closed   bool
+	replyCh  chan agent.SuspendReply
+	emit     func(name string, fields map[string]any)
 }
 
 // NewGateHub builds a hub; emit carries awaiting_input/input_answered
@@ -50,27 +52,55 @@ func (h *GateHub) Suspender() agent.Suspender {
 			h.mu.Unlock()
 			return agent.SuspendReply{}, fmt.Errorf("gate already pending")
 		}
+		if h.closed {
+			h.mu.Unlock()
+			return agent.SuspendReply{}, fmt.Errorf("input transport closed")
+		}
 		h.pending = true
+		h.answered = false
 		ch := make(chan agent.SuspendReply, 1)
 		h.replyCh = ch
 		h.mu.Unlock()
 		h.event("awaiting_input", req)
 		select {
 		case <-ctx.Done():
-			h.clear()
+			h.clear(ch)
 			return agent.SuspendReply{}, ctx.Err()
 		case rep := <-ch:
-			h.clear()
+			h.mu.Lock()
+			closed := h.closed && !h.answered
+			h.mu.Unlock()
+			if closed {
+				h.clear(ch)
+				return agent.SuspendReply{}, fmt.Errorf("input transport closed")
+			}
 			h.event("input_answered", req)
+			h.clear(ch)
 			return rep, nil
 		}
 	}
 }
 
-func (h *GateHub) clear() {
+// Close prevents gates that would wait for a response from a closed transport.
+func (h *GateHub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.pending = false
+	if h.closed {
+		return
+	}
+	h.closed = true
+	if h.pending && !h.answered {
+		h.replyCh <- agent.SuspendReply{}
+	}
+}
+
+func (h *GateHub) clear(ch chan agent.SuspendReply) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.replyCh == ch {
+		h.pending = false
+		h.answered = false
+	}
 }
 
 // Respond answers the pending gate. Raw text in, like the terminal: the
@@ -79,10 +109,10 @@ func (h *GateHub) clear() {
 func (h *GateHub) Respond(answer string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.pending {
+	if h.closed || !h.pending || h.answered {
 		return fmt.Errorf("no gate pending")
 	}
-	h.pending = false
+	h.answered = true
 	h.replyCh <- agent.SuspendReply{Answer: answer}
 	return nil
 }
@@ -93,5 +123,5 @@ func (h *GateHub) Respond(answer string) error {
 func (h *GateHub) HasPending() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.pending
+	return h.pending && !h.answered
 }

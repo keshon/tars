@@ -12,9 +12,11 @@ import (
 // loop implementation here — no separate "policy" or "runtime" layer
 // sitting next to it making the same decisions twice.
 type Config struct {
-	Client llm.Client
-	Tools  *Registry
-	System string
+	// BeginChanges starts a per-run observer independent of tool names.
+	BeginChanges func(context.Context) (func() ([]string, error), error)
+	Client       llm.Client
+	Tools        *Registry
+	System       string
 
 	// MaxSteps bounds how many model round-trips a single Run performs.
 	MaxSteps int
@@ -91,12 +93,15 @@ type Config struct {
 
 	// OnToolResult, if set, is called for every completed tool call with
 	// its result text (or "error: ..." on failure). Calls in one step run
-	// concurrently when their mode allows, so this may fire from several
-	// goroutines at once — implementations must synchronize. Nil means
+	// concurrently when their mode allows; results are delivered in call
+	// order after the batch finishes. Nil means
 	// silent, which is also the historical console behavior — tool results
 	// never printed there. Observers that render transcripts (JSON event
 	// streams, TUIs) wire this; the loop itself never prints.
 	OnToolResult func(callID, result string)
+
+	// OnResult receives typed results in call order after the tool batch finishes.
+	OnResult func(ToolResult)
 
 	// StateFile, if set, gets the full message history written to it
 	// (as JSON) after every step. If the process dies or the run hits

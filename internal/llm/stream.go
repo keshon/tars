@@ -89,6 +89,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	var content strings.Builder
 	var reasoning strings.Builder
 	var finish string
+	complete := false
 	type deltaCall struct {
 		Index    int    `json:"index"`
 		ID       string `json:"id"`
@@ -112,9 +113,11 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 		}
 		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
+			complete = true
 			break
 		}
 		var chunk struct {
+			Error   json.RawMessage `json:"error"`
 			Choices []struct {
 				Delta struct {
 					Role      string      `json:"role"`
@@ -130,7 +133,10 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			continue
+			return ChatResponse{}, fmt.Errorf("invalid stream frame: %w", err)
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return ChatResponse{}, fmt.Errorf("stream backend error: %s", chunk.Error)
 		}
 		if chunk.Usage != nil {
 			promptTokens = chunk.Usage.PromptTokens
@@ -139,6 +145,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 		for _, ch := range chunk.Choices {
 			if ch.FinishReason != "" {
 				finish = ch.FinishReason
+				complete = true
 			}
 			if ch.Delta.Content != "" {
 				content.WriteString(ch.Delta.Content)
@@ -172,6 +179,9 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	if err := sc.Err(); err != nil {
 		return ChatResponse{}, fmt.Errorf("read stream: %w", err)
 	}
+	if !complete {
+		return ChatResponse{}, fmt.Errorf("incomplete stream: EOF before completion")
+	}
 
 	msg := Message{Role: RoleAssistant, Content: content.String(), Reasoning: reasoning.String()}
 	for i := 0; i < len(acc); i++ {
@@ -202,7 +212,7 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 	}
 	if completionTokens == 0 {
 		estimated = true
-		completionTokens = len([]rune(content.String())) / 4
+		completionTokens = (len([]rune(content.String())) + len([]rune(reasoning.String()))) / 4
 	}
 	c.recordUsage(promptTokens, completionTokens, 0)
 	p, g, n := c.UsageTotals()

@@ -1,11 +1,9 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -58,25 +56,9 @@ func (t RunShell) Run(ctx context.Context, args json.RawMessage) (string, error)
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := shellCommand(ctx, in.Command)
-	cmd.Dir = t.WS.Root()
-	cmd.Env = scrubEnv(os.Environ())
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	err := cmd.Run()
-	full := out.String()
+	full, err := RunCommand(ctx, in.Command, t.WS.Root(), timeout)
 	result := capShellOutput(full)
-	if len(full) > shellMaxBytes {
-		if p := Spill(t.WS.Root(), "run_shell", full); p != "" {
-			result += fmt.Sprintf("\n(full output: %s)", p)
-		}
-	}
+
 	if err != nil {
 		return result, fmt.Errorf("command failed: %w", err)
 	}

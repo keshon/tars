@@ -33,8 +33,8 @@ found under `TARS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
 | Flag | Default | Meaning |
 |---|---|---|
 | `-workspace DIR` | `.` | Workspace root the agent may read and write |
-| `-mission` | `false` | Plan first (human-approved), then one fresh-context worker per subtask, each verified mechanically. Auto-enabled when the task names two or more deliverable files; `-direct` forces the reactive loop instead |
-| `-direct` | `false` | Force the reactive loop even when the task looks multi-file |
+| `-mission` | `false` | Plan first (human-approved), then one fresh-context worker per subtask, each verified mechanically. Enable explicitly; multi-file tasks otherwise receive a recommendation |
+| `-direct` | `false` | Suppress the multi-file mission recommendation; direct mode is already the default |
 | `-plan` | `false` | Plan mode: read-only tools, proposes a plan and changes nothing |
 | `-yes` | `false` | Skip the mission plan approval gate |
 | `-audit PATH` | - | Append gate decisions as JSONL to PATH (off when empty) |
@@ -42,7 +42,10 @@ found under `TARS_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
 | `-resume PATH` | — | Continue an interrupted run from its saved state |
 | `-fork PATH` | — | Branch from a prior transcript file but write to a fresh task id |
 | `-answer TEXT` | — | Answer to supply with `-resume` when the run paused on `ask_user` |
-| `-revert` | `false` | Restore tracked workspace files to git HEAD and exit (untracked files kept) |
+| `-revert` | `false` | Restore the latest pre-run checkpoint, including dirty files, staged changes and pre-existing untracked files, then exit |
+
+| `-revert-preview` | `false` | List checkpoint restore actions without changing files |
+| `-revert-from PATH` | latest checkpoint | Select an archive for `-revert` or `-revert-preview` |
 
 ## Safety and permissions
 
@@ -54,7 +57,7 @@ secrets) gated to ask. See `SECURITY.md` for the trust boundary.
 | `-allow RULES` | — | Comma-separated `tool=pattern` rules to allow, e.g. `"run_shell=go *,read_file=*.go"`. Wins over defaults |
 | `-deny RULES` | — | Comma-separated `tool=pattern` rules to deny, e.g. `"run_shell=rm *,read_file=.env"`. Wins over `-allow` |
 | `-pure` | `false` | Ignore project config for permissions; built-in defaults plus `-allow`/`-deny` only |
-| `-no-verify` | `false` | Skip the self-check verify round (finish accepted without the extra verification turn). Saves 1-2 model calls; strong models only. Loop guards stay on |
+| `-no-verify` | `false` | Skip the self-check verify round (finish accepted without the extra verification turn). Also disables `-verify-cmd` in direct mode. Loop guards stay on |
 | `-mcp SERVERS` | - | MCP servers as `"name=cmd args...;name2=https://host/mcp"` over stdio JSON-RPC or Streamable HTTP. Tools appear as `mcp__name__tool`. A server that fails to start is skipped with a warning |
 
 ## Output and debugging
@@ -63,7 +66,7 @@ secrets) gated to ask. See `SECURITY.md` for the trust boundary.
 |---|---|---|
 | `-mode MODE` | `print` | `print` (human-readable) or `json` (one JSON object per line on stdout; human chatter goes to stderr so the stream pipes cleanly) |
 | `-serve` | `false` | Serve JSON-RPC over stdio instead of running one task: methods `run`/`respond`/`cancel`, events on stdout. See `docs/rpc.md` |
-| `-tui` | `false` | Fullscreen terminal UI instead of print mode: live transcript, status bar, inline gate prompts. Fresh direct tasks only (no `-plan`, `-resume`, `-fork`, `-mission` with it) |
+| `-tui` | `false` | Fullscreen terminal UI instead of print mode: live transcript, status bar, inline gate prompts. Supports direct, `-plan`, `-resume`, `-fork` and `-mission` runs |
 | `-image PATHS` | — | Attach pictures to the task (comma-separated, e.g. `-image shot.png,plan.webp`). In the TUI use `@path` inline instead (`@"my shot.png"` when the name has spaces). Needs a vision-capable backend: llama-server with `--mmproj` and VL weights. Koboldcpp refuses loudly; a text-only model on a vision server fails at the backend, not silently |
 | `-stream` | `false` | Stream response tokens live. OpenAI/llama backends only; koboldcpp falls back to unary |
 | `-debug` | `false` | Log raw request/response JSON plus per-call token usage to `agent-debug.log` |

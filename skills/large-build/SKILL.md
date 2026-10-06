@@ -21,13 +21,13 @@ instead:
    do every phase at once.
 
 Delegation does NOT help here. `delegate_task` is for independent,
-parallel pieces (N unrelated files). A single cohesive file (an engine,
+separate pieces that benefit from fresh context (N unrelated files). A single cohesive file (an engine,
 a tightly-coupled module) is not parallelizable — building it is
 inherently sequential, so do it yourself, incrementally, in this same
 conversation.
 
-When a task naturally splits into multiple independent, non-overlapping
-pieces — several similar files to create, several unrelated checks to
-run — issue one delegate_task call per piece in the SAME step; independent
-calls in one step run in parallel. If a subtask needs a specific
-expertise or mindset, pass it via delegate_task's role field.
+When a task naturally splits into independent pieces, use one delegate_task
+call per piece when fresh context helps. Delegates execute sequentially
+because they share the workspace. If a subtask needs a specific expertise
+or mindset, use its role field. Explicit human instructions take precedence
+over delegation heuristics.

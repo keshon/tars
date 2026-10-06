@@ -89,8 +89,13 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 	// file first, so tool_result appears too — all four are known
 	// vocabulary. The stub reports zero usage, so usage events carry
 	// zeros.)
-	seenStep, seenUsage, seenNudge := false, false, false
+	seenStep, seenUsage, seenNudge, seenOutcome := false, false, false, false
+	lastSeq := 0
 	for _, ev := range events {
+		if ev.Seq <= lastSeq {
+			t.Fatalf("event sequence regressed: %d after %d", ev.Seq, lastSeq)
+		}
+		lastSeq = ev.Seq
 		switch ev.Name {
 		case "step":
 			seenStep = true
@@ -111,11 +116,20 @@ func TestSession_RunEmitsSameSchemaAsEmitter(t *testing.T) {
 			if text, _ := ev.Fields["text"].(string); !strings.HasPrefix(text, "[harness] ") {
 				t.Fatalf("nudge without provenance: %+v", ev)
 			}
+		case "outcome":
+			seenOutcome = true
+			if ev.Fields["outcome"] != "completed" {
+				t.Fatalf("unexpected outcome: %+v", ev)
+			}
+			files, _ := ev.Fields["files"].([]any)
+			if len(files) != 1 || files[0] != "note.txt" {
+				t.Fatalf("expected observed file effect: %+v", ev)
+			}
 		default:
 			t.Fatalf("events = %+v, want known vocabulary only", events)
 		}
 	}
-	if !seenStep || !seenUsage {
+	if !seenStep || !seenUsage || !seenOutcome {
 		t.Fatalf("steps and usage both expected: %+v", events)
 	}
 	if !seenNudge {

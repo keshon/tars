@@ -13,7 +13,7 @@
       "tool": "run_shell",
       "mode": "forbidden",
       "args_regex": "(?i)\"command\" *: *\"(ls|dir|find)( |\")",
-      "why": "shelling out to ls/dir/find instead of list_files \u0432\u0402\u201d the discipline the system prompt asks for"
+      "why": "shelling out to ls/dir/find instead of list_files - the discipline the system prompt asks for"
     },
     {
       "tool": "write_file",

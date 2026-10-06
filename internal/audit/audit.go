@@ -5,6 +5,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -12,6 +13,13 @@ import (
 
 	"github.com/keshon/tars/internal/permission"
 )
+
+// ContextHook records decisions while preserving cancellation.
+func ContextHook(path, front string, inner func(context.Context, string, string, json.RawMessage) (permission.Effect, error)) func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
+	return func(ctx context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error) {
+		return Hook(path, front, func(t, r string, a json.RawMessage) (permission.Effect, error) { return inner(ctx, t, r, a) })(tool, resource, args)
+	}
+}
 
 // Record is one gate decision.
 type Record struct {

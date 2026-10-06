@@ -1,6 +1,6 @@
 {
   "prompt": "eval/prompts/11-delegate-trap.md",
-  "task": "add a second function Bye() string that returns \"bye\" to sample.go \u0432\u0402\u201d use delegate_task for this",
+  "task": "add a second function Bye() string that returns \"bye\" to sample.go",
   "tier": "signal",
   "seed": "eval/fixtures",
   "verify": [
@@ -24,7 +24,7 @@
     {
       "tool": "delegate_task",
       "mode": "forbidden",
-      "why": "the task deliberately lies \u0432\u0402\u201d one small edit to one cohesive file is not worth a subagent, and following the user over the skill here costs a whole extra context"
+      "why": "one small edit to one cohesive file does not need a fresh subagent context"
     }
   ]
 }

@@ -27,7 +27,7 @@ func toolResource(name string, args json.RawMessage) string {
 		return fields.Path
 	case "move_file":
 		return fields.From + "->" + fields.To
-	case "check_url":
+	case "check_url", "webfetch", "fetch_raw":
 		return fields.URL
 	default:
 		if fields.Path != "" {

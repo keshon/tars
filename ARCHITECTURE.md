@@ -8,8 +8,9 @@ TARS runs one agent loop. Everything else decides how that loop is configured,
 what it is allowed to touch, and whether its output is real.
 
 The organising idea: a small local model is unreliable at knowing whether it did
-the work, so nothing in the design asks it. Completion is measured by running a
-command or reading a file, never by reading the model's report.
+the work. The harness observes file effects and records command results.
+Direct runs require `-verify-cmd` for a mechanical completion check; mission
+checks are explicit but still only as strong as their acceptance criteria.
 
 ## Package map
 
@@ -28,11 +29,11 @@ internal/tools     concrete tools: file, shell, search, process, delegation,
 internal/roles     the five kinds of agent this project builds
 internal/permission allow/ask/deny policy for tool calls (leaf package)
 internal/events    JSONL run/step event output for -mode json
-internal/session   append-only JSONL session log next to state.json
-internal/snapshot  git diff capture and revert around runs
+internal/session   bounded JSONL checkpoints next to state.json
+internal/snapshot  file and Git-index checkpoints, preview and restore
 internal/mission   plan, ledger, workers, checks, replan, review
 internal/prompts   every prompt, as .txt, embedded at build time
-internal/workspace path resolution for the file tools
+internal/workspace path resolution, project instructions and change observation
 ```
 
 `llm`, `prompts`, `workspace`, `permission` and `events` import no
@@ -56,7 +57,7 @@ flowchart TB
   Finish -- "not done" --> Call
   Finish -- done --> Return["return answer"]
   HasCalls -- yes --> Guards["repeat guards:<br/>idempotentSeen, wrotePaths"]
-  Guards --> Run["run tools<br/>(Concurrent in parallel,<br/>Exclusive alone)"]
+  Guards --> Run["run tools<br/>(consecutive reads in parallel,<br/>ordered mutation barriers)"]
   Run --> Judge["interject: at most<br/>one nudge"]
   Judge --> Call
 ```
@@ -103,6 +104,20 @@ deliberation inside `<think>` blocks is excluded from both — a sketch is
 not a decision. (On llama.cpp backends deliberation arrives out-of-band
 in `reasoning_content`; it is measured by the think budget and kept in
 history, but likewise never executes.)
+
+Read batches preserve their position relative to exclusive tools. Shell,
+background startup, delegation and MCP calls are exclusive because they can
+change the shared workspace. All roles inherit the same policy, approval
+handler, backend settings and project instructions. File observation includes
+shell and delegated effects; mutation invalidates cached reads and previous
+verification. Observer failures fail the run closed.
+
+Tool results carry typed failure status alongside model-facing text; the
+frontends style failures without guessing from compiler output.
+
+Outcomes distinguish completed, failed and cancelled runs, with measured
+paths, verification output and persistence warnings. Session checkpoints
+rotate at 16 MiB, retaining the previous log.
 
 ### Budgets
 

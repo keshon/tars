@@ -5,7 +5,9 @@ It is the operator's responsibility to monitor it or contain it in a
 container or VM.
 
 TARS treats the local user account and files writable by that account as
-inside the same trust boundary as the agent process. `internal/workspace`
+inside the same trust boundary as the agent process. Deny rules are terminal;
+Ask rules fail closed when no approval handler exists. Approvals marked
+Always last only for the current run. `internal/workspace`
 bounds file tools against mistyped paths, not attackers: `run_shell` sets a
 working directory and nothing else, symlinks are followed, and child
 processes inherit a scrubbed environment (no `*_API_KEY`/`*_SECRET`).
@@ -22,10 +24,24 @@ isolation.
 process (asserted by `TestHealthProbes_SendNoCredentials`), and the child
 environment is scrubbed before any shell runs. `webfetch` refuses
 non-public URLs before dialing (loopback, intranet names, non-global IPs
-including legacy `inet_aton` spellings); `check_url` permits loopback
+including legacy `inet_aton` spellings). It validates redirects and every
+resolved address, then connects to a validated literal IP to prevent DNS
+rebinding. Environment proxies are disabled. `check_url` permits loopback
 because probing a just-started dev server is its job, and returns only a
 status plus a 512-byte prefix. A health probe must never become a
 credential or intranet oracle: any new network tool keeps these rules.
+
+Repository search follows Git ignore rules (tracked files remain searchable)
+and excludes sensitive paths; explicit reads use the permission gate. Shell
+commands can still read those files under the local account. Shell tools and
+mission checks share environment scrubbing, bounded output, cancellation,
+and process-tree cleanup. Model-generated mission checks also pass policy
+and approval gates. MCP servers are trusted local extensions.
+
+State, debug traces and checkpoint archives can contain repository content
+and tool output. They are local plaintext artifacts; protect and remove them
+according to the sensitivity of the workspace. Session logs rotate at 16 MiB,
+but checkpoints and optional debug traces have no automatic retention policy.
 
 ## Out of scope
 

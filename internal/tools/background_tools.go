@@ -30,11 +30,8 @@ type StartBackground struct {
 
 func (StartBackground) Name() string { return "start_background" }
 
-// Mode is Concurrent: launching a process doesn't touch the workspace
-// filesystem, and BackgroundProcesses is mutex-protected, so starting
-// several background processes (e.g. backend + frontend dev servers) in
-// one step is safe and exactly the kind of thing worth parallelizing.
-func (StartBackground) Mode() agent.ToolMode { return agent.Concurrent }
+// Starting an arbitrary command is a mutation barrier.
+func (StartBackground) Mode() agent.ToolMode { return agent.Exclusive }
 func (StartBackground) Description() string {
 	return "Start a long-running command (dev server, watcher, anything that doesn't exit on " +
 		"its own) without blocking. Returns an id to check on it with check_background or stop " +
@@ -49,7 +46,7 @@ func (StartBackground) Schema() json.RawMessage {
 	}`)
 }
 
-func (t StartBackground) Run(_ context.Context, args json.RawMessage) (string, error) {
+func (t StartBackground) Run(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		Command string `json:"command"`
 	}
@@ -68,7 +65,14 @@ func (t StartBackground) Run(_ context.Context, args json.RawMessage) (string, e
 	if settle == 0 {
 		settle = 1500 * time.Millisecond
 	}
-	time.Sleep(settle)
+	timer := time.NewTimer(settle)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		_ = t.Procs.stop(id)
+		return "", ctx.Err()
+	}
 
 	output, exited, exitErr, _ := t.Procs.status(id)
 	status := "running in background"

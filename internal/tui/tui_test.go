@@ -200,8 +200,8 @@ func TestDoneQuits(t *testing.T) {
 	// Empty follow-up quits; the program no longer exits on done.
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm = updated.(*model)
-	if !mm.quit {
-		t.Fatal("empty enter in done state must quit")
+	if mm.quit {
+		t.Fatal("empty enter in done state must do nothing")
 	}
 }
 
@@ -677,8 +677,8 @@ func TestInterruptStaysInChat(t *testing.T) {
 	if mm.quit {
 		t.Fatal("esc must interrupt, not quit")
 	}
-	if mm.state != stDone {
-		t.Fatalf("state = %v, want done", mm.state)
+	if mm.state != stStopping {
+		t.Fatalf("state = %v, want stopping", mm.state)
 	}
 	// The cancelled run's doneMsg renders neutrally, not as an error.
 	updated, _ = mm.Update(doneMsg{err: context.Canceled})
@@ -780,20 +780,13 @@ func TestAskCtrlQQuits(t *testing.T) {
 	}
 }
 
-func TestQStopsRunStaysInChat(t *testing.T) {
+func TestQDraftsDuringRun(t *testing.T) {
 	m := sizeModel(t, testModel())
+	m.input.Focus()
 	updated, _ := m.Update(keyRunes('q'))
 	mm := updated.(*model)
-	if mm.quit {
-		t.Fatal("q must stop the run, not quit the program")
-	}
-	if mm.state != stDone {
-		t.Fatalf("state = %v, want done", mm.state)
-	}
-	updated, _ = mm.Update(doneMsg{err: context.Canceled})
-	mm = updated.(*model)
-	if mm.runErr != nil {
-		t.Fatalf("runErr = %v, want nil after stop", mm.runErr)
+	if mm.quit || mm.state != stRunning || mm.input.Value() != "q" {
+		t.Fatal("q must type a draft during inference")
 	}
 }
 
@@ -2241,7 +2234,30 @@ func TestStartRunResetsClock(t *testing.T) {
 	if m.steps != 0 || m.tokens != 0 || m.state != stRunning {
 		t.Fatalf("run not reset: steps=%d tokens=%d state=%v", m.steps, m.tokens, m.state)
 	}
-	if m.input.Focused() {
-		t.Fatal("run start must blur the blocked input (caret hides)")
+	if !m.input.Focused() {
+		t.Fatal("run start must focus input for drafting")
+	}
+}
+
+func TestOutcomeUsesObservedChanges(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.handleEvent(api.Event{Name: "step", Fields: map[string]any{"tool_calls": []any{map[string]any{"id": "read", "name": "read_file", "args": `{"path":"read-only.go"}`}}}})
+	m.handleEvent(api.Event{Name: "outcome", Fields: map[string]any{"outcome": "completed", "files": []any{"changed.go"}}})
+	if len(m.filesTouched) != 1 || !m.filesTouched["changed.go"] {
+		t.Fatalf("counter must use observed effects: %v", m.filesTouched)
+	}
+}
+
+func TestToolCardUsesTypedStatus(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.appendBlock(toolCardBlock("test", "run_shell"))
+	m.handleEvent(api.Event{Name: "tool_result", Fields: map[string]any{"call_id": "test", "text": "ordinary compiler output", "failed": true}})
+	if !m.blocks[len(m.blocks)-1].failed {
+		t.Fatal("typed failure lost")
+	}
+	m.appendBlock(toolCardBlock("read", "read_file"))
+	m.handleEvent(api.Event{Name: "tool_result", Fields: map[string]any{"call_id": "read", "text": "error: is valid file content", "failed": false}})
+	if m.blocks[len(m.blocks)-1].failed {
+		t.Fatal("file prose overrode successful status")
 	}
 }

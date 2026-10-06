@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
 
       - name: vet
         run: go vet ./...
@@ -44,7 +44,7 @@ jobs:
           fi
 
       - name: test
-        run: go test ./...
+        run: go test -race ./...
 
   eval-dry:
     runs-on: ubuntu-latest
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
       # Validates every probe's shape and pass criteria without a model.
       # A broken probe is a blind instrument: it would score nothing and
       # report success.
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
       # internal/conventions runs as an ordinary test, so it is already
       # covered above. This job exists to name the failure clearly: a red
       # doc-and-checks-agree means the house rules and their enforcement
@@ -79,10 +79,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-      # The dependency list is one module (golang.org/x/sys) by design, and
-      # this is what keeps it an audited fact rather than a belief. Tool
-      # install only — govulncheck never lands in go.mod.
+          go-version-file: go.mod
+      # Check reachable vulnerabilities in dependencies and the pinned Go
+      # standard library. Tool install only; no go.mod dependency.
       - name: vulnerabilities
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

@@ -165,3 +165,15 @@ func Decide(answer string) (Effect, error) {
 		return Deny, fmt.Errorf("blocked by operator")
 	}
 }
+
+// SensitivePath centralizes the shipping file-read patterns. Grep omits these
+// files; reading one explicitly routes through the normal permission gate.
+func SensitivePath(path string) bool {
+	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	for _, pattern := range []string{"*.env", "*.env.*", "*credentials*", "*secret*"} {
+		if resourceMatch(pattern, path) {
+			return true
+		}
+	}
+	return false
+}

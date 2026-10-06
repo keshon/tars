@@ -65,10 +65,11 @@ direct loop.
 
 ## Coverage
 
-Probes exist for 03-11 and 13-19. Three write-ups are not yet mechanized:
-
-- `01`, `02` — need a dedicated git seed fixture
-- `12` — its pass condition is an OR across check kinds
+All 19 scenarios are mechanized. Probes 01 and 02 request a temporary Git
+seed with a fixed commit. Probe 12 supplies a scripted clarification and
+requires an improvement note grounded in the fixture. `git` and `replies`
+configure these harness inputs. Checkpoints are captured before execution;
+the rollback tail itself must restore the workspace without a cleanup helper.
 
 ## Vacuity audit
 
@@ -79,6 +80,8 @@ cannot pass vacuously (reviewed 2026-10-03, P7 item 3).
 
 | Probe | Why it cannot pass on an empty run |
 |---|---|
+| 01, 02 | `git log` required and the answer must identify the seeded commit |
+| 12 | `ask_user` required and a new note must mention the real fixture |
 | 03 | `list_files` required — no calls, no pass |
 | 04 | `goodbye.txt` content + `hello.txt` absence both require action; `move_file` required |
 | 05 | `v2` symbol must appear; `Greet()` presence pins the rest of the file |

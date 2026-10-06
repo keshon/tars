@@ -43,6 +43,8 @@ func (m *model) statusWord() string {
 		return "awaiting permission"
 	case stAsk:
 		return "waiting"
+	case stStopping:
+		return "stopping"
 	case stDone:
 		return "ready"
 	default:

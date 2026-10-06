@@ -1,17 +1,7 @@
 // Package roles builds the agents this project runs.
 //
-// There are only four kinds of agent here, but before this package each
-// was configured inline at its call site — seven sites, four of which
-// were meant to be identical in pairs. They drifted, and the drift was
-// not theoretical: the eval harness built its agent without ask_user and
-// delegate_task while the CLI's had both, so the instrument was scoring a
-// different agent than the one that ships. Two of the probes are
-// specifically about those tools.
-//
-// The cure is that "what is a subagent allowed to do?" has exactly one
-// answer, written down once. Callers still choose the parts that are
-// genuinely theirs — which system prompt, where the transcript goes, how
-// many steps — and nothing else.
+// Five role constructors share one environment, tool policy, and context-aware gate.
+// Frontends provide observers and transport; capabilities are chosen here.
 //
 // This lives outside internal/agent on purpose: agent defines the Tool
 // interface that tools implements, so agent cannot import tools without a
@@ -95,6 +85,8 @@ type Env struct {
 	// Gate, if set, prompts the operator for Ask-gated calls. Nil means
 	// Ask degrades to Deny.
 	Gate func(tool, resource string, args json.RawMessage) (permission.Effect, error)
+	// GateContext receives the active run context. Preferred over Gate.
+	GateContext func(context.Context, string, string, json.RawMessage) (permission.Effect, error)
 
 	// OnStep, if set, receives every step of every agent built from this
 	// Env, tagged with that agent's label ("explore", "review", a subtask
@@ -105,6 +97,7 @@ type Env struct {
 	// OnToolResult, if set, receives every completed tool call result.
 	// See agent.Config.OnToolResult. Nil keeps the historical silence.
 	OnToolResult func(callID, result string)
+	OnResult     func(agent.ToolResult)
 
 	// OnFinding receives deterministic post-write check findings
 	// (gofmt, secret scan) from wrapped file tools. Nil disables
@@ -135,6 +128,9 @@ func (e Env) onStep(label string) func(int, llm.Message) {
 }
 
 func (e Env) gate() func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
+	if e.GateContext != nil {
+		return e.GateContext
+	}
 	if e.Gate == nil {
 		return nil
 	}
@@ -162,9 +158,10 @@ func interactiveSystem(backendKind string) string {
 // the tool set (ReadOnly), never by asking the model to hold back.
 func Planner(e Env, label, stateFile string) *agent.Agent {
 	return agent.New(agent.Config{
+		BeginChanges:    e.WS.ChangeObserver,
 		Client:          e.Client,
 		Tools:           tools.ReadOnly(e.WS, e.Procs),
-		System:          prompts.PlanMode,
+		System:          prompts.PlanMode + e.WS.Instructions(),
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
 		ReasoningBudget: e.ReasoningBudget,
@@ -172,6 +169,7 @@ func Planner(e Env, label, stateFile string) *agent.Agent {
 		SkipVerify:      true,
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
+		OnResult:        e.OnResult,
 		OnUsage:         e.OnUsage,
 		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),
@@ -196,9 +194,10 @@ func (e Env) statePath(name string) string {
 // tools away beats asking a weak model not to reach for them.
 func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 	return agent.New(agent.Config{
+		BeginChanges:    e.WS.ChangeObserver,
 		Client:          e.Client,
 		Tools:           tools.ReadOnly(e.WS, e.Procs),
-		System:          system,
+		System:          system + e.WS.Instructions(),
 		MaxSteps:        inspectorSteps,
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
@@ -207,6 +206,7 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 		StateFile:       e.statePath(stateFile),
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
+		OnResult:        e.OnResult,
 		OnUsage:         e.OnUsage,
 		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),
@@ -229,9 +229,10 @@ func Inspector(e Env, label, system, stateFile string) *agent.Agent {
 // findings still flow: those constrain or describe the work itself.
 func Subagent(e Env, role string) *agent.Agent {
 	return agent.New(agent.Config{
+		BeginChanges:    e.WS.ChangeObserver,
 		Client:          e.Client,
 		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
-		System:          prompts.WithRole(role) + "\n\n" + prompts.SubagentScope + "\n\n" + prompts.PlatformLine(),
+		System:          prompts.WithRole(role) + "\n\n" + prompts.SubagentScope + "\n\n" + prompts.PlatformLine() + e.WS.Instructions(),
 		MaxSteps:        subagentSteps,
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
@@ -251,9 +252,10 @@ func Subagent(e Env, role string) *agent.Agent {
 // announce-without-write shape. See agent.Config.VerifyOnZeroWrites.
 func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites bool) *agent.Agent {
 	return agent.New(agent.Config{
+		BeginChanges:       e.WS.ChangeObserver,
 		Client:             e.Client,
 		Tools:              tools.Base(e.WS, e.Procs, e.OnFinding, e.MCPTools...),
-		System:             system + "\n\n" + prompts.PlatformLine(),
+		System:             system + "\n\n" + prompts.PlatformLine() + e.WS.Instructions(),
 		MaxSteps:           maxSteps,
 		MaxTokens:          e.MaxTokens,
 		ContextLimit:       e.ContextLimit,
@@ -263,6 +265,7 @@ func Worker(e Env, label, system, stateFile string, maxSteps int, expectsWrites 
 		StateFile:          e.statePath(stateFile),
 		OnStep:             e.onStep(label),
 		OnToolResult:       e.OnToolResult,
+		OnResult:           e.OnResult,
 		OnUsage:            e.OnUsage,
 		OnNudge:            e.OnNudge,
 		Policy:             e.policy(),
@@ -295,9 +298,10 @@ func Interactive(e Env, label, stateFile string,
 	}
 
 	return agent.New(agent.Config{
+		BeginChanges:    e.WS.ChangeObserver,
 		Client:          e.Client,
 		Tools:           tools.Base(e.WS, e.Procs, e.OnFinding, extra...),
-		System:          interactiveSystem(e.BackendKind) + "\n\n" + prompts.PlatformLine(),
+		System:          interactiveSystem(e.BackendKind) + "\n\n" + prompts.PlatformLine() + e.WS.Instructions(),
 		MaxTokens:       e.MaxTokens,
 		ContextLimit:    e.ContextLimit,
 		ReasoningBudget: e.ReasoningBudget,
@@ -308,6 +312,7 @@ func Interactive(e Env, label, stateFile string,
 		Verify:          verify,
 		OnStep:          e.onStep(label),
 		OnToolResult:    e.OnToolResult,
+		OnResult:        e.OnResult,
 		OnUsage:         e.OnUsage,
 		OnNudge:         e.OnNudge,
 		Policy:          e.policy(),

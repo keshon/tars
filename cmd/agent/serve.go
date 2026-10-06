@@ -134,8 +134,33 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	lines := make(chan []byte)
+	go func() {
+		defer close(lines)
+		for sc.Scan() {
+			line := append([]byte(nil), sc.Bytes()...)
+			select {
+			case lines <- line:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	if closer, ok := in.(io.Closer); ok {
+		defer closer.Close()
+	}
+readLoop:
+	for {
+		var line []byte
+		select {
+		case <-ctx.Done():
+			break readLoop
+		case value, ok := <-lines:
+			if !ok {
+				break readLoop
+			}
+			line = value
+		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -206,7 +231,9 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 	// on a gate can never proceed — its answer was going to arrive on
 	// the stdin that just closed — so cancel it instead of hanging.
 	// Ctrl+C aborts everything immediately via the signal handler.
-	if hub.HasPending() {
+	wasPending := hub.HasPending()
+	hub.Close()
+	if wasPending || ctx.Err() != nil {
 		runMu.Lock()
 		if cancel != nil {
 			cancel()
@@ -246,12 +273,14 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 	}
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
-	taskDir := workspace.TaskDir(taskID)
+	taskDir := filepath.Join(d.ws.Root(), workspace.TaskDir(taskID))
 	stateFile := filepath.Join(taskDir, "state.json")
 	_ = workspace.WriteSessionTitle(taskDir, workspace.TitleLine(task))
 
 	if snap := snapshot.Track(d.ws.Root(), filepath.Join(taskDir, "snapshots")); snap.Path != "" {
 		fmt.Fprintf(noteW, "snapshot: %s\n", snap.Path)
+	} else {
+		fmt.Fprintln(noteW, "pre-run checkpoint unavailable; this run cannot be undone with -revert")
 	}
 
 	suspend := hub.Suspender()
@@ -262,7 +291,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 		MaxTokens:       d.maxTokens,
 		ContextLimit:    d.contextLimit,
 		Policy:          buildPolicy(d.pure, d.allow, d.deny),
-		Gate:            audit.Hook(d.auditPath, "serve", permissionGate(d.autoDeny, suspend, d.ws)),
+		GateContext:     audit.ContextHook(d.auditPath, "serve", permissionGateContext(d.autoDeny, suspend, d.ws)),
 		BackendKind:     d.backendKind,
 		Stream:          d.stream,
 		SkipVerify:      d.skipVerify,
@@ -272,6 +301,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 	emitter.Emit("run_start", map[string]any{"task": task, "mission": isMission})
 	if isMission {
 		err := runMission(ctx, missionParams{
+			env:          env,
 			client:       d.client,
 			ws:           d.ws,
 			procs:        d.procs,

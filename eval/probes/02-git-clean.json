@@ -1,0 +1,30 @@
+{
+  "prompt": "eval/prompts/02-git-clean.md",
+  "task": "show git log --oneline from the repository root",
+  "tier": "signal",
+  "seed": "eval/fixtures",
+  "git": true,
+  "max_steps": 3,
+  "trace": [
+    {
+      "tool": "run_shell",
+      "mode": "required",
+      "max_calls": 1,
+      "args_regex": "git log",
+      "why": "read actual commit history from the workspace root"
+    },
+    {
+      "tool": "run_shell",
+      "mode": "forbidden",
+      "args_regex": "(git log[^\"\\n]* \\.git|\\b(ls|dir)\\b)",
+      "why": "avoid a .git path argument and shell directory exploration"
+    }
+  ],
+  "answer": [
+    {
+      "regex": "[a-f0-9]{7,40}.*seed",
+      "mode": "required",
+      "why": "the frozen fixture repository has one commit named seed"
+    }
+  ]
+}

@@ -24,6 +24,8 @@ import (
 // Every transition and every status change persists mission.json first,
 // so resume is always "load, switch on phase, continue".
 type Runner struct {
+	// Env carries the same policy, gate and capabilities as direct runs.
+	Env    roles.Env
 	Client llm.Client
 	WS     *workspace.Workspace
 	Dir    string // .tars/tasks/<id> — the mission's state directory
@@ -89,6 +91,7 @@ type Runner struct {
 	// OnToolResult mirrors agent.Config.OnToolResult for worker tool
 	// results. Optional; nil keeps workers silent as before.
 	OnToolResult func(callID, result string)
+	OnResult     func(agent.ToolResult)
 
 	// OnUsage mirrors agent.Config.OnUsage for worker token counts.
 	// Optional.
@@ -134,6 +137,21 @@ func (r *Runner) maxReplans() int {
 // report still describes everything that was measured, because failing
 // loudly with facts is a feature, not an afterthought.
 func (r *Runner) Run(ctx context.Context, m *Mission) (string, error) {
+	if r.Client == nil {
+		r.Client = r.Env.Client
+	}
+	if r.WS == nil {
+		r.WS = r.Env.WS
+	}
+	if r.Procs == nil {
+		r.Procs = r.Env.Procs
+	}
+	if r.MaxTokens == 0 {
+		r.MaxTokens = r.Env.MaxTokens
+	}
+	if r.ContextLimit == 0 {
+		r.ContextLimit = r.Env.ContextLimit
+	}
 	for {
 		switch m.Phase {
 		case PhaseExplore:
@@ -463,7 +481,7 @@ func (r *Runner) attempt(ctx context.Context, m *Mission, sub *Subtask, seed str
 	// The check is the verdict — not the worker's exit status. A worker
 	// that hit MaxSteps but finished the actual work still passes; a
 	// worker that returned a confident report over an empty file fails.
-	checkOut, ok = RunCheck(ctx, sub.Check, r.WS)
+	checkOut, ok = r.runCheck(ctx, sub.Check)
 	if ok {
 		// The declared check passing only means the model verified what it
 		// chose to verify. Everything files_hint promised has to be there
@@ -586,17 +604,37 @@ func workerStateName(sub *Subtask) string {
 // assembled their own agent.Config inline and each wrapped r.OnStep in a
 // slightly different closure.
 func (r *Runner) env() roles.Env {
-	return roles.Env{
-		Client:       r.Client,
-		WS:           r.WS,
-		Procs:        r.Procs,
-		MaxTokens:    r.MaxTokens,
-		ContextLimit: r.ContextLimit,
-		StateDir:     filepath.Join(r.Dir, "workers"),
-		OnStep:       r.OnStep,
-		OnToolResult: r.OnToolResult,
-		OnUsage:      r.OnUsage,
+	e := r.Env
+	if r.Client != nil {
+		e.Client = r.Client
 	}
+	if r.WS != nil {
+		e.WS = r.WS
+	}
+	if r.Procs != nil {
+		e.Procs = r.Procs
+	}
+	if r.MaxTokens != 0 {
+		e.MaxTokens = r.MaxTokens
+	}
+	if r.ContextLimit != 0 {
+		e.ContextLimit = r.ContextLimit
+	}
+	e.StateDir = filepath.Join(r.Dir, "workers")
+	if r.OnStep != nil {
+		e.OnStep = r.OnStep
+	}
+	if r.OnToolResult != nil {
+		e.OnToolResult = r.OnToolResult
+	}
+	if r.OnResult != nil {
+		e.OnResult = r.OnResult
+	}
+	if r.OnUsage != nil {
+		e.OnUsage = r.OnUsage
+	}
+	return e
+
 }
 
 // latestWorkerState returns the newest saved transcript for a subtask,
@@ -681,7 +719,7 @@ func (r *Runner) runVerifyChecks(ctx context.Context, m *Mission) []string {
 		if sub.Status != StatusDone || sub.Check.Type == "" || sub.Check.Type == "none" {
 			continue
 		}
-		out, ok := RunCheck(ctx, sub.Check, r.WS)
+		out, ok := r.runCheck(ctx, sub.Check)
 		if ok {
 			out, ok = RunDerivedChecks(ctx, sub, r.WS)
 		}
@@ -693,7 +731,7 @@ func (r *Runner) runVerifyChecks(ctx context.Context, m *Mission) []string {
 
 	if r.VerifyCmd != "" {
 		r.event("running mission verify command: %s", r.VerifyCmd)
-		out, ok := RunCheck(ctx, Check{Type: "shell", Cmd: r.VerifyCmd}, r.WS)
+		out, ok := r.runCheck(ctx, Check{Type: "shell", Cmd: r.VerifyCmd})
 		if !ok {
 			regressions = append(regressions, "verify-cmd: "+agent.TruncateMiddle(out, 500))
 		}

@@ -39,11 +39,8 @@ type Delegate struct {
 // value receiver would copy it (go vet: "passes lock by value").
 func (*Delegate) Name() string { return "delegate_task" }
 
-// Mode is Concurrent: delegate_task is explicitly for self-contained,
-// independent subtasks (see the system prompt's guidance to issue
-// multiple delegate_task calls in one step) — running them concurrently
-// is the entire reason that pattern exists.
-func (*Delegate) Mode() agent.ToolMode { return agent.Concurrent }
+// Delegates share a workspace, so each one runs without overlapping parent tools.
+func (*Delegate) Mode() agent.ToolMode { return agent.Exclusive }
 func (*Delegate) Description() string {
 	return "Delegate a self-contained subtask to a fresh subagent and return its final result. " +
 		"Use this for work that can be fully described in one instruction and doesn't need the " +
@@ -64,10 +61,7 @@ func (*Delegate) Schema() json.RawMessage {
 	}`)
 }
 
-// semaphore lazily builds the shared slot channel. sync.Once matters:
-// delegate_task is a Concurrent-mode tool, so several calls in one step
-// hit this from separate goroutines — unsynchronized lazy init let each
-// racer build its own channel, silently voiding the concurrency cap.
+// semaphore also bounds concurrent callers using Delegate outside the scheduler.
 func (d *Delegate) semaphore() chan struct{} {
 	d.semOnce.Do(func() {
 		capacity := d.MaxConcurrent
@@ -88,7 +82,11 @@ func (d *Delegate) Run(ctx context.Context, args json.RawMessage) (string, error
 		return "", fmt.Errorf("bad arguments: %w", err)
 	}
 	sem := d.semaphore()
-	sem <- struct{}{}
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 	defer func() { <-sem }()
 
 	sub := d.Spawn(in.Role)

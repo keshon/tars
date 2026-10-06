@@ -15,11 +15,8 @@ import (
 type Agent struct {
 	cfg Config
 
-	// LastRunMutations counts successful MutatingTools calls from the
-	// most recent completed run. Set when Run/Resume returns; readable by
-	// delegate_task to report subagent filesystem changes to the parent.
-	// (Unlike RunReport.MutatedPaths, this also counts writes made by
-	// delegated subagents, via the DELEGATE result header.)
+	// LastRunMutations counts observed mutation batches. Embedders without
+	// BeginChanges fall back to successful mutating tool calls.
 	LastRunMutations int
 
 	report RunReport
@@ -31,21 +28,16 @@ func (a *Agent) MutatedPaths() []string {
 	return a.report.MutatedPaths
 }
 
-// RunReport is what a harness can learn about a finished run without
-// trusting anything the model said about itself: which files its own
-// mutating tool calls actually touched, how many steps it took, what the
-// final message was. Populated by run() as measured fact — a mission
-// runner records these into its ledger instead of asking a weak model to
-// summarize its own work, which is exactly where fake "I saved the file"
-// claims come from.
+// RunReport records the outcome, observed effects, and real check output.
 type RunReport struct {
+	Outcome      string
+	Verification string
+	Warnings     []string
 	// Steps is how many model round-trips the run performed.
 	Steps int
 
-	// MutatedPaths lists the workspace paths of successful MutatingTools
-	// calls made directly by this agent (path/from/to arguments), in
-	// first-touch order, deduplicated. Subagent writes are not included —
-	// a parent that needs those reads the DELEGATE result header.
+	// MutatedPaths includes changes made by file tools, shells, MCP, and delegates.
+	// Without an observer, these are paths from successful mutating calls.
 	MutatedPaths []string
 
 	// Final is the model's final answer text ("" if the run errored out).
@@ -110,6 +102,7 @@ func (a *Agent) Run(ctx context.Context, task string, images ...string) (string,
 // the task." A plain summary-of-what-happened isn't required — the full
 // history is already there, the model can re-read it.
 func (a *Agent) Resume(ctx context.Context, history []llm.Message, note string, images ...string) (string, error) {
+	history = a.resumeHistory(history)
 	history = append(history, llm.Message{Role: llm.RoleUser, Content: note, Images: images})
 	return a.run(ctx, history)
 }
@@ -146,6 +139,7 @@ func PausedOnQuestion(history []llm.Message) (callID string, question string, ok
 // expects every tool_call to get its matching tool-result before anything
 // else, not a naked user message after an unanswered call).
 func (a *Agent) ResumeWithAnswer(ctx context.Context, history []llm.Message, callID, answer string) (string, error) {
+	history = a.resumeHistory(history)
 	history = append(history, llm.Message{
 		Role:       llm.RoleTool,
 		ToolCallID: callID,
@@ -174,22 +168,39 @@ func (a *Agent) saveState(history []llm.Message) {
 	if a.cfg.StateFile == "" {
 		return
 	}
+	if err := a.persistState(history); err != nil {
+		warning := "session persistence failed: " + err.Error()
+		if !containsStr(a.report.Warnings, warning) {
+			a.report.Warnings = append(a.report.Warnings, warning)
+			if a.cfg.OnNudge != nil {
+				a.cfg.OnNudge("persistence-error", warning)
+			}
+		}
+	}
+}
+
+func (a *Agent) persistState(history []llm.Message) error {
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	if dir := filepath.Dir(a.cfg.StateFile); dir != "." {
-		_ = os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(filepath.Dir(a.cfg.StateFile), 0755); err != nil {
+		return err
 	}
 	tmp := a.cfg.StateFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
 	}
-	_ = os.Rename(tmp, a.cfg.StateFile)
-	session.Append(a.cfg.StateFile, len(history), history)
+	if err := os.Rename(tmp, a.cfg.StateFile); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return session.Append(a.cfg.StateFile, len(history), history)
 }
 
 type runState struct {
+	observeChanges                                                                     func() ([]string, error)
+	observationErr                                                                     error
 	stuckSteps, exploratorySteps, mutatingSucceeded, warnedThreshold, lastPromptTokens int
 	consecutiveSameToolCount                                                           int
 	// warnedSteps tracks the highest step-budget threshold already
@@ -296,4 +307,12 @@ func containsStr(list []string, s string) bool {
 // ask_user to a subagent). Nil-registry safe: unknown means absent.
 func (a *Agent) hasTool(name string) bool {
 	return a.cfg.Tools != nil && containsStr(a.cfg.Tools.Names(), name)
+}
+
+func (a *Agent) resumeHistory(history []llm.Message) []llm.Message {
+	history = append([]llm.Message(nil), history...)
+	if len(history) > 0 && history[0].Role == llm.RoleSystem {
+		history[0].Content = a.cfg.System
+	}
+	return history
 }

@@ -10,6 +10,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +40,16 @@ import (
 )
 
 func main() {
+	if err := runMain(); err != nil {
+		log.Print(err)
+		if errors.Is(err, context.Canceled) {
+			os.Exit(130)
+		}
+		os.Exit(1)
+	}
+}
+
+func runMain() error {
 	backend := flag.String("backend", "http://localhost:5001", "backend base URL: bare origin for a local server ("+
 		"http://localhost:5001) or API root for a hosted OpenAI-compatible provider "+
 		"(https://api.openai.com/v1, https://openrouter.ai/api/v1)")
@@ -67,8 +79,8 @@ func main() {
 	missionMode := flag.Bool("mission", false, "run the task as a mission: an upfront model-generated "+
 		"plan (approved by you), then one fresh-context worker per subtask, each verified mechanically. "+
 		"For complex multi-file tasks a weak model can't hold in its head; simple tasks are better off "+
-		"without it. Also auto-enabled when the task names ≥2 deliverable files (see -direct)")
-	direct := flag.Bool("direct", false, "force the reactive agent loop even when the task looks multi-file")
+		"without it. Multi-file tasks receive a recommendation; mission mode is explicit")
+	direct := flag.Bool("direct", false, "suppress the multi-file mission recommendation (direct mode is the default)")
 	yes := flag.Bool("yes", false, "skip the mission plan approval gate and run the plan as generated")
 	auditPath := flag.String("audit", "", "append gate decisions as JSONL to this file (off when empty)")
 	backendKind := flag.String("backend-kind", "kobold", "which server: "+
@@ -90,7 +102,9 @@ func main() {
 	streamFlag := flag.Bool("stream", false, "stream response tokens live (openai/llama backends only; koboldcpp falls back to unary)")
 	mcpFlag := flag.String("mcp", "", "MCP servers: \"name=cmd args...;name2=https://host/mcp\" (stdio JSON-RPC or Streamable HTTP, tools appear as mcp__name__tool)")
 	forkFlag := flag.String("fork", "", "history file to branch from: loads its transcript but writes to a fresh task id")
-	revertFlag := flag.Bool("revert", false, "restore tracked workspace files to git HEAD and exit (untracked files are kept)")
+	revertFlag := flag.Bool("revert", false, "restore the pre-run workspace checkpoint and Git index, then exit")
+	revertPreview := flag.Bool("revert-preview", false, "list checkpoint restore actions without changing files")
+	revertFrom := flag.String("revert-from", "", "select a checkpoint archive for -revert or -revert-preview; default is the latest")
 	planFlag := flag.Bool("plan", false, "plan mode: read-only tools, propose a plan and change nothing")
 	modeFlag := flag.String("mode", "print", "output mode: print (human-readable) or json (one JSON object per line)")
 	serveFlag := flag.Bool("serve", false, "serve JSON-RPC over stdio instead of running one task: methods run/respond/cancel, events on stdout. See docs/rpc.md")
@@ -100,8 +114,13 @@ func main() {
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
-	if task == "" && *resume == "" && *forkFlag == "" && !*serveFlag && !*tuiFlag {
-		log.Fatal(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
+	if task == "" && *resume == "" && *forkFlag == "" && !*serveFlag && !*tuiFlag && !*revertFlag && !*revertPreview {
+		return fmt.Errorf(`usage: agent [flags] "task description"  (or  agent -resume <state.json> [-answer "..."])`)
+	}
+
+	ws, wsErr := workspace.New(*root)
+	if wsErr != nil {
+		return fmt.Errorf("workspace: %w", wsErr)
 	}
 
 	// noteW is where human-readable chatter goes. In -mode json it is
@@ -134,15 +153,8 @@ func main() {
 	// readers on one stdin would eat each other's input.
 	suspend := stdioSuspender(noteW, emitter)
 
-	// Auto-mission for multi-file tasks — the cheap alternative to hoping
-	// the reactive loop (or spontaneous delegate_task) holds a plan.
-	// Never under -tui: the TUI is direct-runs only in this version.
-	if !*missionMode && !*direct && !*tuiFlag && task != "" && mission.SuggestMission(task) {
-		*missionMode = true
-		note("auto-mission: task names multiple deliverable files (use -direct to skip)")
-	}
-	if *tuiFlag && *missionMode {
-		log.Fatal("-tui runs fresh direct tasks in this version (no -mission with it)")
+	if !*missionMode && !*direct && task != "" && mission.SuggestMission(task) {
+		note("task spans multiple files; use -mission for a reviewed execution plan")
 	}
 
 	// A -resume target whose directory holds mission.json is a mission
@@ -165,11 +177,14 @@ func main() {
 	var stateFile string
 	var forkHistory []llm.Message
 	if *resume != "" {
-		stateFile = *resume // keep appending to the same snapshot we resumed from
-	} else {
+		stateFile = *resume
+		if info, err := os.Stat(stateFile); err == nil && info.IsDir() {
+			stateFile = filepath.Join(stateFile, "state.json")
+		}
+	} else if !*revertFlag && !*revertPreview && !*serveFlag {
 		sum := sha1.Sum([]byte(task + time.Now().String()))
 		taskID := hex.EncodeToString(sum[:])[:8]
-		taskDir := workspace.TaskDir(taskID)
+		taskDir := filepath.Join(ws.Root(), workspace.TaskDir(taskID))
 		stateFile = filepath.Join(taskDir, "state.json")
 		// The session title lives with the session (pi's session_info):
 		// written once here, rewritten on TUI rename, derived from
@@ -179,7 +194,7 @@ func main() {
 			var err error
 			forkHistory, err = loadHistory(*forkFlag)
 			if err != nil {
-				log.Fatalf("fork: %v", err)
+				return fmt.Errorf("fork: %w", err)
 			}
 			note("forked from %s (%d messages)", *forkFlag, len(forkHistory))
 		}
@@ -191,22 +206,32 @@ func main() {
 		}
 	}
 
-	ws, wsErr := workspace.New(*root)
-	if wsErr != nil {
-		log.Fatalf("workspace: %v", wsErr)
-	}
-
-	if *revertFlag {
-		if err := snapshot.Revert(ws.Root()); err != nil {
-			log.Fatalf("revert: %v", err)
+	if *revertFlag || *revertPreview {
+		actions, err := snapshot.Preview(ws.Root(), *revertFrom)
+		if err != nil {
+			return fmt.Errorf("checkpoint: %w", err)
 		}
-		note("workspace reverted to HEAD (untracked files kept)")
-		return
+		for _, action := range actions {
+			fmt.Fprintln(noteW, action)
+		}
+		if *revertPreview {
+			return nil
+		}
+		if *revertFrom != "" {
+			err = snapshot.Restore(ws.Root(), *revertFrom)
+		} else {
+			err = snapshot.Revert(ws.Root())
+		}
+		if err != nil {
+			return fmt.Errorf("revert: %w", err)
+		}
+		note("workspace restored to the pre-run checkpoint")
+		return nil
 	}
 
 	client, err := llm.ClientFor(*backendKind, *backend, *model)
 	if err != nil {
-		log.Fatalf("%v", err)
+		return fmt.Errorf("%w", err)
 	}
 	resolveAPIKey(*apiKey, *apiKeyEnv, client)
 	if hdrs := extraHeadersFromEnv(); len(hdrs) > 0 {
@@ -222,7 +247,7 @@ func main() {
 	if *debug {
 		f, err := os.Create("agent-debug.log")
 		if err != nil {
-			log.Fatalf("open debug log: %v", err)
+			return fmt.Errorf("open debug log: %w", err)
 		}
 		defer f.Close()
 		client.Debug = f
@@ -230,7 +255,7 @@ func main() {
 	}
 
 	// Ask the backend for its real context window instead of guessing.
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var contextLimit int
@@ -246,7 +271,7 @@ func main() {
 		note("context window: %d tokens (estimated for %s; override with -context-limit)",
 			contextLimit, *model)
 		if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
-			log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
+			return fmt.Errorf("-backend-kind is %q but %s is answering at %s.\n"+
 				"Re-run with -backend-kind %s. Continuing would send %s's grammar and\n"+
 				"sampler fields to a server that ignores both, and the run would look fine.",
 				*backendKind, actual, *backend, actual, *backendKind)
@@ -263,7 +288,7 @@ func main() {
 			// having measured nothing. Nine mission runs did exactly that
 			// before this check existed.
 			if actual := llm.DetectKind(ctx, *backend); actual != "" && actual != *backendKind {
-				log.Fatalf("-backend-kind is %q but %s is answering at %s.\n"+
+				return fmt.Errorf("-backend-kind is %q but %s is answering at %s.\n"+
 					"Re-run with -backend-kind %s. Continuing would send %s's grammar and\n"+
 					"sampler fields to a server that ignores both, and the run would look fine.",
 					*backendKind, actual, *backend, actual, *backendKind)
@@ -287,7 +312,7 @@ func main() {
 			if err != nil {
 				status = "FAILED"
 			}
-			return fmt.Sprintf("%s\n%s", status, out), true
+			return fmt.Sprintf("%s\ncommand: %s\n%s", status, *verifyCmd, out), true
 		}
 	}
 
@@ -304,51 +329,13 @@ func main() {
 	// is also why the process-tree kill exists on Windows and was never
 	// reached from here.
 	//
-	// The loop snapshots state after every step, so an interrupt is
-	// recoverable — but only if the operator is told where the snapshot
-	// is, at the moment they need it rather than in the scrollback.
-	// os.Exit skips deferred calls, so this path cleans up for itself.
-	resumeHint := fmt.Sprintf("agent -resume %s", stateFile)
-	if missionDir != "" {
-		resumeHint = fmt.Sprintf("agent -resume %s", missionDir)
-	}
-	// Not in TUI mode: bubbletea owns the terminal there, and this
-	// handler's os.Exit would skip its restore and leave the terminal
-	// in raw mode. The TUI converts Ctrl+C into run cancellation itself.
-	if !*tuiFlag {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-sigs
-			fmt.Fprintln(os.Stderr, "\ninterrupted")
-			stop() // aborts the in-flight request and any running tool
-			bgProcs.StopAll()
-			fmt.Fprintf(os.Stderr, "resume with: %s\n", resumeHint)
-			os.Exit(130) // 128 + SIGINT, the shell convention
-		}()
-	}
 
-	if missionDir != "" {
-		if err := runMission(ctx, missionParams{
-			client:       client,
-			ws:           ws,
-			procs:        bgProcs,
-			dir:          missionDir,
-			task:         task,
-			resuming:     *resume != "",
-			contextLimit: contextLimit,
-			maxTokens:    *maxTokens,
-			logMax:       *logMax,
-			verifyCmd:    *verifyCmd,
-			autoApprove:  *yes,
-			noteW:        noteW,
-			emitter:      emitter,
-			suspend:      suspend,
-		}); err != nil {
-			log.Fatalf("%v", err)
+	mcpTools, mcpClients := discoverMCP(ctx, *mcpFlag)
+	defer func() {
+		for _, c := range mcpClients {
+			c.Close()
 		}
-		return
-	}
+	}()
 
 	// ask_user blocks on stdin inside the tool. State is snapshotted by
 	// the agent loop after the assistant message (with the unanswered tool
@@ -362,7 +349,7 @@ func main() {
 			return "", fmt.Errorf("ask_user: clarifying question limit (%d) reached — "+
 				"make a decision and proceed with a stated assumption", maxClarifyingQuestions)
 		}
-		rep, err := suspend(context.Background(), agent.SuspendRequest{
+		rep, err := suspend(ctx, agent.SuspendRequest{
 			Kind: agent.SuspendAsk,
 			Prompt: fmt.Sprintf("\n[paused — state saved at %s]\n"+
 				"[resume: agent -resume %s -answer \"your answer\"]\n"+
@@ -380,15 +367,10 @@ func main() {
 	if !*serveFlag {
 		if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
 			note("snapshot: %s", snap.Path)
+		} else {
+			note("pre-run checkpoint unavailable; this run cannot be undone with -revert")
 		}
 	}
-
-	mcpTools, mcpClients := discoverMCP(ctx, *mcpFlag)
-	defer func() {
-		for _, c := range mcpClients {
-			c.Close()
-		}
-	}()
 
 	if *serveFlag {
 		// stdout is the protocol in serve mode regardless of -mode:
@@ -413,7 +395,7 @@ func main() {
 			skipVerify:   *noVerifyFlag,
 			mcpTools:     mcpTools,
 		}, os.Stdin, os.Stdout, os.Stderr)
-		return
+		return ctx.Err()
 	}
 
 	env := roles.Env{
@@ -424,7 +406,7 @@ func main() {
 		ContextLimit:    contextLimit,
 		MaxSteps:        *maxSteps,
 		Policy:          buildPolicy(*pureFlag, *allowFlag, *denyFlag),
-		Gate:            audit.Hook(*auditPath, "cli", permissionGate(*yes, suspend, ws)),
+		GateContext:     audit.ContextHook(*auditPath, "cli", permissionGateContext(*yes, suspend, ws)),
 		BackendKind:     *backendKind,
 		Model:           *model,
 		Stream:          streamEnabled(*streamFlag, *modeFlag, *tuiFlag),
@@ -432,15 +414,55 @@ func main() {
 		ReasoningBudget: *thinkBudget,
 		// Direct runs fund acknowledged todo work with extra steps;
 		// -serve leaves this off until its budget story is decided.
-		TodoFunding:  true,
-		SkipVerify:   *noVerifyFlag,
-		OnDelta:      func(chunk string) { fmt.Print(chunk) },
-		OnStep:       stepPrinter(*modeFlag, emitter, *logMax),
-		OnToolResult: toolResultPrinter(*modeFlag, emitter),
-		OnUsage:      usagePrinter(*modeFlag, emitter),
-		OnFinding:    findingPrinter(*modeFlag),
-		OnNudge:      nudgePrinter(*modeFlag),
+		TodoFunding: true,
+		SkipVerify:  *noVerifyFlag,
+		OnDelta:     func(chunk string) { fmt.Print(chunk) },
+		OnStep:      stepPrinter(*modeFlag, emitter, *logMax),
+		OnResult: func(result agent.ToolResult) {
+			if *modeFlag == "json" {
+				api.EmitToolResult(emitter, result.CallID, result.Output, result.Failed)
+			}
+		},
+		OnUsage:   usagePrinter(*modeFlag, emitter),
+		OnFinding: findingPrinter(*modeFlag),
+		OnNudge:   nudgePrinter(*modeFlag),
 	}
+	if missionDir != "" {
+		params := missionParams{
+			env:          env,
+			client:       client,
+			ws:           ws,
+			procs:        bgProcs,
+			dir:          missionDir,
+			task:         task,
+			resuming:     *resume != "",
+			contextLimit: contextLimit,
+			maxTokens:    *maxTokens,
+			logMax:       *logMax,
+			verifyCmd:    *verifyCmd,
+			autoApprove:  *yes,
+			noteW:        noteW,
+			emitter:      emitter,
+			suspend:      suspend,
+		}
+		if *tuiFlag {
+			_, err := tui.Run(ctx, tui.Config{Env: env, Task: task, StateFile: filepath.Join(missionDir, "mission.json"), AuditPath: *auditPath, Mission: func(runCtx context.Context, runEnv roles.Env, answer agent.Suspender, emitter *events.Emitter) error {
+				p := params
+				p.env = runEnv
+				p.suspend = answer
+				p.emitter = emitter
+				p.noteW = io.Discard
+				return runMission(runCtx, p)
+			}})
+			if err != nil {
+				return fmt.Errorf("mission: %w", err)
+			}
+		} else if err := runMission(ctx, params); err != nil {
+			return fmt.Errorf("mission: %w", err)
+		}
+		return nil
+	}
+
 	if *planFlag {
 		emitter.Emit("plan_mode", map[string]any{"read_only": true})
 	}
@@ -459,38 +481,40 @@ func main() {
 			}
 			full, err := ws.Resolve(p)
 			if err != nil {
-				log.Fatalf("image: %v", err)
+				return fmt.Errorf("image: %w", err)
 			}
 			images = append(images, full)
 		}
 	}
 
-	// The subagent this spawns previously also carried Verify. That was
-	// dead configuration: a subagent sets SkipVerify with no
-	// VerifyOnZeroWrites, so verifyWanted is never true and the hook could
-	// not fire. Dropping it changes nothing at runtime.
-	//
-	// -tui runs the same direct task under the fullscreen renderer
-	// instead of print mode. Mission and resume stay on the CLI and
-	// -serve: the TUI is v1 and owns neither the planner pipeline nor
-	// saved transcripts yet.
+	// All terminal modes share the configured environment and saved history.
 	if *tuiFlag {
-		if *planFlag || *resume != "" || len(forkHistory) > 0 {
-			log.Fatal("-tui runs fresh direct tasks in this version (no -plan, -resume or -fork with it)")
+		history := forkHistory
+		if *resume != "" {
+			var err error
+			history, err = loadHistory(*resume)
+			if err != nil {
+				return fmt.Errorf("resume: %w", err)
+			}
 		}
+
 		answer, err := tui.Run(ctx, tui.Config{
-			Env:       env,
-			Task:      task,
-			StateFile: stateFile,
-			Verify:    verify,
-			Images:    images,
+			Plan:         *planFlag,
+			History:      history,
+			ResumeAnswer: *answer,
+			AuditPath:    *auditPath,
+			Env:          env,
+			Task:         task,
+			StateFile:    stateFile,
+			Verify:       verify,
+			Images:       images,
 		})
 		if err != nil {
-			log.Fatalf("agent failed: %v", err)
+			return fmt.Errorf("agent failed: %w", err)
 		}
 		fmt.Println("\n=== result ===")
 		fmt.Println(answer)
-		return
+		return nil
 	}
 
 	var a *agent.Agent
@@ -500,45 +524,56 @@ func main() {
 		a = roles.Interactive(env, "", stateFile, askFn, verify)
 	}
 
+	defer func() {
+		r := a.Report()
+		api.EmitOutcome(emitter, r, stateFile)
+		note("outcome: %s; changed files: %s", r.Outcome, strings.Join(r.MutatedPaths, ", "))
+		if r.Verification != "" {
+			note("checks: %s", r.Verification)
+		} else {
+			note("checks: no current command verdict")
+		}
+		for _, warning := range r.Warnings {
+			note("%s", warning)
+		}
+		note("resume: agent -resume %s", stateFile)
+	}()
+
 	var result string
 	if *resume != "" {
 		history, err := loadHistory(*resume)
 		if err != nil {
-			log.Fatalf("resume: %v", err)
+			return fmt.Errorf("resume: %w", err)
 		}
 		note("resuming from %s (%d messages)", *resume, len(history))
 
 		if callID, question, paused := agent.PausedOnQuestion(history); paused {
 			ans := *answer
 			if ans == "" {
-				// No -answer flag: the human is here now, just ask them
-				// interactively using the same askFn path as the live run.
-				fmt.Printf("\n[agent asked] %s\n> ", question)
-				reader := bufio.NewReader(os.Stdin)
-				line, err := reader.ReadString('\n')
+				var err error
+				ans, err = askFn(question)
 				if err != nil {
-					log.Fatalf("reading answer: %v", err)
+					return fmt.Errorf("reading answer: %w", err)
 				}
-				ans = strings.TrimSpace(line)
 			}
 			result, err = a.ResumeWithAnswer(ctx, history, callID, ans)
 		} else {
 			result, err = a.Resume(ctx, history, prompts.Resume)
 		}
 		if err != nil {
-			log.Fatalf("agent failed: %v", err)
+			return fmt.Errorf("agent failed: %w", err)
 		}
 	} else if len(forkHistory) > 0 {
 		var err error
 		result, err = a.Resume(ctx, forkHistory, prompts.Resume)
 		if err != nil {
-			log.Fatalf("agent failed: %v", err)
+			return fmt.Errorf("agent failed: %w", err)
 		}
 	} else {
 		var err error
 		result, err = a.Run(ctx, task, images...)
 		if err != nil {
-			log.Fatalf("agent failed: %v", err)
+			return fmt.Errorf("agent failed: %w", err)
 		}
 	}
 	// Printed whole. -log-max caps each *step* line so a run stays
@@ -548,9 +583,11 @@ func main() {
 	// report in full, so this also makes the two modes agree.
 	note("\n=== result ===")
 	fmt.Fprintln(noteW, result)
+	return nil
 }
 
 type missionParams struct {
+	env          roles.Env
 	client       llm.Client
 	ws           *workspace.Workspace
 	procs        *tools.BackgroundProcesses
@@ -600,7 +637,7 @@ func runMission(ctx context.Context, p missionParams) error {
 	var approve func(string) (bool, string)
 	if !p.autoApprove {
 		approve = func(rendered string) (bool, string) {
-			rep, err := p.suspend(context.Background(), agent.SuspendRequest{
+			rep, err := p.suspend(ctx, agent.SuspendRequest{
 				Kind:   agent.SuspendPlan,
 				Prompt: "=== proposed plan ===\n" + rendered + "\n\napprove? [y]es / [n]o / or type a revision note",
 			})
@@ -620,6 +657,7 @@ func runMission(ctx context.Context, p missionParams) error {
 	}
 
 	runner := &mission.Runner{
+		Env:          p.env,
 		Client:       p.client,
 		WS:           p.ws,
 		Dir:          p.dir,
@@ -644,8 +682,8 @@ func runMission(ctx context.Context, p missionParams) error {
 			}
 			fmt.Fprintf(p.noteW, "[mission] "+format+"\n", args...)
 		},
-		OnToolResult: func(callID, result string) {
-			api.EmitToolResult(p.emitter, callID, result)
+		OnResult: func(result agent.ToolResult) {
+			api.EmitToolResult(p.emitter, result.CallID, result.Output, result.Failed)
 		},
 		OnUsage: func(step int, usage llm.Usage) {
 			api.EmitUsage(p.emitter, step, usage)
@@ -716,7 +754,23 @@ func streamEnabled(streamFlag bool, modeFlag string, tuiFlag bool) bool {
 // preview of what they would do, rendered from the call's own arguments
 // against the workspace as it is right now.
 func permissionGate(autoDeny bool, suspend agent.Suspender, ws *workspace.Workspace) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+	gate := permissionGateContext(autoDeny, suspend, ws)
 	return func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+		return gate(context.Background(), tool, resource, args)
+	}
+}
+
+func permissionGateContext(autoDeny bool, suspend agent.Suspender, ws *workspace.Workspace) func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
+	var mu sync.Mutex
+	always := map[[2]string]bool{}
+	return func(ctx context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error) {
+		key := [2]string{tool, resource}
+		mu.Lock()
+		allowed := always[key]
+		mu.Unlock()
+		if allowed {
+			return permission.Allow, nil
+		}
 		if autoDeny {
 			return permission.Deny, nil
 		}
@@ -724,7 +778,7 @@ func permissionGate(autoDeny bool, suspend agent.Suspender, ws *workspace.Worksp
 		if preview := tools.PreviewArgs(ws, tool, args); preview != "" {
 			prompt += "\n" + preview
 		}
-		rep, err := suspend(context.Background(), agent.SuspendRequest{
+		rep, err := suspend(ctx, agent.SuspendRequest{
 			Kind:     agent.SuspendPermission,
 			Tool:     tool,
 			Resource: resource,
@@ -736,6 +790,11 @@ func permissionGate(autoDeny bool, suspend agent.Suspender, ws *workspace.Worksp
 		if eff, derr := permission.Decide(rep.Answer); derr != nil {
 			return permission.Deny, fmt.Errorf("blocked by operator (%s on %s)", tool, resource)
 		} else {
+			if strings.EqualFold(strings.TrimSpace(rep.Answer), "a") || strings.EqualFold(strings.TrimSpace(rep.Answer), "always") {
+				mu.Lock()
+				always[key] = true
+				mu.Unlock()
+			}
 			return eff, nil
 		}
 	}
@@ -748,26 +807,54 @@ func permissionGate(autoDeny bool, suspend agent.Suspender, ws *workspace.Worksp
 // events - the vocabulary a future TUI or RPC client already speaks.
 func stdioSuspender(noteW io.Writer, emitter *events.Emitter) agent.Suspender {
 	reader := bufio.NewReader(os.Stdin)
-	return func(_ context.Context, req agent.SuspendRequest) (agent.SuspendReply, error) {
+	type input struct {
+		line string
+		err  error
+	}
+	replies := make(chan input, 1)
+	var once sync.Once
+	flight := make(chan struct{}, 1)
+	return func(ctx context.Context, req agent.SuspendRequest) (agent.SuspendReply, error) {
+		select {
+		case flight <- struct{}{}:
+		case <-ctx.Done():
+			return agent.SuspendReply{}, ctx.Err()
+		}
+		defer func() { <-flight }()
+		once.Do(func() {
+			go func() {
+				for {
+					line, err := reader.ReadString('\n')
+					replies <- input{line, err}
+					if err != nil {
+						close(replies)
+						return
+					}
+				}
+			}()
+		})
 		if emitter != nil {
 			emitter.Emit("awaiting_input", map[string]any{"kind": string(req.Kind), "id": req.ID})
 		}
 		fmt.Fprintf(noteW, "%s\n> ", req.Prompt)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return agent.SuspendReply{}, fmt.Errorf("reading answer: %w", err)
+		select {
+		case <-ctx.Done():
+			return agent.SuspendReply{}, ctx.Err()
+		case rep, ok := <-replies:
+			if !ok {
+				return agent.SuspendReply{}, fmt.Errorf("input transport closed")
+			}
+			if rep.err != nil && strings.TrimSpace(rep.line) == "" {
+				return agent.SuspendReply{}, fmt.Errorf("reading answer: %w", rep.err)
+			}
+			if emitter != nil {
+				emitter.Emit("input_answered", map[string]any{"kind": string(req.Kind), "id": req.ID})
+			}
+			return agent.SuspendReply{Answer: strings.TrimSpace(rep.line)}, nil
 		}
-		ans := strings.TrimSpace(line)
-		if emitter != nil {
-			emitter.Emit("input_answered", map[string]any{"kind": string(req.Kind), "id": req.ID})
-		}
-		return agent.SuspendReply{Answer: ans}, nil
 	}
 }
 
-// stepPrinter returns the OnStep callback for the chosen output mode:
-// human-readable lines, or JSONL events. logMax caps each text field so a
-// long generation does not become one enormous line.
 func stepPrinter(mode string, emitter *events.Emitter, logMax int) func(string, int, llm.Message) {
 	if mode == "json" && emitter != nil {
 		return func(label string, step int, msg llm.Message) {

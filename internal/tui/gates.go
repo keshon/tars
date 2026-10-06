@@ -137,16 +137,21 @@ func (m *model) gateBar() string {
 	}
 }
 
-// gateHook answers Ask-gated tool calls through the hub with run-local
-// always-memory: an (tool, resource) pair confirmed once auto-allows
-// later repeats without suspending. Touched only by the run worker, so
-// no mutex guards it. The prompt twins permissionGate in cmd/agent —
-// same verbs, same mutating-call preview — so every front end asks the
-// same question.
+// gateHook is the legacy adapter; production gates receive the active run context.
 func (m *model) gateHook(hub *api.GateHub, runCtx context.Context, ws *workspace.Workspace) func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
 	return func(tool, resource string, args json.RawMessage) (permission.Effect, error) {
+		return m.contextGate(hub, ws)(runCtx, tool, resource, args)
+	}
+}
+
+func (m *model) contextGate(hub *api.GateHub, ws *workspace.Workspace) func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
+	return func(runCtx context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error) {
+
 		key := [2]string{tool, resource}
-		if m.always[key] {
+		m.alwaysMu.Lock()
+		allowed := m.always[key]
+		m.alwaysMu.Unlock()
+		if allowed {
 			return permission.Allow, nil
 		}
 		prompt := fmt.Sprintf("[permission] %s on %q", tool, resource)
@@ -167,7 +172,9 @@ func (m *model) gateHook(hub *api.GateHub, runCtx context.Context, ws *workspace
 			return permission.Deny, derr
 		}
 		if isAlwaysAnswer(rep.Answer) {
+			m.alwaysMu.Lock()
 			m.always[key] = true
+			m.alwaysMu.Unlock()
 		}
 		return eff, nil
 	}

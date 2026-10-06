@@ -55,7 +55,7 @@ func (CheckURL) Run(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("bad url: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := NetworkClient(true).Do(req)
 	if err != nil {
 		// Not a tool failure — this IS the diagnostic the model asked for.
 		return fmt.Sprintf("HTTP\nurl: %s\nerror: %v", in.URL, err), nil

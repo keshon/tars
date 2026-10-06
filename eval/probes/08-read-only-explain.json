@@ -12,7 +12,7 @@
     {
       "tool": "write_file",
       "mode": "forbidden",
-      "why": "the task forbids modification \u0432\u0402\u201d this is the guard that the zero-write refusal never fires on a run that is right to write nothing"
+      "why": "the task forbids modification - this is the guard that the zero-write refusal never fires on a run that is right to write nothing"
     },
     {
       "tool": "patch_file",

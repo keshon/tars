@@ -70,10 +70,7 @@ func (t FetchRaw) Run(ctx context.Context, args json.RawMessage) (string, error)
 	req.Header.Set("User-Agent", "tars-agent/1.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/*;q=0.8,*/*;q=0.1")
 
-	client := http.DefaultClient
-	if fetchRawTransport != nil {
-		client = &http.Client{Transport: fetchRawTransport}
-	}
+	client := networkClient(false, fetchRawTransport)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch failed: %w", err)

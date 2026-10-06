@@ -29,7 +29,7 @@
     {
       "tool": "patch_file",
       "max_calls": 3,
-      "why": "the prompt's stated failure is blind patch_file erroring three or more times without a strategy change \u0432\u0402\u201d taking a longer but deliberate route (patch_lines, narrower context) is a pass, so this caps repetition rather than total steps"
+      "why": "the prompt's stated failure is blind patch_file erroring three or more times without a strategy change - taking a longer but deliberate route (patch_lines, narrower context) is a pass, so this caps repetition rather than total steps"
     }
   ]
 }

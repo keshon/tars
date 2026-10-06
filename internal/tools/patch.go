@@ -75,7 +75,8 @@ func (t PatchFile) Run(_ context.Context, args json.RawMessage) (string, error) 
 			return "", fmt.Errorf("old_content appears %d times in %s — make it unique before patching", count, in.Path)
 		}
 
-		newContent := strings.Replace(content, oldNorm, in.NewContent, 1)
+		newNorm, _ := normalizeContent([]byte(in.NewContent))
+		newContent := strings.Replace(content, oldNorm, newNorm, 1)
 		if err := os.WriteFile(full, []byte(denormalize(newContent, ending)), 0o644); err != nil {
 			return "", err
 		}

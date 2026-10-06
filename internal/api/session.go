@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -40,9 +41,11 @@ type Event struct {
 type Config struct {
 	Env roles.Env
 
-	Task      string
-	StateFile string
-	Verify    func(ctx context.Context) (output string, ok bool)
+	ResumeAnswer string
+	Plan         bool
+	Task         string
+	StateFile    string
+	Verify       func(ctx context.Context) (output string, ok bool)
 
 	// Images attaches pictures (absolute paths) to the opening user
 	// message for vision-capable backends. CLI -image and TUI @paths
@@ -93,7 +96,7 @@ func New(cfg Config) (*Session, error) {
 // Framing (run start/end) is the caller's job: in-process callers have
 // call boundaries, and wire transports add their own. Session streams
 // step events only.
-func (s *Session) Run(ctx context.Context) (string, error) {
+func (s *Session) build(ctx context.Context) (*agent.Agent, *findingDrain) {
 	emitter := events.New(&callbackWriter{onEvent: s.cfg.OnEvent})
 
 	askFn := s.asker(ctx, s.cfg.MaxQuestions)
@@ -101,6 +104,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	env := s.cfg.Env
 	prevOnStep := env.OnStep
 	prevOnResult := env.OnToolResult
+	prevTypedResult := env.OnResult
 	prevOnUsage := env.OnUsage
 	// expectReply marks the next text-only step as harness-caused: a
 	// nudge was just delivered, so the following bare answer reacts to
@@ -116,8 +120,13 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			prevOnStep(label, step, msg)
 		}
 	}
+	env.OnResult = func(result agent.ToolResult) {
+		EmitToolResult(emitter, result.CallID, result.Output, result.Failed)
+		if prevTypedResult != nil {
+			prevTypedResult(result)
+		}
+	}
 	env.OnToolResult = func(callID, result string) {
-		EmitToolResult(emitter, callID, result)
 		if prevOnResult != nil {
 			prevOnResult(callID, result)
 		}
@@ -145,7 +154,16 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	}
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
-	a = roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
+	if s.cfg.Plan {
+		a = roles.Planner(env, "plan", s.cfg.StateFile)
+	} else {
+		a = roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
+	}
+	return a, drain
+}
+
+func (s *Session) Run(ctx context.Context) (string, error) {
+	a, drain := s.build(ctx)
 	ans, err := a.Run(ctx, s.cfg.Task, s.cfg.Images...)
 	if err != nil {
 		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
@@ -153,6 +171,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 	}
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
+	s.report(a, drain.emit)
 	return ans, err
 }
 
@@ -230,62 +249,29 @@ func (s *Session) asker(ctx context.Context, maxQ int) func(string) (string, err
 
 // Resume continues from saved history with a note, mirroring Agent.Resume.
 func (s *Session) Resume(ctx context.Context, history []llm.Message, note string, images ...string) (string, error) {
-	emitter := events.New(&callbackWriter{onEvent: s.cfg.OnEvent})
-	env := s.cfg.Env
-	prevOnStep := env.OnStep
-	prevOnResult := env.OnToolResult
-	prevOnUsage := env.OnUsage
-	// expectReply marks the next text-only step as harness-caused: a
-	// nudge was just delivered, so the following bare answer reacts to
-	// the harness, not the operator. One-shot and text-only: tool calls
-	// are work, whatever prompted them.
-	expectReply := false
-	var a *agent.Agent
-	env.OnStep = func(label string, step int, msg llm.Message) {
-		hr := expectReply && len(msg.ToolCalls) == 0
-		expectReply = false
-		EmitStep(emitter, label, step, msg, hr, a.Report().MaxSteps)
-		if prevOnStep != nil {
-			prevOnStep(label, step, msg)
+	a, drain := s.build(ctx)
+	var ans string
+	var err error
+	if callID, question, paused := agent.PausedOnQuestion(history); paused {
+		reply := agent.SuspendReply{Answer: s.cfg.ResumeAnswer}
+		var rerr error
+		if s.cfg.ResumeAnswer == "" {
+			reply, rerr = s.cfg.Answer(ctx, agent.SuspendRequest{Kind: agent.SuspendAsk, Prompt: question})
 		}
-	}
-	env.OnToolResult = func(callID, result string) {
-		EmitToolResult(emitter, callID, result)
-		if prevOnResult != nil {
-			prevOnResult(callID, result)
+		if rerr != nil {
+			return "", rerr
 		}
+		ans, err = a.ResumeWithAnswer(ctx, history, callID, reply.Answer)
+	} else {
+		ans, err = a.Resume(ctx, history, note, images...)
 	}
-	env.OnUsage = func(step int, usage llm.Usage) {
-		EmitUsage(emitter, step, usage)
-		if prevOnUsage != nil {
-			prevOnUsage(step, usage)
-		}
-	}
-	prevOnNudge := env.OnNudge
-	env.OnNudge = func(kind, text string) {
-		EmitNudge(emitter, kind, text)
-		expectReply = true
-		if prevOnNudge != nil {
-			prevOnNudge(kind, text)
-		}
-	}
-	prevOnDelta := env.OnDelta
-	env.OnDelta = func(chunk string) {
-		EmitDelta(emitter, chunk)
-		if prevOnDelta != nil {
-			prevOnDelta(chunk)
-		}
-	}
-	drain := newFindingDrain(emitter, env.OnFinding)
-	env.OnFinding = drain.reportPerEdit
-	a = roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
-	ans, err := a.Resume(ctx, history, note, images...)
 	if err != nil {
 		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
 			ans, err = resAns, resErr
 		}
 	}
 	drain.sweep(s.cfg.Env.WS, a.MutatedPaths())
+	s.report(a, drain.emit)
 	return ans, err
 }
 
@@ -481,14 +467,15 @@ func (d *findingDrain) sweep(ws *workspace.Workspace, paths []string) {
 // EmitToolResult writes one completed tool call as a JSONL event.
 // Callers pair it with the matching tool_calls entry by call ID; the
 // result text is capped like every other field.
-func EmitToolResult(emitter *events.Emitter, callID string, result string) {
+func EmitToolResult(emitter *events.Emitter, callID string, result string, failed ...bool) {
 	if emitter == nil {
 		return
 	}
-	emitter.Emit("tool_result", map[string]any{
-		"call_id": callID,
-		"text":    events.Message(result),
-	})
+	fields := map[string]any{"call_id": callID, "text": events.Message(result)}
+	if len(failed) > 0 {
+		fields["failed"] = failed[0]
+	}
+	emitter.Emit("tool_result", fields)
 }
 
 // EmitUsage writes backend token counts as a JSONL event. Observers that
@@ -505,4 +492,22 @@ func EmitUsage(emitter *events.Emitter, step int, usage llm.Usage) {
 		"cached":     usage.CachedTokens,
 		"estimated":  usage.Estimated,
 	})
+}
+
+// EventWriter adapts the shared JSONL emitter to an in-process event sink.
+func EventWriter(onEvent func(Event)) io.Writer { return &callbackWriter{onEvent: onEvent} }
+
+func (s *Session) report(a *agent.Agent, e *events.Emitter) {
+	if s.cfg.OnEvent == nil {
+		return
+	}
+	EmitOutcome(e, a.Report(), s.cfg.StateFile)
+}
+
+// EmitOutcome reports measured effects and check output in every frontend.
+func EmitOutcome(e *events.Emitter, r agent.RunReport, stateFile string) {
+	if e == nil {
+		return
+	}
+	e.Emit("outcome", map[string]any{"outcome": r.Outcome, "files": r.MutatedPaths, "verification": r.Verification, "warnings": r.Warnings, "resume": stateFile, "open_todos": r.OpenTodos})
 }

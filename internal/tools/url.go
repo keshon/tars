@@ -153,7 +153,7 @@ func parseIPLoose(host string) net.IP {
 // isPublicIP reports whether ip is routable on the public internet:
 // not loopback, private, link-local, multicast, unspecified, or reserved.
 func isPublicIP(ip net.IP) bool {
-	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() &&
+	return ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() &&
 		!ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified() &&
 		!isReserved(ip)
 }
@@ -163,6 +163,12 @@ func isPublicIP(ip net.IP) bool {
 func isReserved(ip net.IP) bool {
 	if ip4 := ip.To4(); ip4 != nil {
 		switch {
+		case ip4[0] == 0 || ip4[0] >= 240:
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127:
+			return true
+		case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19):
+			return true
 		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // TEST-NET-1
 			return true
 		case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // TEST-NET-2
@@ -177,5 +183,6 @@ func isReserved(ip net.IP) bool {
 		return false
 	}
 	// IPv6 documentation prefix.
-	return strings.HasPrefix(strings.ToLower(ip.String()), "2001:db8")
+	ip16 := ip.To16()
+	return ip16 != nil && ip16[0] == 0x20 && ip16[1] == 0x01 && ip16[2] == 0x0d && ip16[3] == 0xb8
 }

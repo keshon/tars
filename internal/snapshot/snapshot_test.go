@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -56,6 +57,7 @@ func TestTrackAndDiff(t *testing.T) {
 
 func TestRevertRestoresTracked(t *testing.T) {
 	dir := initRepo(t)
+	Track(dir, filepath.Join(dir, ".tars", "snapshots"))
 	p := filepath.Join(dir, "a.txt")
 	if err := os.WriteFile(p, []byte("dirty"), 0o644); err != nil {
 		t.Fatal(err)
@@ -72,5 +74,64 @@ func TestRevertRestoresTracked(t *testing.T) {
 func TestTrackNonRepo(t *testing.T) {
 	if snap := Track(t.TempDir(), t.TempDir()); snap.Path != "" {
 		t.Fatalf("expected empty snapshot, got %s", snap.Path)
+	}
+}
+
+func TestCheckpointPreservesDirtyIndexAndUntracked(t *testing.T) {
+	root := initRepo(t)
+	a := filepath.Join(root, "a.txt")
+	seed := filepath.Join(root, "seed.txt")
+	os.WriteFile(a, []byte("staged"), 0600)
+	if out, err := exec.Command("git", "-C", root, "add", "a.txt").CombinedOutput(); err != nil {
+		t.Fatalf("stage: %v %s", err, out)
+	}
+	os.WriteFile(a, []byte("unstaged"), 0600)
+	os.WriteFile(seed, []byte("seed"), 0600)
+	snap := Track(root, filepath.Join(root, ".tars", "snapshots"))
+	if snap.Path == "" {
+		t.Fatal("capture failed")
+	}
+	os.WriteFile(a, []byte("agent"), 0600)
+	os.Remove(seed)
+	os.WriteFile(filepath.Join(root, "new.txt"), []byte("new"), 0600)
+	exec.Command("git", "-C", root, "add", "-A").Run()
+	if err := Revert(root); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(a); string(data) != "unstaged" {
+		t.Fatalf("working copy=%q", data)
+	}
+	if data, _ := exec.Command("git", "-C", root, "show", ":a.txt").Output(); string(data) != "staged" {
+		t.Fatalf("index=%q", data)
+	}
+	if data, _ := os.ReadFile(seed); string(data) != "seed" {
+		t.Fatalf("seed=%q", data)
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("new file survives: %v", err)
+	}
+}
+
+func TestRevertRequiresCheckpoint(t *testing.T) {
+	root := initRepo(t)
+	if Revert(root) == nil {
+		t.Fatal("revert without checkpoint allowed")
+	}
+}
+
+func TestCheckpointPreviewDoesNotModifyFiles(t *testing.T) {
+	root := initRepo(t)
+	snap := Track(root, filepath.Join(root, ".tars", "snapshots"))
+	os.WriteFile(filepath.Join(root, "a.txt"), []byte("agent"), 0600)
+	os.WriteFile(filepath.Join(root, "new.txt"), []byte("new"), 0600)
+	changes, err := Preview(root, snap.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(changes, []string{"remove new.txt", "restore a.txt"}) {
+		t.Fatalf("preview=%v", changes)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "a.txt")); string(data) != "agent" {
+		t.Fatal("preview changed workspace")
 	}
 }

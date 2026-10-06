@@ -98,7 +98,7 @@ func toolCardBlock(callID, text string) block {
 // card with a matching non-empty call ID. Unknown IDs (and empty ones)
 // fall back to a standalone result block so parallel or leaked results
 // can never corrupt the wrong card. Reports whether it attached.
-func (m *model) attachResult(callID, text string) bool {
+func (m *model) attachResult(callID, text string, failed ...bool) bool {
 	if callID == "" {
 		return false
 	}
@@ -107,7 +107,10 @@ func (m *model) attachResult(callID, text string) bool {
 		if b.role == roleTool && b.open && b.callID == callID {
 			b.result = text
 			b.open = false
-			b.failed = strings.HasPrefix(text, "error:")
+			b.failed = strings.HasPrefix(text, "error:") || strings.Contains(text, "\nerror:")
+			if len(failed) > 0 {
+				b.failed = failed[0]
+			}
 			m.refreshContent()
 			return true
 		}

@@ -101,3 +101,21 @@ func TestStream_KeepsMeasuredUsage(t *testing.T) {
 		t.Fatalf("usage = %+v", resp.Usage)
 	}
 }
+
+func TestStreamRejectsIncompleteAndMalformedFrames(t *testing.T) {
+	for _, body := range []string{
+		`data: {"choices":[{"delta":{"content":"partial"}}]}` + "\n\n",
+		"data: invalid\n\ndata: [DONE]\n\n",
+		`data: {"error":{"message":"failed"}}` + "\n\ndata: [DONE]\n\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+			defer srv.Close()
+			c := NewLlamaClient(srv.URL, "test")
+			_, err := c.Stream(context.Background(), ChatRequest{}, nil)
+			if err == nil {
+				t.Fatal("partial/error stream accepted")
+			}
+		})
+	}
+}

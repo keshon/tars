@@ -20,7 +20,7 @@
       "tool": "write_file",
       "mode": "forbidden",
       "args_regex": "sample.go",
-      "why": "rewriting a whole file to change one constant is how surrounding code gets silently dropped \u0432\u0402\u201d the Greet() assertion above is what catches it when it happens"
+      "why": "rewriting a whole file to change one constant is how surrounding code gets silently dropped - the Greet() assertion above is what catches it when it happens"
     }
   ]
 }

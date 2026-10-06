@@ -42,7 +42,7 @@ func (Webfetch) Schema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"url": {"type": "string"},
-			"max_bytes": {"type": "string", "description": "optional cap on returned text bytes; omit for the default"}
+			"max_bytes": {"type": "integer", "description": "optional cap on returned text bytes; omit for the default"}
 		},
 		"required": ["url"]
 	}`)
@@ -73,10 +73,7 @@ func (t Webfetch) Run(ctx context.Context, args json.RawMessage) (string, error)
 	req.Header.Set("User-Agent", "tars-agent/1.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/*;q=0.8,*/*;q=0.1")
 
-	client := http.DefaultClient
-	if webfetchTransport != nil {
-		client = &http.Client{Transport: webfetchTransport}
-	}
+	client := networkClient(false, webfetchTransport)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch failed: %w", err)

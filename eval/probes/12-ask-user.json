@@ -1,0 +1,41 @@
+{
+  "prompt": "eval/prompts/12-ask-user.md",
+  "task": "Make the app better. Before editing, ask me which improvement I want.",
+  "tier": "signal",
+  "seed": "eval/fixtures",
+  "replies": [
+    "Add a short IMPROVEMENTS.md describing the existing fixture files. Do not change the source files."
+  ],
+  "max_steps": 8,
+  "verify": [
+    {
+      "type": "file_exists",
+      "path": "IMPROVEMENTS.md"
+    },
+    {
+      "type": "content_contains",
+      "path": "sample.go",
+      "contains": "func Greet() string"
+    },
+    {
+      "type": "content_contains",
+      "path": "IMPROVEMENTS.md",
+      "contains": "sample.go"
+    }
+  ],
+  "trace": [
+    {
+      "tool": "ask_user",
+      "mode": "required",
+      "max_calls": 1,
+      "why": "the requested improvement must come from the scripted human reply"
+    }
+  ],
+  "answer": [
+    {
+      "regex": "IMPROVEMENTS",
+      "mode": "required",
+      "why": "report the requested deliverable"
+    }
+  ]
+}

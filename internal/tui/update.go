@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +25,11 @@ func waitEvents(m *model) tea.Cmd {
 		ev, ok := <-m.events
 		if !ok {
 			return nil
+		}
+		if ev.Name == "_done" {
+			answer, _ := ev.Fields["answer"].(string)
+			err, _ := ev.Fields["error"].(error)
+			return doneMsg{answer: answer, err: err}
 		}
 		return eventMsg(ev)
 	}
@@ -52,10 +57,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick()
 
 	case eventMsg:
-		m.handleEvent(api.Event(msg))
+		if m.state != stStopping {
+			m.handleEvent(api.Event(msg))
+		}
 		return m, waitEvents(m)
 
 	case doneMsg:
+		wasInterrupted := m.interrupted
 		m.answer = msg.answer
 		m.runErr = msg.err
 		m.state = stDone
@@ -74,9 +82,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendBlock(errorBlock("failed: " + msg.err.Error() + "\n/retry re-runs this turn"))
 			}
 		}
-		m.input.SetValue("")
+		m.alwaysMu.Lock()
+		m.always = map[[2]string]bool{}
+		m.alwaysMu.Unlock()
+		if m.gateDraft != "" {
+			m.input.SetValue(m.gateDraft)
+			m.gateDraft = ""
+		}
 		m.fitBottom()
-		return m, m.input.Focus()
+		if m.queued != "" {
+			queued := m.queued
+			m.queued = ""
+			if m.runErr == nil && !wasInterrupted {
+				m.input.SetValue(queued)
+				_, cmd := m.followUp()
+				return m, tea.Batch(cmd, waitEvents(m))
+			}
+			m.input.SetValue(queued)
+		}
+		return m, tea.Batch(m.input.Focus(), waitEvents(m))
 
 	case tea.MouseMsg:
 		// An overlay freezes the background: scroll resumes on close.
@@ -155,7 +179,7 @@ func (m *model) fitBottom() {
 	if m.state == stPermission && m.gstage == gsReject {
 		lines = 2
 	}
-	if m.state == stAsk || m.state == stDone {
+	if m.state == stAsk || m.state == stDone || m.state == stRunning || m.state == stStopping {
 		lines += m.input.Height() - 1
 	}
 	// The -6 counts header bar, header rule, status line, divider rule,
@@ -173,22 +197,6 @@ func (m *model) fitBottom() {
 		h = 1
 	}
 	m.vp.Height = h
-}
-
-// touchFiles collects distinct path args from a tool call's JSON args
-// for the status files counter. Best-effort decode: unparseable args
-// simply contribute nothing.
-func (m *model) touchFiles(args string) {
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(args), &decoded); err != nil {
-		return
-	}
-	if p, _ := decoded["path"].(string); p != "" {
-		if m.filesTouched == nil {
-			m.filesTouched = map[string]bool{}
-		}
-		m.filesTouched[p] = true
-	}
 }
 
 // scrollViewport forwards a scroll message (mouse or paging key) to
@@ -243,14 +251,17 @@ func (m *model) handleEvent(ev api.Event) {
 				args, _ := call["args"].(string)
 				id, _ := call["id"].(string)
 				m.toolsUsed++
-				m.touchFiles(args)
 				m.appendBlock(toolCardBlock(id, name+" "+truncate(args, 120)))
 			}
 		}
 	case "tool_result":
 		text, _ := ev.Fields["text"].(string)
 		callID, _ := ev.Fields["call_id"].(string)
-		if !m.attachResult(callID, text) {
+		var status []bool
+		if failed, ok := ev.Fields["failed"].(bool); ok {
+			status = []bool{failed}
+		}
+		if !m.attachResult(callID, text, status...) {
 			m.appendBlock(resultBlock(text))
 		}
 	case "finding":
@@ -293,14 +304,42 @@ func (m *model) handleEvent(ev api.Event) {
 			m.pushOverlay(ovGate)
 		} else {
 			m.state = stAsk
+			m.gateDraft = m.input.Value()
 			m.input.SetValue("")
 			m.input.Focus()
 		}
 	case "input_answered":
 		m.state = stRunning
 		m.gate = ""
-		m.input.Blur()
-		m.input.SetValue("")
+		m.input.SetValue(m.gateDraft)
+		m.gateDraft = ""
+		m.input.Focus()
+	case "result":
+		if report, ok := ev.Fields["report"].(string); ok && report != "" {
+			m.appendBlock(answerBlock(report))
+		}
+	case "outcome":
+		m.filesTouched = map[string]bool{}
+		outcome, _ := ev.Fields["outcome"].(string)
+		var files []string
+		if values, ok := ev.Fields["files"].([]any); ok {
+			for _, value := range values {
+				if path, ok := value.(string); ok {
+					files = append(files, path)
+					m.filesTouched[path] = true
+				}
+			}
+		}
+		checks, _ := ev.Fields["verification"].(string)
+		if checks == "" {
+			checks = "no current command verdict"
+		}
+		resume, _ := ev.Fields["resume"].(string)
+		text := fmt.Sprintf("outcome: %s\nfiles: %s\nchecks: %s", outcome, strings.Join(files, ", "), truncate(checks, 512))
+		if resume != "" {
+			text += "\nresume: agent -tui -resume " + resume
+		}
+		m.appendBlock(markerBlock(text))
 	case "mission":
 		if text, _ := ev.Fields["text"].(string); text != "" {
 			m.appendBlock(missionBlock("[mission] " + text))
@@ -403,7 +442,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.scrollViewport(msg)
 		case tea.KeyEnter:
 			return m.followUp()
-		case tea.KeyCtrlC, tea.KeyEsc, tea.KeyCtrlQ:
+		case tea.KeyEsc:
+			m.input.SetValue("")
+			m.fitInput()
+			m.fitBottom()
+			return m, nil
+		case tea.KeyCtrlC, tea.KeyCtrlQ:
 			// Quit lives on ctrl+q (and ctrl+c): a letter key must
 			// never quit, or words starting with q ("queen") become
 			// untypable on an empty box. Empty+enter still quits.
@@ -429,36 +473,53 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.fitBottom()
 		return m, cmd
 	default:
-		switch msg.String() {
-		case "ctrl+c":
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyCtrlQ:
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
-		case "q", "esc":
-			// Stop the run but stay in chat (TUI-21): while running
-			// the input is blurred, so neither key is typing. Quitting
-			// mid-run lives on ctrl+c only.
-			m.interrupted = true
-			m.cancel()
-			m.state = stDone
-			m.fitBottom()
+		case tea.KeyEsc:
+			if m.state != stStopping {
+				m.interrupted = true
+				m.cancel()
+				m.state = stStopping
+				m.fitBottom()
+			}
+			return m, nil
+		case tea.KeyEnter:
+			if m.state == stStopping {
+				return m, nil
+			}
+			text := strings.TrimSpace(m.input.Value())
+			if text == "" {
+				return m, nil
+			}
+			if m.queued != "" {
+				m.appendBlock(markerBlock("a follow-up is already queued"))
+				return m, nil
+			}
+			m.queued = text
 			m.input.SetValue("")
-			return m, m.input.Focus()
-		case "end":
-			// The viewport's keymap covers paging, not jump-to-end:
-			// do it explicitly and re-arm follow directly.
+			m.appendBlock(markerBlock("queued follow-up: " + truncate(text, 120)))
+			m.fitInput()
+			m.fitBottom()
+			return m, nil
+		case tea.KeyEnd:
 			m.vp.GotoBottom()
 			m.follow = true
-		case "home":
+			return m, nil
+		case tea.KeyHome:
 			m.vp.GotoTop()
 			m.follow = false
+			return m, nil
+		case tea.KeyPgUp, tea.KeyPgDown:
+			return m.scrollViewport(msg)
 		}
 		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		// Stickiness follows the viewport, not the key: any scroll
-		// away from the bottom (keys or wheel) unfollows; reaching the
-		// bottom re-arms. New blocks never yank a reading user.
-		m.follow = m.vp.AtBottom()
+		m.input, cmd = m.input.Update(msg)
+		m.fitInput()
+		m.fitBottom()
 		return m, cmd
+
 	}
 }

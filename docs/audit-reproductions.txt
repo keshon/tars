@@ -1,0 +1,138 @@
+Audit reproductions for commit 06f636da005db3e5e1ad7fbda416895e6da1fd61
+These tests ASSERT the observed bugs, so PASS confirms the reproduction, not correct behavior.
+Copy each section to its indicated package path, then run: go test ./internal/agent ./internal/tools ./internal/mission ./internal/llm ./internal/tui -run TestAuditRepro -v
+Use a temporary checkout. Do not keep these assertions as fixed-behavior regression tests.
+
+SOURCE: internal\agent\audit_repro_test.go
+
+package agent
+
+import (
+ "context"
+ "encoding/json"
+ "testing"
+ "github.com/keshon/tars/internal/llm"
+ "github.com/keshon/tars/internal/permission"
+)
+
+type auditTool struct { ran *bool }
+func (auditTool) Name() string { return "audit_tool" }
+func (auditTool) Description() string { return "audit" }
+func (auditTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (auditTool) Mode() ToolMode { return Exclusive }
+func (t auditTool) Run(context.Context,json.RawMessage)(string,error){ *t.ran=true; return "ok",nil }
+
+func TestAuditReproPolicy(t *testing.T) {
+ for _, hook := range []bool{false,true} {
+  ran := false
+  cfg := Config{Tools:NewRegistry(auditTool{&ran}),Policy:permission.Policy{Rules:[]permission.Rule{{Tool:"*",Pattern:"*",Effect:permission.Deny}}}}
+  if hook {cfg.BeforeToolCall=func(context.Context,string,string,json.RawMessage)(permission.Effect,error){return permission.Allow,nil}}
+  a:=New(cfg)
+  a.executeToolCalls(context.Background(),&runState{},0,"stop",[]llm.ToolCall{{ID:"x",Name:"audit_tool",Arguments:json.RawMessage(`{}`)}},nil)
+  if !ran {t.Fatal("expected reproduction to execute denied tool")}
+  t.Logf("DENY tool executed; hook present=%v",hook)
+ }
+}
+
+func TestAuditReproFalseCompletion(t *testing.T) {
+ c:=&stubClient{responses:[]llm.ChatResponse{
+  {Message:llm.Message{Role:llm.RoleAssistant,Content:"I created notes.txt"}},
+  {Message:llm.Message{Role:llm.RoleAssistant,Content:"I created notes.txt"}},
+ }}
+ a:=New(Config{Client:c,Tools:NewRegistry()})
+ out,err:=a.Run(context.Background(),"Create notes.txt")
+ if err!=nil || out!="I created notes.txt" || a.LastRunMutations!=0 {t.Fatalf("repro failed %q %v",out,err)}
+ t.Log("default finish accepted file-creation claim after one nudge with zero mutations")
+}
+
+func TestAuditReproStaleVerification(t *testing.T) {
+ ran:=false;checks:=0
+ c:=&stubClient{responses:[]llm.ChatResponse{
+  {Message:llm.Message{Role:llm.RoleAssistant,ToolCalls:[]llm.ToolCall{{ID:"1",Name:"audit_tool",Arguments:json.RawMessage(`{}`)}}}},
+  {Message:llm.Message{Role:llm.RoleAssistant,Content:"done"}},
+  {Message:llm.Message{Role:llm.RoleAssistant,ToolCalls:[]llm.ToolCall{{ID:"2",Name:"audit_tool",Arguments:json.RawMessage(`{"edit":2}`)}}}},
+  {Message:llm.Message{Role:llm.RoleAssistant,Content:"done"}},
+ }}
+ a:=New(Config{Client:c,Tools:NewRegistry(auditTool{&ran}),MutatingTools:[]string{"audit_tool"},Verify:func(context.Context)(string,bool){checks++;return "PASSED",true}})
+ _,err:=a.Run(context.Background(),"edit and verify")
+ if err!=nil || checks!=1 || a.LastRunMutations!=2 {t.Fatalf("repro failed checks=%d mutations=%d err=%v",checks,a.LastRunMutations,err)}
+ t.Log("two mutations, verification between them, no final verification")
+}
+
+
+SOURCE: internal\tools\audit_repro_test.go
+
+package tools
+
+import("context";"encoding/json";"net/http";"strings";"testing";"os";"path/filepath";"github.com/keshon/tars/internal/workspace")
+
+func TestAuditReproRedirect(t *testing.T){
+ reached:=false
+ webfetchTransport=roundTripFunc(func(r *http.Request)(*http.Response,error){
+  if r.URL.Host=="example.com" {resp,_:=cannedResponseCode(r,302,"text/plain",""); resp.Header.Set("Location","http://127.0.0.1:43210/private");return resp,nil}
+  reached=true;return cannedResponse(r,"text/plain","private-data")
+ })
+ defer func(){webfetchTransport=nil}()
+ out,err:=(Webfetch{}).Run(context.Background(),json.RawMessage(`{"url":"https://example.com"}`))
+ if err!=nil || !reached || !strings.Contains(out,"private-data"){t.Fatalf("repro failed: %v %s",err,out)}
+ t.Log("public URL redirected to loopback; private body returned")
+}
+
+func TestAuditReproSchema(t *testing.T){
+ _,err:=(Webfetch{}).Run(context.Background(),json.RawMessage(`{"url":"https://example.com","max_bytes":"100"}`))
+ if err==nil || !strings.Contains(err.Error(),"cannot unmarshal string"){t.Fatalf("repro failed: %v",err)}
+ t.Log(err)
+}
+
+func TestAuditReproPatchCRLF(t *testing.T){
+ dir:=t.TempDir(); ws,_:=workspace.New(dir);path:=filepath.Join(dir,"x.txt")
+ os.WriteFile(path,[]byte("alpha\r\nbeta\r\n"),0600)
+ _,err:=(PatchFile{WS:ws}).Run(context.Background(),json.RawMessage(`{"path":"x.txt","old_content":"beta","new_content":"new\r\nline"}`))
+ body,_:=os.ReadFile(path)
+ if err!=nil || !strings.Contains(string(body),"\r\r\n"){t.Fatalf("repro failed %q %v",body,err)}
+ t.Logf("replacement produced doubled carriage return: %q",body)
+}
+
+
+SOURCE: internal\mission\audit_repro_test.go
+
+package mission
+import("context";"runtime";"strings";"testing")
+func TestAuditReproCheckEnvironment(t *testing.T){
+ t.Setenv("TARS_AUDIT_API_KEY","audit-sentinel")
+ cmd:="printf '%s' \"$TARS_AUDIT_API_KEY\""
+ if runtime.GOOS=="windows"{cmd="echo %TARS_AUDIT_API_KEY%"}
+ out,err:=RunShellCommand(context.Background(),cmd,t.TempDir())
+ if err!=nil || !strings.Contains(out,"audit-sentinel"){t.Fatalf("repro failed: %v %q",err,out)}
+ t.Log("verification shell inherited API key sentinel")
+}
+
+
+SOURCE: internal\llm\audit_repro_test.go
+
+package llm
+import("context";"net/http";"net/http/httptest";"testing")
+func TestAuditReproTruncatedStream(t *testing.T){
+ srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","text/event-stream");w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"I updated config.go\"}}]}\n\n"))}))
+ defer srv.Close()
+ resp,err:=NewLlamaClient(srv.URL,"test").Stream(context.Background(),ChatRequest{},nil)
+ if err!=nil || resp.Message.Content=="" || resp.FinishReason!=""{t.Fatalf("repro failed: %+v %v",resp,err)}
+ t.Log("stream EOF without DONE or finish_reason accepted as success")
+}
+
+
+SOURCE: internal\tui\audit_repro_test.go
+
+package tui
+import("testing";"context";tea "github.com/charmbracelet/bubbletea")
+func TestAuditReproInterruptGeneration(t *testing.T){
+ m:=&model{state:stRunning,cancel:func(){},input:newInput(),styles:defaultStyles(),base:context.Background()}
+ m.handleKey(tea.KeyMsg{Type:tea.KeyEsc})
+ if m.state!=stDone{t.Fatal("interrupt did not expose input")}
+ // Operator starts another turn before cancellation has drained.
+ m.state=stRunning
+ m.Update(doneMsg{answer:"old run answer",err:context.Canceled})
+ if m.state!=stDone || m.answer!="old run answer"{t.Fatal("repro failed")}
+ t.Log("old doneMsg replaced active new run state and answer")
+}
+

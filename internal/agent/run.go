@@ -15,10 +15,33 @@ import (
 // function owns only the order: chat, recover, bookkeeping, dispatch,
 // interject, persist. See handleFinish (finish.go) and executeToolCalls
 // (tools.go).
-func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) {
+func (a *Agent) run(ctx context.Context, history []llm.Message) (answer string, runErr error) {
 	var st runState
 	a.LastRunMutations = 0
 	a.report = RunReport{MaxSteps: a.cfg.MaxSteps}
+	defer func() {
+		a.LastRunMutations = st.mutatingSucceeded
+		a.report.MutatedPaths = st.mutatedPaths
+		if runErr == nil && st.observationErr != nil {
+			answer = ""
+			runErr = fmt.Errorf("cannot verify workspace effects: %w", st.observationErr)
+		}
+		a.report.Outcome = "completed"
+		if runErr != nil {
+			a.report.Outcome = "failed"
+			a.report.Final = ""
+		}
+		if ctx.Err() != nil {
+			a.report.Outcome = "cancelled"
+		}
+	}()
+	if a.cfg.BeginChanges != nil {
+		var err error
+		st.observeChanges, err = a.cfg.BeginChanges(ctx)
+		if err != nil {
+			return "", fmt.Errorf("observe workspace: %w", err)
+		}
+	}
 	// The registry is fresh per run, but the checklist is per task:
 	// restore it from the last todo call in history, or the todo-gated
 	// finish and todo funding only ever see same-turn todos — a resumed
@@ -26,6 +49,9 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 	a.rehydrateTodo(ctx, history)
 
 	for step := 0; step < a.cfg.MaxSteps+st.todoFunded; step++ {
+		if st.observationErr != nil {
+			return "", fmt.Errorf("observe workspace: %w", st.observationErr)
+		}
 		resp, err := a.chat(ctx, llm.ChatRequest{
 			Messages:  history,
 			Tools:     a.cfg.Tools.Defs(),
@@ -66,6 +92,10 @@ func (a *Agent) run(ctx context.Context, history []llm.Message) (string, error) 
 		a.saveState(history)
 
 		if len(resp.Message.ToolCalls) == 0 {
+			a.observeWorkspace(&st)
+			if st.observationErr != nil {
+				return "", fmt.Errorf("observe workspace: %w", st.observationErr)
+			}
 			out := a.handleFinish(ctx, &st, step, resp, leakedText, budgetNudge, history)
 			history = out.history
 			if out.done {

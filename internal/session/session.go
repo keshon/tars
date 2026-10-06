@@ -1,6 +1,6 @@
 // Package session appends an immutable JSONL event log next to state.json.
 // state.json is the resume snapshot (rewritten atomically each step);
-// state.jsonl is the audit trail (one line per step, never rewritten).
+// state.jsonl retains full recovery checkpoints, with one 16 MiB previous log.
 // A corrupt snapshot can be rebuilt from the log; a corrupt log line is
 // skipped, never fatal.
 package session
@@ -34,27 +34,40 @@ func LogPath(stateFile string) string {
 	return stateFile[:len(stateFile)-len(ext)] + ".jsonl"
 }
 
-// Append writes one event for the current history. Best-effort like
-// saveState: logging must never break a working run.
-func Append(stateFile string, seq int, history []llm.Message) {
+// Append writes a bounded recovery log and returns persistence failures.
+// Every entry is a full checkpoint,
+// so rotation does not make recovery depend on a missing earlier delta.
+func Append(stateFile string, seq int, history []llm.Message) error {
 	if stateFile == "" {
-		return
+		return nil
 	}
 	path := LogPath(stateFile)
-	if dir := filepath.Dir(path); dir != "." {
-		_ = os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
 	}
 	ev := Event{Seq: seq, Time: time.Now().UTC().Format(time.RFC3339), Messages: len(history), History: history}
 	data, err := json.Marshal(ev)
 	if err != nil {
-		return
+		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if info, err := os.Stat(path); err == nil && info.Size()+int64(len(data)) > 16*1024*1024 {
+		if err := os.Remove(path + ".previous"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(path, path+".previous"); err != nil {
+			return err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		return
+		return err
 	}
-	defer f.Close()
-	_, _ = fmt.Fprintln(f, string(data))
+	_, err = fmt.Fprintln(f, string(data))
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 // Load reads the last event's history from a .jsonl log, skipping corrupt
@@ -78,6 +91,9 @@ func Load(path string) ([]llm.Message, error) {
 			last = ev.History
 			found = true
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read session log: %w", err)
 	}
 	if !found {
 		return nil, fmt.Errorf("session log %s holds no valid events", path)

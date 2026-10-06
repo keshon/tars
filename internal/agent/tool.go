@@ -17,6 +17,13 @@ import (
 	"github.com/keshon/tars/internal/prompts"
 )
 
+// ToolResult carries execution status separately from model-facing prose.
+type ToolResult struct {
+	CallID string
+	Output string
+	Failed bool
+}
+
 // ToolMode tells the loop whether a tool is safe to run concurrently with
 // other tool calls in the same step, or must run alone. A purely
 // type-level signal can't know whether two write_file calls in one step
@@ -29,12 +36,11 @@ type ToolMode int
 
 const (
 	// Concurrent tools are safe to run alongside anything else in the
-	// same step: pure reads, independent delegated work, fire-and-forget
-	// process management.
+	// same batch: read-only operations.
 	Concurrent ToolMode = iota
 	// Exclusive tools mutate the workspace, or do something unanalyzable
-	// (an arbitrary shell command) — they run before anything else in
-	// the step starts, never overlapping with it.
+	// (an arbitrary shell command). They separate concurrent read batches
+	// and execute in model call order.
 	Exclusive
 )
 
@@ -293,24 +299,17 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 		}
 	}
 
-	var concurrentIdx, exclusiveIdx []int
-	for i, call := range calls {
-		if skipped[i] {
-			continue
-		}
-		if a.cfg.Tools.ModeOf(call.Name) == Concurrent {
-			concurrentIdx = append(concurrentIdx, i)
-		} else {
-			exclusiveIdx = append(exclusiveIdx, i)
-		}
-	}
-
 	runOne := func(i int) {
 		call := calls[i]
+		if err := ctx.Err(); err != nil {
+			results[i] = callResult{err: err}
+			return
+		}
 		resource := toolResource(call.Name, call.Arguments)
-		if a.cfg.BeforeToolCall != nil {
-			eff := a.cfg.Policy.Evaluate(call.Name, resource)
-			if eff == permission.Ask || eff == permission.Deny {
+		eff := a.cfg.Policy.Evaluate(call.Name, resource)
+		if eff == permission.Ask {
+			eff = permission.Deny
+			if a.cfg.BeforeToolCall != nil {
 				hookEff, hookErr := a.cfg.BeforeToolCall(ctx, call.Name, resource, call.Arguments)
 				if hookErr != nil {
 					results[i] = callResult{err: hookErr}
@@ -321,14 +320,14 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 				}
 				eff = hookEff
 			}
-			if eff == permission.Deny {
-				denied := fmt.Errorf("blocked by policy (%s on %s)", call.Name, resource)
-				results[i] = callResult{err: denied}
-				if a.cfg.AfterToolCall != nil {
-					a.cfg.AfterToolCall(call.Name, resource, "", denied)
-				}
-				return
+		}
+		if eff != permission.Allow {
+			denied := fmt.Errorf("blocked by policy (%s on %s)", call.Name, resource)
+			results[i] = callResult{err: denied}
+			if a.cfg.AfterToolCall != nil {
+				a.cfg.AfterToolCall(call.Name, resource, "", denied)
 			}
+			return
 		}
 		content, err := a.cfg.Tools.Run(ctx, call.Name, call.Arguments)
 		results[i] = callResult{content: content, err: err}
@@ -337,9 +336,9 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 		}
 	}
 
-	if len(concurrentIdx) > 0 {
+	runBatch := func(indices []int) {
 		var wg sync.WaitGroup
-		for _, i := range concurrentIdx {
+		for _, i := range indices {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -348,9 +347,21 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 		}
 		wg.Wait()
 	}
-	for _, i := range exclusiveIdx {
-		runOne(i)
+	// Consecutive reads may overlap; mutations are barriers in call order.
+	var batch []int
+	for i := range calls {
+		if skipped[i] {
+			continue
+		}
+		if a.cfg.Tools.ModeOf(calls[i].Name) == Concurrent {
+			batch = append(batch, i)
+		} else {
+			runBatch(batch)
+			batch = nil
+			runOne(i)
+		}
 	}
+	runBatch(batch)
 
 	mutatingBefore := st.mutatingSucceeded
 	progressed := false
@@ -388,10 +399,12 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 				st.idempotentSeen[callKey(call.Name, call.Arguments)] = step
 			}
 			if containsStr(a.cfg.MutatingTools, call.Name) {
-				st.mutatingSucceeded++
-				for _, p := range mutatedPathsFromCall(call.Arguments) {
-					if !containsStr(st.mutatedPaths, p) {
-						st.mutatedPaths = append(st.mutatedPaths, p)
+				if st.observeChanges == nil {
+					st.mutatingSucceeded++
+					for _, p := range mutatedPathsFromCall(call.Arguments) {
+						if !containsStr(st.mutatedPaths, p) {
+							st.mutatedPaths = append(st.mutatedPaths, p)
+						}
 					}
 				}
 				if call.Name == "write_file" {
@@ -403,7 +416,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 					}
 				}
 			}
-			if call.Name == "delegate_task" {
+			if call.Name == "delegate_task" && st.observeChanges == nil {
 				if m, paths := parseDelegateMutations(content); m > 0 {
 					st.mutatingSucceeded += m
 					for _, p := range paths {
@@ -414,6 +427,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 				}
 			}
 		}
+		content = TruncateMiddle(content, max(1, 48*1024/len(calls)))
 		history = append(history, llm.Message{
 			Role:       llm.RoleTool,
 			ToolCallID: call.ID,
@@ -421,6 +435,9 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 		})
 		if a.cfg.OnToolResult != nil {
 			a.cfg.OnToolResult(call.ID, content)
+		}
+		if a.cfg.OnResult != nil {
+			a.cfg.OnResult(ToolResult{CallID: call.ID, Output: content, Failed: results[i].err != nil})
 		}
 	}
 
@@ -430,6 +447,11 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 	// that failed before may now succeed.
 	if exclusiveSucceeded || st.mutatingSucceeded > mutatingBefore {
 		dropRepeatCaches(st)
+		// A successful real check applies only to the state it examined.
+		if a.cfg.Verify != nil {
+			st.verifiedOnce = false
+			a.report.Verification = ""
+		}
 	}
 
 	// A step that changed the workspace is progress by definition, so
@@ -448,6 +470,9 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 	// back, and never converging. Fresh results restart the chain —
 	// see trackSingleToolLoop.
 	mutated := st.mutatingSucceeded > mutatingBefore
+	if a.observeWorkspace(st) {
+		mutated = true
+	}
 	if mutated {
 		st.exploratorySteps = 0
 		st.lastSingleTool = ""
@@ -471,6 +496,35 @@ func (a *Agent) executeToolCalls(ctx context.Context, st *runState, step int, fi
 		st.stuckSteps++
 	}
 	return repeat, history
+}
+
+func (a *Agent) observeWorkspace(st *runState) bool {
+	if st.observeChanges == nil {
+		return false
+	}
+	paths, err := st.observeChanges()
+	if err != nil {
+		st.observationErr = err
+		if a.cfg.OnNudge != nil {
+			a.cfg.OnNudge("observation-error", err.Error())
+		}
+		return false
+	}
+	if len(paths) == 0 {
+		return false
+	}
+	st.mutatingSucceeded++
+	for _, p := range paths {
+		if !containsStr(st.mutatedPaths, p) {
+			st.mutatedPaths = append(st.mutatedPaths, p)
+		}
+	}
+	dropRepeatCaches(st)
+	if a.cfg.Verify != nil {
+		st.verifiedOnce = false
+		a.report.Verification = ""
+	}
+	return true
 }
 
 // callResult is one executed tool call's outcome: either content or err

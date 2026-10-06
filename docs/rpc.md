@@ -29,7 +29,9 @@ Malformed lines answer `{"id": null, "error": ...}`. Stdin EOF drains
 the in-flight run before exiting (a piped one-shot closes stdin right
 after its request), unless the run is suspended on a gate — its answer
 was going to arrive on the stdin that just closed, so the run is
-cancelled instead of hanging. Ctrl+C aborts immediately. Human chatter
+cancelled instead of hanging. Future gates fail closed after EOF; an
+already-submitted answer is preserved. Ctrl+C cancels the run and drains
+process cleanup before exit. Human chatter
 always goes to stderr in serve mode, whatever `-mode` says.
 
 ## Events (no id)
@@ -39,7 +41,7 @@ The same vocabulary as `-mode json`, so one parser serves both:
 ```json
 {"seq": 1, "event": "run_start", "task": "...", "mission": false}
 {"seq": 2, "event": "step", "label": "", "step": 0, "tool_calls": [{"name": "read_file", "args": "{...}"}]}
-{"seq": 3, "event": "tool_result", "call_id": "call_1", "text": "..."}
+{"seq": 3, "event": "tool_result", "call_id": "call_1", "text": "...", "failed": false}
 {"seq": 4, "event": "usage", "step": 0, "prompt": 2100, "completion": 120, "cached": 0}
 {"seq": 5, "event": "awaiting_input", "kind": "permission", "id": "", "tool": "read_file", "resource": ".env", "prompt": "[permission] read_file on \".env\""}
 {"seq": 6, "event": "input_answered", "kind": "permission", "id": ""}
@@ -49,6 +51,11 @@ The same vocabulary as `-mode json`, so one parser serves both:
 {"seq": 10, "event": "nudge", "kind": "verify", "text": "[harness] ..."}
 {"seq": 11, "event": "delta", "text": "partial answer..."}
 ```
+
+Direct runs also emit `outcome` with `completed`, `failed` or `cancelled`,
+observed `files`, current `verification`, persistence `warnings`, open todos
+and the `resume` target. Tool results carry a boolean `failed` independently
+of their text; older producers may omit it.
 
 `kind` is `ask_user`, `permission`, `plan_approval`, or `budget`. Permission gates
 also carry `tool`, `resource`, and the operator-facing `prompt` (ask

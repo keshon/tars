@@ -87,6 +87,14 @@ func TestBackgroundProcesses_CapturesOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(out, "hello-from-bg") && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		out, err = (CheckBackground{Procs: procs}).Run(context.Background(), json.RawMessage(`{"id":"bg1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if !strings.Contains(out, "hello-from-bg") {
 		t.Fatalf("expected captured output, got: %q", out)
 	}

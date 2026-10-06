@@ -4,9 +4,11 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,7 +71,7 @@ func (ReadFile) Schema() json.RawMessage {
 	}`)
 }
 
-func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
+func (t ReadFile) Run(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		Path         string `json:"path"`
 		MetadataOnly bool   `json:"metadata_only"`
@@ -92,10 +94,11 @@ func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(full)
+	f, err := os.Open(full)
 	if err != nil {
 		return "", err
 	}
+	defer f.Close()
 	rel, _ := filepath.Rel(t.WS.Root(), full)
 
 	// max_bytes=0 (or omitted) means "no explicit cap", NOT metadata-only:
@@ -116,7 +119,138 @@ func (t ReadFile) Run(_ context.Context, args json.RawMessage) (string, error) {
 			maxBody = *in.MaxBytes
 		}
 	}
-	return formatReadFileResult(rel, data, maxBody, in.Offset), nil
+	return streamReadFile(ctx, f, rel, maxBody, in.Offset)
+}
+
+// streamReadFile retains only the requested display window. Metadata reads
+// inspect a prefix; content reads count lines while streaming, including UTF-16.
+func streamReadFile(ctx context.Context, f *os.File, path string, limit, offset int) (string, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", path)
+	}
+	r := bufio.NewReader(f)
+	prefix, _ := r.Peek(2)
+	encoding := ""
+	var input io.Reader = r
+	if len(prefix) == 2 && prefix[0] == 0xff && prefix[1] == 0xfe {
+		encoding = "utf-16le"
+		r.Discard(2)
+		input = &utf16Reader{reader: r, little: true}
+	}
+	if len(prefix) == 2 && prefix[0] == 0xfe && prefix[1] == 0xff {
+		encoding = "utf-16be"
+		r.Discard(2)
+		input = &utf16Reader{reader: r}
+	}
+	sniff, _ := r.Peek(min(grepSniffBytes, int(info.Size())))
+	binary := encoding == "" && looksBinaryBytes(sniff)
+	if limit > readMaxBytes {
+		limit = readMaxBytes
+	}
+	start := max(offset, 1)
+	line := 1
+	total := 0
+	windowBytes := 0
+	last := byte(0)
+	var window strings.Builder
+	if limit != 0 {
+		pendingCR := false
+		buffer := make([]byte, 32*1024)
+		emit := func(c byte) {
+			total++
+			last = c
+			if line >= start {
+				windowBytes++
+				if window.Len() < limit {
+					window.WriteByte(c)
+				}
+			}
+			if c == '\n' {
+				line++
+			}
+		}
+		for {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			n, readErr := input.Read(buffer)
+			for _, c := range buffer[:n] {
+				if pendingCR {
+					if c != '\n' {
+						emit('\r')
+					}
+					pendingCR = false
+				}
+				if c == '\r' {
+					pendingCR = true
+				} else {
+					emit(c)
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return "", readErr
+			}
+		}
+
+		if pendingCR {
+			total++
+			last = '\r'
+			if line >= start {
+				windowBytes++
+				if window.Len() < limit {
+					window.WriteByte('\r')
+				}
+			}
+		}
+	}
+	lines := line
+	if total == 0 {
+		lines = 0
+	} else if last == '\n' {
+		lines--
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "FILE\npath: %s\nsize: %d\n", path, info.Size())
+	if limit == 0 {
+		b.WriteString("lines: unknown (metadata only)\n")
+	} else {
+		fmt.Fprintf(&b, "lines: %d\n", lines)
+	}
+	if encoding != "" {
+		fmt.Fprintf(&b, "encoding: %s (decoded for display; patches are refused — convert to UTF-8 first)\n", encoding)
+	}
+	fmt.Fprintf(&b, "truncated: %t\n", info.Size() > readMaxBytes)
+	if binary {
+		b.WriteString("binary: true\n")
+	}
+	if limit == 0 {
+		return b.String(), nil
+	}
+	b.WriteString("----\n")
+	if start > lines && lines > 0 {
+		fmt.Fprintf(&b, "(offset %d past end of file: %d lines)", offset, lines)
+		return b.String(), nil
+	}
+	shown := window.String()
+	end := start + strings.Count(shown, "\n")
+	if strings.HasSuffix(shown, "\n") {
+		end--
+	}
+	if start > 1 {
+		fmt.Fprintf(&b, "window: lines %d-%d of %d\n", start, end, lines)
+	}
+	b.WriteString(shown)
+	if windowBytes > limit {
+		fmt.Fprintf(&b, "\n...(content truncated at %d of %d bytes, lines %d-%d of %d — re-read with offset %d to continue)", len(shown), windowBytes, start, end, lines, end+1)
+	}
+	return b.String(), nil
 }
 
 // maxBodyBytes: 0 = header only; otherwise cap body at min(maxBodyBytes, readMaxBytes).

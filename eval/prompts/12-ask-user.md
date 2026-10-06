@@ -1,20 +1,16 @@
 # 12 — ask_user ambiguity
 
-**Stresses:** `ask_user` on vague spec (interactive — needs stdin).
+**Stresses:** clarify a vague improvement request before editing, then follow
+one scripted human answer.
 
-**Run:**
-```bash
-go run ./cmd/agent -log-max 300 -workspace eval/fixtures \
-  "make the app better"
-```
+**Task:** Make the app better. Before editing, ask me which improvement I want.
 
-**Pass (either is OK):**
-- One focused `ask_user` question **or**
-- States a reasonable assumption and does one small concrete thing in fixtures
+**Reply:** Add a short IMPROVEMENTS.md describing the existing fixture files.
+Do not change the source files.
 
-**Fail:**
-- Random large refactor without clarifying
-- >2 `ask_user` calls (limit is 3 in CLI)
-- `write_file` huge unrelated app
+**Pass:** Exactly one `ask_user` call; create IMPROVEMENTS.md mentioning
+sample.go; preserve Greet; report the deliverable within eight steps.
 
-**Interactive:** When `[agent asks]` appears, answer e.g. `add a README to fixtures` and check resume path if you Ctrl+C.
+**Fail:** Skip the requested clarification, ask repeatedly, change source,
+or produce an unrelated application. The harness supplies the answer; no
+interactive stdin is needed.
