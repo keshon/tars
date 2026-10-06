@@ -208,11 +208,36 @@ func TestSessions_DeleteRemovesDir(t *testing.T) {
 	}
 }
 
-func TestSessions_DeleteRefusesActive(t *testing.T) {
+func TestSessions_DeleteActiveUnloadsFirst(t *testing.T) {
 	tmp := t.TempDir()
 	chdirSessions(t, tmp)
 	dir := writeSessionState(t, filepath.Join(".tars", "tasks"), "aaa", userHistory("live"))
 	m := sessionsTestModel(t, listSessions())
+	m.stateFile = filepath.Join(dir, "state.json")
+	m.sess = &api.Session{}
+	m.blocks = []block{answerBlock("old transcript")}
+
+	updated, _ := m.Update(keyRunes('d'))
+	mm := updated.(*model)
+	updated, _ = mm.Update(keyRunes('y'))
+	mm = updated.(*model)
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("session dir still present after delete")
+	}
+	if mm.sess != nil || mm.stateFile != "" {
+		t.Fatal("active session not unloaded before delete")
+	}
+	if len(mm.sessions.entries) != 0 {
+		t.Fatalf("entries = %+v, want empty", mm.sessions.entries)
+	}
+}
+
+func TestSessions_DeleteActiveRefusesWhileRunning(t *testing.T) {
+	tmp := t.TempDir()
+	chdirSessions(t, tmp)
+	dir := writeSessionState(t, filepath.Join(".tars", "tasks"), "aaa", userHistory("live"))
+	m := sessionsTestModel(t, listSessions())
+	m.state = stRunning
 	m.stateFile = filepath.Join(dir, "state.json")
 
 	updated, _ := m.Update(keyRunes('d'))
@@ -220,7 +245,7 @@ func TestSessions_DeleteRefusesActive(t *testing.T) {
 	updated, _ = mm.Update(keyRunes('y'))
 	mm = updated.(*model)
 	if _, err := os.Lstat(dir); err != nil {
-		t.Fatalf("active session deleted: %v", err)
+		t.Fatalf("session deleted mid-run: %v", err)
 	}
 	if mm.sessions.flash == "" {
 		t.Fatal("no refusal message shown")
@@ -372,10 +397,47 @@ func TestSessions_CommandOpensAndEscCloses(t *testing.T) {
 	if mm.sessions == nil {
 		t.Fatal("/sessions did not open the screen")
 	}
+	// The overlay owns the bottom bar (slim line, no input): the list
+	// gains the freed rows, and closing hands them back.
+	if mm.vp.Height != 24-4 {
+		t.Fatalf("sessions viewport height = %d, want 20", mm.vp.Height)
+	}
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	mm = updated.(*model)
 	if mm.sessions != nil {
 		t.Fatal("esc did not close the screen")
+	}
+	if mm.vp.Height != 24-4-1 {
+		t.Fatalf("closed viewport height = %d, want 19", mm.vp.Height)
+	}
+}
+
+// A terminal resize refits the viewport: stale heights clip content
+// by the delta, which reads as a one-line scroll shortfall.
+func TestViewportRefitsOnResize(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	mm := updated.(*model)
+	if mm.vp.Height != 30-4-1 {
+		t.Fatalf("resized viewport height = %d, want 25", mm.vp.Height)
+	}
+}
+
+// Resume lands at the top of the rebuilt transcript: a stale offset
+// into replaced blocks shows mid-history or blank.
+func TestSessions_ResumeShowsTop(t *testing.T) {
+	tmp := t.TempDir()
+	chdirSessions(t, tmp)
+	writeSessionState(t, filepath.Join(".tars", "tasks"), "aaa", compactTestHistory(15))
+	m := sessionsTestModel(t, listSessions())
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(*model)
+	if mm.sessions != nil {
+		t.Fatal("screen did not close after resume")
+	}
+	if !mm.follow || mm.vp.YOffset != 0 {
+		t.Fatal("resume must land at the top with follow on")
 	}
 }
 

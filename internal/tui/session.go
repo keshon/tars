@@ -74,6 +74,7 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.retryRun = run
 	m.runErr = nil
 	m.live, m.liveCut, m.livePainted = "", false, 0
+	m.firstToken = time.Time{}
 	// Unit-built models never set base; fall back instead of panicking
 	// on a nil parent context.
 	base := m.base
@@ -84,6 +85,7 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.cancel = cancel
 	m.ctx = runCtx
 	m.state = stRunning
+	m.input.Blur()
 	m.fitBottom()
 	m.started = time.Now()
 	m.steps = 0

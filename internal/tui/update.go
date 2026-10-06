@@ -86,13 +86,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// every state: wheel in ask/done used to fall through and die.
 		return m.scrollViewport(msg)
 
-	case cursor.BlinkMsg:
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
-
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	default:
+		// Widget messages the router doesn't name (the cursor's
+		// unexported blink seed included) reach the focused input:
+		// the standard bubbletea pattern, scoped to focus so
+		// background states never leak keystrokes anywhere.
+		if m.input.Focused() {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -118,6 +123,9 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 	m.fitBottom()
 	m.input.SetWidth(msg.Width - 4)
 	m.note.Width = max(msg.Width-10, 10)
+	// Height follows the terminal too: without a refit here a resize
+	// leaves a stale viewport height, clipping content by the delta.
+	m.fitBottom()
 	// Render (or re-render): blocks appended before the first resize
 	// never reached the viewport, and reflow follows later resizes.
 	m.refreshContent()
@@ -136,9 +144,11 @@ func (m *model) fitBottom() {
 	if !m.ready {
 		return
 	}
+	// Done budgets the input box only (the hint moved right into the
+	// status row); a run error adds its own line on top.
 	lines := 1
-	if m.state == stDone {
-		lines = 2
+	if m.state == stDone && m.runErr != nil {
+		lines++
 	}
 	// The reject stage shows label + input: two bottom lines.
 	if m.state == stPermission && m.gstage == gsReject {
@@ -147,9 +157,17 @@ func (m *model) fitBottom() {
 	if m.state == stAsk || m.state == stDone {
 		lines += m.input.Height() - 1
 	}
-	// The -3 counts status line, divider rule, and the bottom base;
+	// The -4 counts status line, divider rule, bottom base, and the
+	// breathing blank line above the divider (layout, not content: a
+	// content trailing newline breaks scroll math — phantom blank rows
+	// mid-scroll. See TestTranscriptBreathesBeforeDivider).
 	// `lines` adds per-state extras (done hint, reject label, input growth).
-	h := m.termH - 3 - lines
+	// A takeover overlay owns the bottom bar (one slim line), so it
+	// budgets nothing extra: the chat input hides with it.
+	if m.sessions != nil {
+		lines = 0
+	}
+	h := m.termH - 4 - lines
 	if h < 1 {
 		h = 1
 	}
@@ -274,6 +292,9 @@ func (m *model) handleEvent(ev api.Event) {
 		// (partial spans would break); the step event brings the
 		// full render.
 		if text, _ := ev.Fields["text"].(string); text != "" && !m.liveCut {
+			if m.firstToken.IsZero() {
+				m.firstToken = time.Now()
+			}
 			combined := m.live + text
 			if r := []rune(combined); len(r) > liveMaxRunes {
 				combined = string(r[:liveMaxRunes]) + "\n…(live truncated)"

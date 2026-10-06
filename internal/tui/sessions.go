@@ -188,12 +188,19 @@ func ageString(t time.Time) string {
 func (m *model) openSessions() {
 	m.sessions = &sessionsState{entries: listSessions(), root: tasksRoot()}
 	m.pushOverlay(ovSessions)
+	// The overlay shrinks the bottom bar (slim line, no input):
+	// refit so the list gains the freed rows.
+	m.fitBottom()
 }
 
 func (m *model) closeSessions() {
 	m.sessions = nil
 	m.resetNote()
 	m.popOverlay()
+	m.fitBottom()
+	if m.follow {
+		m.vp.GotoBottom()
+	}
 }
 
 // resetNote hands the borrowed input back with its own prompt and
@@ -347,6 +354,10 @@ func (m *model) resumeSelected() tea.Cmd {
 	m.closeSessions()
 	m.fitBottom()
 	m.refreshContent()
+	// Land at the top: a stale offset into replaced blocks shows
+	// mid-history or blank. follow stays on so live turns behave.
+	m.follow = true
+	m.vp.GotoTop()
 	m.input.SetValue("")
 	return m.input.Focus()
 }
@@ -436,8 +447,9 @@ func (m *model) commitRename() {
 }
 
 // deleteSelected removes the session dir — title goes with it, so no
-// orphan rows — then re-scans. The active session refuses: its run
-// still appends state there.
+// orphan rows — then re-scans. Deleting the active session unloads it
+// first (empty-chat state, then the dir is just files). Only at rest:
+// unloading mid-run would orphan the in-flight turn.
 func (m *model) deleteSelected() {
 	s := m.sessions
 	if len(s.entries) == 0 {
@@ -446,9 +458,12 @@ func (m *model) deleteSelected() {
 	}
 	cur := s.entries[s.cursor]
 	if m.stateFile != "" && cur.dir == filepath.Dir(m.stateFile) {
-		s.mode = sessList
-		s.flash = "cannot delete the active session"
-		return
+		if m.state != stDone {
+			s.mode = sessList
+			s.flash = "stop the run first"
+			return
+		}
+		m.newChat()
 	}
 	if err := os.RemoveAll(cur.dir); err != nil {
 		s.mode = sessList
@@ -462,6 +477,21 @@ func (m *model) deleteSelected() {
 	m.clampOffset()
 	s.mode = sessList
 	s.flash = ""
+}
+
+// sessionsBar is the one-line bottom bar while the screen is open:
+// which session is active, since the list shows everything but marks
+// nothing. The chat input stays hidden — its keys belong to the list.
+func (m *model) sessionsBar() string {
+	active := "—"
+	if m.stateFile != "" {
+		dir := filepath.Dir(m.stateFile)
+		active = workspace.ReadSessionTitle(dir)
+		if active == "" {
+			active = filepath.Base(dir)
+		}
+	}
+	return m.styles.dim.Render("sessions · active: " + truncate(active, 60))
 }
 
 // sessionsView renders the list centered like a dialog: cursor-marked

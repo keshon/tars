@@ -789,16 +789,21 @@ func TestSpinnerOnlyWhileRunning(t *testing.T) {
 	if got := m.spinner(); got != "TA"+m.styles.gate.Render("R")+"S " {
 		t.Fatalf("spinner = %q, want frame advance", got)
 	}
+	// Ping-pong, not wrap: second 4 lights R again, not T.
+	m.elapsed = 4 * time.Second
+	if got := m.spinner(); got != "TA"+m.styles.gate.Render("R")+"S " {
+		t.Fatalf("spinner = %q, want the bounce back", got)
+	}
 	m.state = stDone
 	if got := m.spinner(); got != "" {
 		t.Fatalf("spinner outside running = %q", got)
 	}
 	// The running status line carries the frame (the lit letter carries
-	// ANSI, so match the plain tail).
+	// ANSI, so match the plain tail) and the merged state word.
 	m = sizeModel(t, testModel())
 	m.state = stRunning
 	m.elapsed = 0
-	if view := m.View(); !strings.Contains(view, "ARS running") {
+	if view := m.View(); !strings.Contains(view, "ARS thinking") {
 		t.Fatalf("status line missing spinner: %q", view)
 	}
 }
@@ -1438,33 +1443,44 @@ func TestBottomZoneHeights(t *testing.T) {
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if mm := updated.(*model); mm.vp.Height != 19 {
-		t.Fatalf("done viewport height = %d, want 19 (24 - status - rule - hint - input)", mm.vp.Height)
+		t.Fatalf("done viewport height = %d, want 19 (24 - status - rule - gap - input)", mm.vp.Height)
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 20 {
-		t.Fatalf("running viewport height = %d, want 20", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height != 19 {
+		t.Fatalf("running viewport height = %d, want 19 (blocked input keeps its row)", mm.vp.Height)
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 19 {
+	if mm = updated.(*model); mm.vp.Height != 19 {
 		t.Fatalf("composing viewport height = %d, want 19", mm.vp.Height)
+	}
+	// Exact fit: viewport + gap + rule + status + input == 23,
+	// same total as before the merge (one spare terminal row, no clip).
+	if n := len(strings.Split(mm.View(), "\n")); n != 23 {
+		t.Fatalf("view is %d lines, want 23", n)
 	}
 }
 
+// Keys live only in /help now that the status row carries state
+// instead of a manual: every essential binding must be listed there.
 func TestHintAlwaysShown(t *testing.T) {
-	m := sizeModel(t, testModel())
-	m.state = stDone
-	if view := m.View(); !strings.Contains(view, "ctrl+q quits") {
-		t.Fatalf("empty box must show the hint: %q", view)
-	}
-	m.input.SetValue("x")
-	if view := m.View(); !strings.Contains(view, "ctrl+q quits") {
-		t.Fatalf("hint must stay while composing: %q", view)
+	for _, want := range []string{"ctrl+q", "ctrl+g", "enter", "up / down", "esc"} {
+		found := false
+		for _, s := range helpSections() {
+			for _, r := range s.rows {
+				if strings.Contains(r[0], want) {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("help teaches no %q", want)
+		}
 	}
 }
 
@@ -2026,6 +2042,88 @@ func TestStatusShowsModel(t *testing.T) {
 	}
 }
 
+// ttft (time to first token) shows once streaming starts: the felt
+// latency beside elapsed (the total). Fixed clock offsets, no tick
+// flakes.
+func TestStatusShowsTTFT(t *testing.T) {
+	m := testModel()
+	m.state = stRunning
+	m.started = time.Now().Add(-100 * time.Second)
+	if got := m.statusLine(); strings.Contains(got, "ttft") {
+		t.Fatalf("status shows ttft before streaming: %q", got)
+	}
+	m.firstToken = m.started.Add(7 * time.Second)
+	if got := m.statusLine(); !strings.Contains(got, "ttft 00:07") {
+		t.Fatalf("status missing ttft: %q", got)
+	}
+	m.state = stDone
+	if got := m.statusLine(); strings.Contains(got, "ttft") {
+		t.Fatalf("status shows ttft when done: %q", got)
+	}
+}
+
+// The first streamed chunk stamps firstToken; a new turn clears it.
+func TestFirstTokenStampedAndReset(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stRunning
+	updated, _ := m.Update(eventMsg(api.Event{Name: "delta", Fields: map[string]any{"text": "hel"}}))
+	mm := updated.(*model)
+	if mm.firstToken.IsZero() {
+		t.Fatal("first delta did not stamp firstToken")
+	}
+	mm.send = func(tea.Msg) {}
+	mm.startRun(func(context.Context) (string, error) { return "", nil })
+	if !mm.firstToken.IsZero() {
+		t.Fatal("new turn did not reset firstToken")
+	}
+}
+
+// Brand + state ride right: animated letter while running, solid
+// amber word at rest, action always gray. Keys live only in /help.
+func TestStatusBrand_RightAligned(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stRunning
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	mm := updated.(*model)
+	var status string
+	for _, ln := range strings.Split(mm.View(), "\n") {
+		if strings.Contains(ln, "thinking") {
+			status = ln
+		}
+	}
+	if status == "" {
+		t.Fatal("running status missing brand+action")
+	}
+	if n := lipgloss.Width(status); n != 160 {
+		t.Fatalf("status width = %d, want full 160 (right edge)", n)
+	}
+	// Equal width: flipping running↔done must not move the brand.
+	mm.state = stDone
+	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	mm = updated.(*model)
+	for _, ln := range strings.Split(mm.View(), "\n") {
+		if strings.Contains(ln, "ready") {
+			if n := lipgloss.Width(ln); n != 160 {
+				t.Fatalf("done status width = %d, want 160", n)
+			}
+			if !strings.HasSuffix(strings.TrimRight(ln, " "), "ready") {
+				t.Fatalf("done action not column-stable: %q", ln)
+			}
+		}
+	}
+	// Fixed two-line zone: the blocked input stays visible while
+	// running (empty transcript here, so "> " can only be the box).
+	if !strings.Contains(mm.View(), "> ") {
+		t.Fatal("running must keep the blocked input box")
+	}
+	mm.state = stDone
+	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
+	// Brand owns TARS alone: exactly one occurrence on the row.
+	if view := updated.(*model).View(); strings.Count(view, "TARS") != 1 {
+		t.Fatalf("done status must show one brand: %q", view)
+	}
+}
+
 func TestFormatElapsed(t *testing.T) {
 	for _, tc := range []struct {
 		in   time.Duration
@@ -2081,5 +2179,8 @@ func TestStartRunResetsClock(t *testing.T) {
 	}
 	if m.steps != 0 || m.tokens != 0 || m.state != stRunning {
 		t.Fatalf("run not reset: steps=%d tokens=%d state=%v", m.steps, m.tokens, m.state)
+	}
+	if m.input.Focused() {
+		t.Fatal("run start must blur the blocked input (caret hides)")
 	}
 }
