@@ -75,6 +75,8 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.runErr = nil
 	m.live, m.liveCut, m.livePainted = "", false, 0
 	m.firstToken = time.Time{}
+	m.toolsUsed = 0
+	m.filesTouched = map[string]bool{}
 	// Unit-built models never set base; fall back instead of panicking
 	// on a nil parent context.
 	base := m.base

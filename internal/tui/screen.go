@@ -1,7 +1,7 @@
 package tui
 
-// View assembles the three regions: transcript viewport, one-line
-// status, fixed-budget bottom bar. Block building lives in
+// View assembles the four regions: header bar, transcript viewport,
+// one-line status, fixed-budget bottom bar. Block building lives in
 // transcript.go, status text in status.go — this function only stacks.
 func (m *model) View() string {
 	if !m.ready {
@@ -42,5 +42,5 @@ func (m *model) View() string {
 			bottom = m.input.View()
 		}
 	}
-	return body + "\n\n" + m.dividerLine() + "\n" + m.statusLine() + "\n" + bottom
+	return m.headerLine() + "\n" + m.dividerLine() + "\n" + body + "\n\n" + m.dividerLine() + "\n" + m.statusLine() + "\n" + bottom
 }

@@ -596,9 +596,11 @@ func TestTranscriptBreathesBeforeDivider(t *testing.T) {
 	}
 	m.vp.GotoBottom()
 	lines := strings.Split(m.View(), "\n")
+	// The transcript divider is the last rule: the header owns the
+	// first, so scan from the bottom.
 	div := -1
-	for i, ln := range lines {
-		if strings.Contains(ln, "─") {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "─") {
 			div = i
 			break
 		}
@@ -798,13 +800,13 @@ func TestSpinnerOnlyWhileRunning(t *testing.T) {
 	if got := m.spinner(); got != "" {
 		t.Fatalf("spinner outside running = %q", got)
 	}
-	// The running status line carries the frame (the lit letter carries
-	// ANSI, so match the plain tail) and the merged state word.
+	// The header carries the brand now: the lit letter renders amber,
+	// so match the plain tail beside the session title.
 	m = sizeModel(t, testModel())
 	m.state = stRunning
 	m.elapsed = 0
-	if view := m.View(); !strings.Contains(view, "ARS thinking") {
-		t.Fatalf("status line missing spinner: %q", view)
+	if view := m.View(); !strings.Contains(view, "ARS //") {
+		t.Fatalf("header missing brand: %q", view)
 	}
 }
 
@@ -889,8 +891,8 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 	long := "...The user is asking something, and here is a long chain of internal deliberation that must not read as the answer. " +
 		"Second line of musing that only the expanded view may show."
 	collapsed := renderBlock(thinkBlock(long), st, false, 80)
-	if !strings.Contains(collapsed, "[thinking]") {
-		t.Fatalf("collapsed thinking needs its label: %q", collapsed)
+	if !strings.Contains(collapsed, "[THINKING]") {
+		t.Fatalf("collapsed thinking needs its header: %q", collapsed)
 	}
 	if !strings.Contains(collapsed, "chars]") {
 		t.Fatalf("collapsed thinking shows size only here: %q", collapsed)
@@ -899,7 +901,10 @@ func TestThinkCollapsedByDefault(t *testing.T) {
 		t.Fatalf("collapsed thinking leaks body: %q", collapsed)
 	}
 	expanded := renderBlock(thinkBlock(long), st, true, 80)
-	if !strings.Contains(expanded, "Second line of musing") {
+	// Wrapping splits phrases across rail-indented lines: normalize
+	// all whitespace before matching.
+	flat := strings.Join(strings.Fields(expanded), " ")
+	if !strings.Contains(flat, "Second line of musing") {
 		t.Fatalf("expanded thinking must show all: %q", expanded)
 	}
 	if strings.Contains(expanded, "chars]") {
@@ -937,6 +942,17 @@ func TestThinkToggleKey(t *testing.T) {
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	if mm := updated.(*model); !mm.compact || mm.input.Value() != "edt" {
 		t.Fatalf("t must type, not toggle: compact=%v value=%q", mm.compact, mm.input.Value())
+	}
+}
+
+// Tool card headers collapse multi-line model args to one line
+// (the open card's pending rail below is structure, not args).
+func TestToolCardHeader_SingleLine(t *testing.T) {
+	st := defaultStyles()
+	out := renderBlock(toolCardBlock("c1", "write_file {\n  \"path\": \"a.go\"\n}"), st, true, 80)
+	lines := strings.Split(out, "\n")
+	if len(lines) != 3 || !strings.Contains(lines[1], `{ "path": "a.go" }`) {
+		t.Fatalf("card call must hold collapsed args: %q", out)
 	}
 }
 
@@ -1210,9 +1226,13 @@ func TestTimestampRendered(t *testing.T) {
 	if !strings.Contains(out, "[14:22]") {
 		t.Fatalf("user block missing timestamp: %q", out)
 	}
-	// Unstamped blocks (zero time) render cleanly for unit-built models.
+	// Unstamped blocks (zero time) still carry speaker identity, just
+	// no timestamp: headers are structure, not chrome.
 	plain := renderBlock(block{role: roleAnswer, text: "hi"}, st, false, 80)
-	if strings.Contains(plain, "[") {
+	if !strings.Contains(plain, "[RESPONSE]") {
+		t.Fatalf("answer missing speaker header: %q", plain)
+	}
+	if strings.Contains(plain, "[14:22]") {
 		t.Fatalf("zero-time block must not stamp: %q", plain)
 	}
 }
@@ -1315,12 +1335,17 @@ func TestRenderBlockWrapsToWidth(t *testing.T) {
 			t.Fatalf("line %d cols past 20: %q", n, line)
 		}
 	}
-	// Wrapped continuations take a blank gutter, marking them as
-	// wrapped rather than new.
-	out = renderBlock(userBlock("aaa bbb ccc"), st, false, 20)
+	// Wrapped continuations sit on the 6-wide speaker rail, under the
+	// tag bracket — aligned, not new.
+	out = renderBlock(userBlock("aaa bbb ccc ddd eee fff"), st, false, 20)
 	lines := strings.Split(out, "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[1], "  ") {
-		t.Fatalf("continuation gutter missing: %q", out)
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "YOU") {
+		t.Fatalf("speaker header missing: %q", out)
+	}
+	for _, ln := range lines[1:] {
+		if strings.TrimSpace(ln) != "" && !strings.HasPrefix(ln, "      ") {
+			t.Fatalf("continuation off rail: %q", out)
+		}
 	}
 }
 
@@ -1442,22 +1467,22 @@ func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 19 {
-		t.Fatalf("done viewport height = %d, want 19 (24 - status - rule - gap - input)", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height != 17 {
+		t.Fatalf("done viewport height = %d, want 17 (24 - header - rule - status - rule - gap - input)", mm.vp.Height)
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 19 {
-		t.Fatalf("running viewport height = %d, want 19 (blocked input keeps its row)", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height != 17 {
+		t.Fatalf("running viewport height = %d, want 17", mm.vp.Height)
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm = updated.(*model); mm.vp.Height != 19 {
-		t.Fatalf("composing viewport height = %d, want 19", mm.vp.Height)
+	if mm = updated.(*model); mm.vp.Height != 17 {
+		t.Fatalf("composing viewport height = %d, want 17", mm.vp.Height)
 	}
 	// Exact fit: viewport + gap + rule + status + input == 23,
 	// same total as before the merge (one spare terminal row, no clip).
@@ -1528,14 +1553,14 @@ func TestStampsRightAligned(t *testing.T) {
 	b.at = time.Date(2026, 10, 3, 14, 22, 0, 0, time.Local)
 	out := renderBlock(b, st, false, 40)
 	lines := strings.Split(out, "\n")
-	if len(lines) != 1 {
-		t.Fatalf("short block must stay one line: %q", out)
+	if len(lines) != 2 {
+		t.Fatalf("speaker block is header + body: %q", out)
 	}
-	if n := lipgloss.Width(lines[0]); n != 40 {
+	if n := lipgloss.Width(lines[1]); n != 40 {
 		t.Fatalf("stamp line %d cols, want full 40", n)
 	}
-	if !strings.Contains(lines[0], "[14:22]") {
-		t.Fatalf("stamp missing: %q", lines[0])
+	if !strings.Contains(lines[1], "[14:22]") {
+		t.Fatalf("stamp missing: %q", lines[1])
 	}
 }
 
@@ -1567,8 +1592,9 @@ func TestCRLFContentStaysInWidth(t *testing.T) {
 	if strings.Contains(out, "\r") {
 		t.Fatalf("CR survived stamped render: %q", out)
 	}
-	if first := strings.Split(out, "\n")[0]; !strings.Contains(first, "integrity.") || !strings.Contains(first, "[") {
-		t.Fatalf("stamp line lost its head: %q", first)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 || !strings.Contains(lines[1], "integrity.") || !strings.Contains(lines[1], "[") {
+		t.Fatalf("stamp line lost its head: %q", out)
 	}
 }
 
@@ -1913,7 +1939,7 @@ func TestThinkExpandsGlobally(t *testing.T) {
 	if n := strings.Count(view, "x"); n < 200 {
 		t.Fatalf("global expand opened %d x-runes, want 200", n)
 	}
-	if n := strings.Count(view, "[thinking]"); n != 2 {
+	if n := strings.Count(view, "[THINKING]"); n != 2 {
 		t.Fatalf("both thinks must label expanded: %d headers", n)
 	}
 }
@@ -1969,18 +1995,21 @@ func TestToggleHoldsPosition(t *testing.T) {
 
 func TestStampsPolicy(t *testing.T) {
 	st := defaultStyles()
+	stampPattern := regexp.MustCompile(`\[[0-2][0-9]:[0-5][0-9]\]`)
 	for _, b := range []block{
 		toolCardBlock("c1", "run x"),
 		resultBlock("out"),
 		markerBlock("— done —"),
 		missionBlock("m"),
 	} {
-		if out := renderBlock(b, st, false, 80); strings.Contains(out, "[") {
+		// Speaker/tool headers carry structural [BRACKETS] by design;
+		// the policy is about timestamps: chrome never shows one.
+		if out := renderBlock(b, st, false, 80); stampPattern.MatchString(out) {
 			t.Fatalf("chrome must not stamp: %q", out)
 		}
 	}
 	out := renderBlock(userBlock("hi"), st, false, 80)
-	if !strings.Contains(out, "[") {
+	if !stampPattern.MatchString(out) {
 		t.Fatalf("user blocks must stamp: %q", out)
 	}
 }
@@ -2078,38 +2107,24 @@ func TestFirstTokenStampedAndReset(t *testing.T) {
 	}
 }
 
-// Brand + state ride right: animated letter while running, solid
-// amber word at rest, action always gray. Keys live only in /help.
+// Brand + clock ride the header: animated letter while running,
+// solid amber word at rest.
 func TestStatusBrand_RightAligned(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stRunning
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	mm := updated.(*model)
-	var status string
+	var header string
 	for _, ln := range strings.Split(mm.View(), "\n") {
-		if strings.Contains(ln, "thinking") {
-			status = ln
+		if strings.Contains(ln, "//") {
+			header = ln
 		}
 	}
-	if status == "" {
-		t.Fatal("running status missing brand+action")
+	if header == "" {
+		t.Fatal("header missing brand line")
 	}
-	if n := lipgloss.Width(status); n != 160 {
-		t.Fatalf("status width = %d, want full 160 (right edge)", n)
-	}
-	// Equal width: flipping running↔done must not move the brand.
-	mm.state = stDone
-	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
-	mm = updated.(*model)
-	for _, ln := range strings.Split(mm.View(), "\n") {
-		if strings.Contains(ln, "ready") {
-			if n := lipgloss.Width(ln); n != 160 {
-				t.Fatalf("done status width = %d, want 160", n)
-			}
-			if !strings.HasSuffix(strings.TrimRight(ln, " "), "ready") {
-				t.Fatalf("done action not column-stable: %q", ln)
-			}
-		}
+	if n := lipgloss.Width(header); n != 160 {
+		t.Fatalf("header width = %d, want full 160 (clock right)", n)
 	}
 	// Fixed two-line zone: the blocked input stays visible while
 	// running (empty transcript here, so "> " can only be the box).
@@ -2120,7 +2135,7 @@ func TestStatusBrand_RightAligned(t *testing.T) {
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 160, Height: 24})
 	// Brand owns TARS alone: exactly one occurrence on the row.
 	if view := updated.(*model).View(); strings.Count(view, "TARS") != 1 {
-		t.Fatalf("done status must show one brand: %q", view)
+		t.Fatalf("done header must show one brand: %q", view)
 	}
 }
 

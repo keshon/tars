@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
@@ -479,19 +480,43 @@ func (m *model) deleteSelected() {
 	s.flash = ""
 }
 
+// headerLine renders the top bar: brand + session title left, wall
+// clock right. The brand animates while running (spinner) and sits
+// solid amber at rest — motion alone tells working from idle, so no
+// state word is needed anywhere near it.
+func (m *model) headerLine() string {
+	w := m.termW
+	if m.ready && m.vp.Width > 0 {
+		w = m.vp.Width
+	}
+	clock := time.Now().Format("15:04:05")
+	title := m.activeSessionTitle()
+	left := m.brand() + "// " + title
+	if pad := w - lipgloss.Width(left) - len(clock); pad >= 2 {
+		return left + strings.Repeat(" ", pad) + m.styles.dim.Render(clock)
+	}
+	return left
+}
+
+// activeSessionTitle names the open session for the header and the
+// sessions bottom bar: stored title, then dir id; a dash when chatting
+// without one yet. No history reads: the header renders every second.
+func (m *model) activeSessionTitle() string {
+	if m.stateFile == "" {
+		return "—"
+	}
+	dir := filepath.Dir(m.stateFile)
+	if title := workspace.ReadSessionTitle(dir); title != "" {
+		return title
+	}
+	return filepath.Base(dir)
+}
+
 // sessionsBar is the one-line bottom bar while the screen is open:
 // which session is active, since the list shows everything but marks
 // nothing. The chat input stays hidden — its keys belong to the list.
 func (m *model) sessionsBar() string {
-	active := "—"
-	if m.stateFile != "" {
-		dir := filepath.Dir(m.stateFile)
-		active = workspace.ReadSessionTitle(dir)
-		if active == "" {
-			active = filepath.Base(dir)
-		}
-	}
-	return m.styles.dim.Render("sessions · active: " + truncate(active, 60))
+	return m.styles.dim.Render("sessions · active: " + truncate(m.activeSessionTitle(), 60))
 }
 
 // sessionsView renders the list centered like a dialog: cursor-marked

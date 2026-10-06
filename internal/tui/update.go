@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -157,21 +158,37 @@ func (m *model) fitBottom() {
 	if m.state == stAsk || m.state == stDone {
 		lines += m.input.Height() - 1
 	}
-	// The -4 counts status line, divider rule, bottom base, and the
-	// breathing blank line above the divider (layout, not content: a
-	// content trailing newline breaks scroll math — phantom blank rows
-	// mid-scroll. See TestTranscriptBreathesBeforeDivider).
+	// The -6 counts header bar, header rule, status line, divider rule,
+	// bottom base, and the breathing blank line above the divider
+	// (layout, not content: a content trailing newline breaks scroll
+	// math — phantom blank rows mid-scroll).
 	// `lines` adds per-state extras (done hint, reject label, input growth).
 	// A takeover overlay owns the bottom bar (one slim line), so it
 	// budgets nothing extra: the chat input hides with it.
 	if m.sessions != nil {
 		lines = 0
 	}
-	h := m.termH - 4 - lines
+	h := m.termH - 6 - lines
 	if h < 1 {
 		h = 1
 	}
 	m.vp.Height = h
+}
+
+// touchFiles collects distinct path args from a tool call's JSON args
+// for the status files counter. Best-effort decode: unparseable args
+// simply contribute nothing.
+func (m *model) touchFiles(args string) {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(args), &decoded); err != nil {
+		return
+	}
+	if p, _ := decoded["path"].(string); p != "" {
+		if m.filesTouched == nil {
+			m.filesTouched = map[string]bool{}
+		}
+		m.filesTouched[p] = true
+	}
 }
 
 // scrollViewport forwards a scroll message (mouse or paging key) to
@@ -225,6 +242,8 @@ func (m *model) handleEvent(ev api.Event) {
 				name, _ := call["name"].(string)
 				args, _ := call["args"].(string)
 				id, _ := call["id"].(string)
+				m.toolsUsed++
+				m.touchFiles(args)
 				m.appendBlock(toolCardBlock(id, name+" "+truncate(args, 120)))
 			}
 		}

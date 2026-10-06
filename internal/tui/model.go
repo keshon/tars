@@ -135,6 +135,11 @@ type model struct {
 	// first word beside elapsed time. Zero until streaming starts;
 	// cleared with live at every turn boundary.
 	firstToken time.Time
+	// toolsUsed counts tool calls this run; filesTouched collects
+	// distinct path args seen. Both reset in startRun with steps and
+	// tokens, and feed the status counters.
+	toolsUsed    int
+	filesTouched map[string]bool
 	// partLines holds rendered line counts per transcript part, kept so
 	// pure re-renders (toggles, resizes) can hold the reader's content
 	// position instead of its offset. See refreshContent.

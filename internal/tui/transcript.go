@@ -88,7 +88,10 @@ func findingBlock(rule, path string, line int, summary string) block {
 // in attachResult). Text carries no arrow prefix: the role gutter
 // already marks tool lines.
 func toolCardBlock(callID, text string) block {
-	return block{role: roleTool, text: text, at: time.Now(), callID: callID, open: true}
+	// One line, always: models emit pretty-printed multi-line args,
+	// and a card header sprawling down the transcript reads stale
+	// next to the speaker labels. Whitespace collapsed, never cut.
+	return block{role: roleTool, text: strings.Join(strings.Fields(text), " "), at: time.Now(), callID: callID, open: true}
 }
 
 // attachResult lands a tool result on its card: the most recent open
@@ -190,21 +193,27 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 	b.text = strings.TrimRight(cleanText(b.text), "\n")
 	b.result = strings.TrimRight(cleanText(b.result), "\n")
 	raw := b.text
-	if b.role == roleThink {
-		if !expandThink {
-			// Compact: labeled summary with size only here, never in
-			// full view. No toggle hint (it lives in the bottom bar).
-			raw = "[thinking] " + thinkSummary(b.text)
-		} else {
-			// Full view labels once, then the whole text, uncapped.
-			raw = "[thinking]\n" + b.text
-		}
-	}
 	stamped := !b.at.IsZero() && stamps(b.role)
 	var out []string
+	spoke := false
 	switch {
 	case b.role == roleTool:
 		out = renderToolCard(b, st, expandThink, stamped, width)
+	case b.role == roleUser:
+		spoke = true
+		out = renderSpeaker(b, st, st.user.Render("YOU  > "), true, raw, stamped, width)
+	case b.role == roleAnswer:
+		spoke = true
+		out = renderSpeaker(b, st, st.gate.Render("TARS")+st.dim.Render("  [RESPONSE]"), false, raw, stamped, width)
+	case b.role == roleThink:
+		spoke = true
+		// Collapsed keeps the summary-only rule (size here, never in
+		// full view); the header carries the label either way, so the
+		// body never repeats it.
+		if !expandThink {
+			raw = thinkSummary(b.text)
+		}
+		out = renderSpeaker(b, st, st.gate.Render("TARS")+st.dim.Render("  [THINKING]"), false, raw, stamped, width)
 	case isMdRole(b.role):
 		out = renderMdBlock(b, raw, st, stamped, width)
 	default:
@@ -222,10 +231,56 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 			}
 		}
 	}
-	if stamped && len(out) > 0 {
+	if stamped && len(out) > 0 && !spoke {
 		out[0] = alignStamp(out[0], st, b.at, width)
 	}
 	return strings.Join(out, "\n")
+}
+
+// speakerRail indents conversation bodies under the speaker tag:
+// "TARS  [RESPONSE]" opens its bracket at column 6, so the body
+// starts exactly beneath it. Fixed, never derived — the header shape
+// is a constant, so the rail is too. Blank lines stay bare so no line
+// ends in whitespace.
+const speakerRail = "      "
+
+// renderSpeaker draws a conversation turn: a speaker header, then the
+// markdown body on the rail (user text rides the header line).
+func renderSpeaker(b block, st styles, header string, inline bool, raw string, stamped bool, width int) []string {
+	body := b
+	body.bare = true
+	bodyW := width - len(speakerRail)
+	if stamped && bodyW-gutterWidth-stampWidth < minWrapWidth {
+		// Narrow terminal + wide rail: the stamp reservation would
+		// eat the whole wrap budget and reflow would give up,
+		// emitting one over-wide line. Chrome yields — no stamp.
+		stamped = false
+	}
+	lines := renderMdBlock(body, raw, st, stamped, bodyW)
+	var out []string
+	if !inline {
+		out = append(out, header)
+	}
+	for i, ln := range lines {
+		if inline && i == 0 {
+			out = append(out, header+ln)
+		} else if strings.TrimSpace(ln) == "" {
+			out = append(out, "")
+		} else {
+			out = append(out, speakerRail+ln)
+		}
+	}
+	// The stamp sits on the first body line, never the header: the
+	// header is already wide, and padding it would breach narrow
+	// widths the body reserved room for.
+	if stamped && len(out) > 0 {
+		if !inline && len(out) > 1 {
+			out[1] = alignStamp(out[1], st, b.at, width)
+		} else {
+			out[0] = alignStamp(out[0], st, b.at, width)
+		}
+	}
+	return out
 }
 
 // cleanText normalizes line endings at the display boundary. Tool
@@ -246,11 +301,12 @@ func cleanText(s string) string {
 // compacted output never silently loses lines.
 const resultPreviewLines = 10
 
-// renderToolCard draws one bordered-by-rail tool card: a header (status
-// glyph + call) plus attached result lines, or a pending rail while
-// open. The "│ " rail groups call with result without full-border
-// width math; continuations keep the rail so the card edge never
-// breaks (overriding the blank-gutter rule inside cards). Compact view
+// renderToolCard draws the tool call under a TARS [TOOL] header, the
+// call and its results railed at the speaker column: cards align with
+// conversation bodies instead of hanging off the left edge. The "│ "
+// rail groups call with result without full-border width math;
+// continuations keep the rail so the card edge never breaks
+// (overriding the blank-gutter rule inside cards). Compact view
 // previews long results; full view shows all.
 func renderToolCard(b block, st styles, expand, stamped bool, width int) []string {
 	glyph := st.add.Render("✓")
@@ -260,9 +316,10 @@ func renderToolCard(b block, st styles, expand, stamped bool, width int) []strin
 		glyph = st.err.Render("✕")
 	}
 	var out []string
-	out = append(out, st.gutter(b.role)+glyph+" "+st.dim.Render(b.text))
+	out = append(out, st.gate.Render("TARS")+st.dim.Render("  [TOOL]"))
+	out = append(out, speakerRail+glyph+" "+st.dim.Render(b.text))
 	if b.open {
-		out = append(out, "  "+st.dim.Render("│ …"))
+		out = append(out, speakerRail+st.dim.Render("│ …"))
 		return out
 	}
 	lines := strings.Split(b.result, "\n")
@@ -272,9 +329,9 @@ func renderToolCard(b block, st styles, expand, stamped bool, width int) []strin
 		lines = kept
 	}
 	for _, line := range lines {
-		w := width - gutterWidth - 2
+		w := width - len(speakerRail) - gutterWidth
 		for _, f := range reflow(line, w) {
-			out = append(out, "  "+st.dim.Render("│ ")+resultLineStyle(line, f, st))
+			out = append(out, speakerRail+st.dim.Render("│ ")+resultLineStyle(line, f, st))
 		}
 	}
 	return out
