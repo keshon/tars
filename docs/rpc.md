@@ -14,7 +14,8 @@ a time; anything else reports an error instead of queueing.
 ```
 
 - `run` starts a direct run (`"mission": true` runs the planner
-  pipeline instead). Each run gets a fresh task dir and snapshot, like
+  pipeline instead). `"images": ["shot.png"]` attaches workspace-relative
+  pictures like CLI `-image`. Each run gets a fresh task dir and snapshot, like
   the CLI. Answers arrive as `{"id": 1, "result": {"answer": "..."}}`
   or `{"id": 1, "error": {"message": "..."}}`.
 - `respond` answers the currently suspended gate with raw text. The

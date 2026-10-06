@@ -609,6 +609,35 @@ func TestAgent_Resume_ContinuesFromLoadedHistory(t *testing.T) {
 	}
 }
 
+// Images ride the resume note message: the model sees text + pictures
+// in one turn, and the paths persist in history for re-sends.
+func TestAgent_Resume_AttachesImagesToNote(t *testing.T) {
+	saved := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "original task"},
+	}
+	client := &stubClient{responses: []llm.ChatResponse{
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "seen"}},
+	}}
+	a := New(Config{Client: client, Tools: NewRegistry(), System: "sys", SkipVerify: true})
+
+	if _, err := a.Resume(context.Background(), saved, "look", "shot.png"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	var note *llm.Message
+	for i, m := range client.lastHistory {
+		if m.Content == "look" {
+			note = &client.lastHistory[i]
+		}
+	}
+	if note == nil {
+		t.Fatal("resume note not found in sent history")
+	}
+	if len(note.Images) != 1 || note.Images[0] != "shot.png" {
+		t.Fatalf("note images = %v", note.Images)
+	}
+}
+
 func TestEffectiveMaxTokens_CapsAgainstRemainingRoom(t *testing.T) {
 	a := New(Config{
 		Client:       &stubClient{},

@@ -65,8 +65,9 @@ type rpcRequest struct {
 }
 
 type rpcRunParams struct {
-	Task    string `json:"task"`
-	Mission bool   `json:"mission"`
+	Task    string   `json:"task"`
+	Mission bool     `json:"mission"`
+	Images  []string `json:"images,omitempty"`
 }
 
 type rpcRespondParams struct {
@@ -157,7 +158,7 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 			runCtx, cancelFn := context.WithCancel(ctx)
 			setCancel(cancelFn)
 			wg.Add(1)
-			go func(id json.RawMessage, task string, isMission bool) {
+			go func(id json.RawMessage, params rpcRunParams) {
 				defer wg.Done()
 				defer setCancel(nil)
 				answer, err := serveRun(runCtx, d, hub, emitter, noteW, func(ev api.Event) {
@@ -166,13 +167,13 @@ func serveMain(ctx context.Context, d serveDeps, in io.Reader, out io.Writer, no
 						rec[k] = v
 					}
 					write(rec)
-				}, task, isMission)
+				}, params.Task, params.Mission, params.Images)
 				if err != nil {
 					respond(id, nil, err)
 					return
 				}
 				respond(id, map[string]any{"answer": answer}, nil)
-			}(req.ID, params.Task, params.Mission)
+			}(req.ID, params)
 		case "respond":
 			var params rpcRespondParams
 			if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -229,9 +230,19 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // serveRun executes one request: fresh task dir, snapshot, then direct
 // session or mission pipeline, both gated through the hub suspender.
 // onEvent carries session step events to the client.
-func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *events.Emitter, noteW io.Writer, onEvent func(api.Event), task string, isMission bool) (string, error) {
+func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *events.Emitter, noteW io.Writer, onEvent func(api.Event), task string, isMission bool, imagePaths []string) (string, error) {
 	if task == "" {
 		return "", fmt.Errorf("run needs a task")
+	}
+	// RPC image paths resolve against the workspace like -image does:
+	// a bad path fails the run here, not mid-turn at the backend.
+	var images []string
+	for _, p := range imagePaths {
+		full, err := d.ws.Resolve(p)
+		if err != nil {
+			return "", fmt.Errorf("image: %w", err)
+		}
+		images = append(images, full)
 	}
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
@@ -296,6 +307,7 @@ func serveRun(ctx context.Context, d serveDeps, hub *api.GateHub, emitter *event
 		Task:      task,
 		StateFile: stateFile,
 		Verify:    verify,
+		Images:    images,
 		Answer:    suspend,
 		OnEvent:   onEvent,
 	})

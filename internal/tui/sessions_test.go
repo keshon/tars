@@ -13,6 +13,7 @@ import (
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/workspace"
 )
 
 // writeSessionState stores a history as state.json in root/<id>/,
@@ -121,7 +122,7 @@ func sessionsTestModel(t *testing.T, entries []sessionEntry) *model {
 	// Resume needs a session object for follow-ups; api.New validates
 	// a full Env, so tests stub the constructor (production always
 	// wires the real one in Run).
-	m.newSession = func(task, stateFile string) (*api.Session, error) {
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		return &api.Session{}, nil
 	}
 	return m
@@ -540,5 +541,73 @@ func TestCommand_CompactForcesBottom(t *testing.T) {
 	mm := updated.(*model)
 	if !mm.follow || !mm.vp.AtBottom() {
 		t.Fatal("compact must re-arm follow and jump to bottom")
+	}
+}
+
+// @paths attach existing images and strip from the text; anything
+// else stays literal (emails must survive), except a present
+// non-image file, which is certainly a mistake.
+func TestSplitAttachments(t *testing.T) {
+	dir := t.TempDir()
+	ws, err := workspace.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "shot.png"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	clean, images, err := splitAttachments(ws, "look @shot.png please")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean != "look please" || len(images) != 1 || filepath.Base(images[0]) != "shot.png" {
+		t.Fatalf("clean=%q images=%v", clean, images)
+	}
+
+	clean, images, err = splitAttachments(ws, "mail me@home and @missing.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean != "mail me@home and @missing.png" || len(images) != 0 {
+		t.Fatalf("literals must survive: %q %v", clean, images)
+	}
+
+	// Quoted spans survive spaces: Windows screenshot names.
+	if err := os.WriteFile(filepath.Join(dir, "my shot.png"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clean, images, err = splitAttachments(ws, `describe @"my shot.png" now`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean != "describe now" || len(images) != 1 || filepath.Base(images[0]) != "my shot.png" {
+		t.Fatalf("quoted: clean=%q images=%v", clean, images)
+	}
+	if _, _, err = splitAttachments(ws, `look @"nope.png"`); err == nil {
+		t.Fatal("quoted missing file must error, not ride as text")
+	}
+
+	if _, _, err = splitAttachments(ws, "read @notes.txt"); err == nil {
+		t.Fatal("present non-image must error, not ride as text")
+	}
+	if _, _, err = splitAttachments(nil, "look @shot.png"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A fresh follow-up with @path reaches the session constructor.
+
+// Resumed image turns render their marker from history.
+func TestRenderHistory_ShowsImageMarkers(t *testing.T) {
+	history := []llm.Message{
+		{Role: llm.RoleUser, Content: "look", Images: []string{filepath.Join("d", "shot.png")}},
+	}
+	blocks := renderHistory(history)
+	if len(blocks) != 1 || !strings.Contains(blocks[0].text, "[image: shot.png]") {
+		t.Fatalf("blocks = %+v", blocks)
 	}
 }

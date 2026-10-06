@@ -364,7 +364,7 @@ func TestCommand_BareNewResetsToChat(t *testing.T) {
 	}
 	// The next line starts a fresh run, not a follow-up to nothing:
 	// with no session, followUp must take the startFresh path.
-	mm.newSession = func(task, stateFile string) (*api.Session, error) {
+	mm.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		return nil, errors.New("fresh path taken")
 	}
 	mm.input.SetValue("fresh task")
@@ -381,13 +381,59 @@ func TestCommand_BareNewResetsToChat(t *testing.T) {
 	}
 }
 
+// A fresh follow-up with @path reaches the session constructor with
+// the text cleaned, and the echo marks the attachment.
+func TestFollowUp_AttachesImages(t *testing.T) {
+	m := sizeModel(t, testModel())
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Root(), "shot.png"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.ws = ws
+	var gotTask string
+	var gotImages []string
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
+		gotTask, gotImages = task, images
+		return api.New(api.Config{
+			Task: task,
+			Env: roles.Env{
+				Client: stubDone{},
+				WS:     ws,
+				Procs:  tools.NewBackgroundProcesses(),
+			},
+		})
+	}
+	var sent int32
+	m.send = func(tea.Msg) { atomic.AddInt32(&sent, 1) }
+	m.ctx = context.Background()
+	m.state = stDone
+	m.input.SetValue("what is this @shot.png")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm := updated.(*model)
+	if gotTask != "what is this" || len(gotImages) != 1 {
+		t.Fatalf("task=%q images=%v", gotTask, gotImages)
+	}
+	found := false
+	for _, b := range mm.blocks {
+		if strings.Contains(b.text, "[image: shot.png]") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("echo missing image marker: %+v", mm.blocks)
+	}
+}
+
 func TestCommand_NewStartsFresh(t *testing.T) {
 	m := sizeModel(t, testModel())
 	ws, err := workspace.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.newSession = func(task, stateFile string) (*api.Session, error) {
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		if task != "second" {
 			t.Errorf("task = %q", task)
 		}
@@ -816,7 +862,7 @@ func TestEmptyStart_SubmitBegins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.newSession = func(task, stateFile string) (*api.Session, error) {
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		return api.New(api.Config{
 			Task: task,
 			Env: roles.Env{
@@ -1243,7 +1289,7 @@ func TestInitialTaskEchoedAsUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.newSession = func(task, stateFile string) (*api.Session, error) {
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		return api.New(api.Config{
 			Task: task,
 			Env: roles.Env{
@@ -1255,7 +1301,7 @@ func TestInitialTaskEchoedAsUser(t *testing.T) {
 	}
 	m.send = func(tea.Msg) {}
 	m.ctx = context.Background()
-	if err := m.startInitial("  hi  "); err != nil {
+	if err := m.startInitial("  hi  ", nil); err != nil {
 		t.Fatal(err)
 	}
 	if m.state != stRunning {

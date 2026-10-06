@@ -37,7 +37,12 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 			m.newChat()
 			return m, m.input.Focus()
 		}
-		if err := m.startFresh(task); err != nil {
+		clean, images, err := splitAttachments(m.ws, task)
+		if err != nil {
+			m.appendBlock(errorBlock(err.Error()))
+			return m, nil
+		}
+		if err := m.startFresh(clean, images); err != nil {
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
 			return m, nil
 		}

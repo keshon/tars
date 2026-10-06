@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -180,10 +181,10 @@ type wireToolCall struct {
 }
 
 type wireMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []wireToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 	// Inbound only: llama.cpp reports a thinking model's deliberation
 	// here instead of inline <think> tags. Decoded into Message but
 	// never encoded back (see Message.Reasoning).
@@ -221,6 +222,27 @@ type wireRequest struct {
 	DRYMult       float64 `json:"dry_multiplier,omitempty"`
 	DRYBase       float64 `json:"dry_base,omitempty"`
 	DRYAllowed    int     `json:"dry_allowed_length,omitempty"`
+}
+
+// decodeContent reads response content: servers answer with a plain
+// string; a multipart array degrades to its text parts rather than
+// failing the turn on an shape we never send outbound.
+func decodeContent(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Type == "text" {
+				b.WriteString(p.Text)
+			}
+		}
+		return b.String()
+	}
+	return string(raw)
 }
 
 // responseFormat is the structured-output request carried on the chat
@@ -298,23 +320,15 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	}
 	c.dialect.applySampling(&wreq, c.DRY)
 
-	for _, m := range req.Messages {
-		wm := wireMessage{Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		for _, tc := range m.ToolCalls {
-			// Per the OpenAI tool-call wire format, function.arguments is a
-			// JSON-encoded *string*, not a raw object — encodeArguments
-			// re-wraps our internal object form before it goes back out.
-			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{
-				ID:   tc.ID,
-				Type: "function",
-				Function: wireFunction{
-					Name:      tc.Name,
-					Arguments: encodeArguments(tc.Arguments),
-				},
-			})
-		}
-		wreq.Messages = append(wreq.Messages, wm)
+	// koboldcpp serves the same endpoint shape but cannot process
+	// pictures: attaching there fails here, loudly, instead of sending
+	// a request the backend silently misunderstands.
+	_, kobold := c.dialect.(koboldDialect)
+	msgs, err := encodeMessages(req.Messages, !kobold)
+	if err != nil {
+		return ChatResponse{}, err
 	}
+	wreq.Messages = msgs
 
 	for _, t := range req.Tools {
 		wt := wireTool{Type: "function"}
@@ -393,7 +407,7 @@ func (c *Server) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	wm := wresp.Choices[0].Message
 	out := Message{
 		Role:      Role(wm.Role),
-		Content:   wm.Content,
+		Content:   decodeContent(wm.Content),
 		Reasoning: wm.Reasoning,
 	}
 	for _, tc := range wm.ToolCalls {

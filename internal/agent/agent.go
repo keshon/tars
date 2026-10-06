@@ -92,11 +92,13 @@ func (a *Agent) Report() RunReport {
 }
 
 // Run executes the agent loop on a single task and returns the model's
-// final answer once it stops requesting tools.
-func (a *Agent) Run(ctx context.Context, task string) (string, error) {
+// final answer once it stops requesting tools. images attaches pictures
+// (absolute paths) to the opening user message for vision-capable
+// backends; imageless runs are unchanged.
+func (a *Agent) Run(ctx context.Context, task string, images ...string) (string, error) {
 	return a.run(ctx, []llm.Message{
 		{Role: llm.RoleSystem, Content: a.cfg.System},
-		{Role: llm.RoleUser, Content: task},
+		{Role: llm.RoleUser, Content: task, Images: images},
 	})
 }
 
@@ -107,8 +109,8 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 // current state of the workspace before assuming anything, then finish
 // the task." A plain summary-of-what-happened isn't required — the full
 // history is already there, the model can re-read it.
-func (a *Agent) Resume(ctx context.Context, history []llm.Message, note string) (string, error) {
-	history = append(history, llm.Message{Role: llm.RoleUser, Content: note})
+func (a *Agent) Resume(ctx context.Context, history []llm.Message, note string, images ...string) (string, error) {
+	history = append(history, llm.Message{Role: llm.RoleUser, Content: note, Images: images})
 	return a.run(ctx, history)
 }
 

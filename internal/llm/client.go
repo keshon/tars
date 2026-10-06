@@ -34,6 +34,12 @@ type Message struct {
 	ToolCalls  []ToolCall
 	ToolCallID string
 
+	// Images attaches pictures (absolute paths, resolved at attach
+	// time) to a user message for vision-capable backends. Paths, not
+	// bytes, so snapshots stay small; files are re-read per request.
+	// Empty serializes to nothing and encodes exactly as before.
+	Images []string `json:"images,omitempty"`
+
 	// Reasoning carries a thinking model's deliberation when the backend
 	// reports it out-of-band (llama.cpp's reasoning_content field) rather
 	// than inline <think> tags (koboldcpp). It is measured by the

@@ -37,20 +37,14 @@ func (c *Server) Stream(ctx context.Context, req ChatRequest, onDelta func(strin
 		c.dialect.applyStructured(&wreq, req.Grammar, req.JSONSchema)
 	}
 	c.dialect.applySampling(&wreq, c.DRY)
-	for _, m := range req.Messages {
-		wm := wireMessage{Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		for _, tc := range m.ToolCalls {
-			wm.ToolCalls = append(wm.ToolCalls, wireToolCall{
-				ID:   tc.ID,
-				Type: "function",
-				Function: wireFunction{
-					Name:      tc.Name,
-					Arguments: encodeArguments(tc.Arguments),
-				},
-			})
-		}
-		wreq.Messages = append(wreq.Messages, wm)
+	// Koboldcpp never reaches here (refused above), so images are
+	// always encodable on the streaming path.
+	msgs, err := encodeMessages(req.Messages, true)
+	if err != nil {
+		return ChatResponse{}, err
 	}
+	wreq.Messages = msgs
+
 	for _, t := range req.Tools {
 		wt := wireTool{Type: "function"}
 		wt.Function.Name = t.Name

@@ -336,7 +336,7 @@ func (m *model) resumeSelected() tea.Cmd {
 		s.flash = "sessions unavailable here"
 		return nil
 	}
-	sess, err := m.newSession(task, stateFile)
+	sess, err := m.newSession(task, stateFile, nil)
 	if err != nil {
 		s.flash = "cannot open session: " + err.Error()
 		return nil
@@ -379,10 +379,10 @@ func renderHistory(history []llm.Message) []block {
 			if strings.HasPrefix(msg.Content, "[harness] ") {
 				continue
 			}
-			if strings.TrimSpace(msg.Content) == "" {
+			if strings.TrimSpace(msg.Content) == "" && len(msg.Images) == 0 {
 				continue
 			}
-			out = append(out, userBlock(msg.Content))
+			out = append(out, userBlock(msg.Content+imageSuffix(msg.Images)))
 		case llm.RoleAssistant:
 			if msg.Reasoning != "" {
 				out = append(out, thinkBlock(msg.Reasoning))

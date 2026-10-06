@@ -44,6 +44,11 @@ type Config struct {
 	StateFile string
 	Verify    func(ctx context.Context) (output string, ok bool)
 
+	// Images attaches pictures (absolute paths) to the opening user
+	// message for vision-capable backends. CLI -image and TUI @paths
+	// fill this; follow-up turns pass their own via Resume.
+	Images []string
+
 	// Answer transports blocked gates. Nil means ClosedSuspender:
 	// headless runs fail closed instead of hanging on stdin.
 	Answer agent.Suspender
@@ -141,7 +146,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
 	a = roles.Interactive(env, "", s.cfg.StateFile, askFn, s.cfg.Verify)
-	ans, err := a.Run(ctx, s.cfg.Task)
+	ans, err := a.Run(ctx, s.cfg.Task, s.cfg.Images...)
 	if err != nil {
 		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
 			ans, err = resAns, resErr
@@ -224,7 +229,7 @@ func (s *Session) asker(ctx context.Context, maxQ int) func(string) (string, err
 }
 
 // Resume continues from saved history with a note, mirroring Agent.Resume.
-func (s *Session) Resume(ctx context.Context, history []llm.Message, note string) (string, error) {
+func (s *Session) Resume(ctx context.Context, history []llm.Message, note string, images ...string) (string, error) {
 	emitter := events.New(&callbackWriter{onEvent: s.cfg.OnEvent})
 	env := s.cfg.Env
 	prevOnStep := env.OnStep
@@ -274,7 +279,7 @@ func (s *Session) Resume(ctx context.Context, history []llm.Message, note string
 	drain := newFindingDrain(emitter, env.OnFinding)
 	env.OnFinding = drain.reportPerEdit
 	a = roles.Interactive(env, "", s.cfg.StateFile, s.asker(ctx, s.cfg.MaxQuestions), s.cfg.Verify)
-	ans, err := a.Resume(ctx, history, note)
+	ans, err := a.Resume(ctx, history, note, images...)
 	if err != nil {
 		if resAns, resErr, ok := s.budgetContinue(ctx, a, err); ok {
 			ans, err = resAns, resErr

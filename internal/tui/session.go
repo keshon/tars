@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/keshon/tars/internal/agent"
+	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -30,12 +32,20 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	m.pushHistory(text)
+	// @paths attach before anything else runs: a missing file stays
+	// literal, a present non-image errors, an image strips out of the
+	// text and rides the turn.
+	text, images, err := splitAttachments(m.ws, text)
+	if err != nil {
+		m.appendBlock(errorBlock(err.Error()))
+		return m, nil
+	}
 	// No session yet (opened without a task): the first line starts
 	// a fresh run rather than resuming nothing. The echo lives in
 	// startFresh (after its transcript reset) so every fresh-task
 	// path — first line, /new — renders the opening task exactly once.
 	if m.sess == nil {
-		if err := m.startFresh(text); err != nil {
+		if err := m.startFresh(text, images); err != nil {
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
 		}
 		return m, nil
@@ -45,11 +55,101 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		m.appendBlock(errorBlock("cannot resume: " + err.Error()))
 		return m, nil
 	}
-	m.appendBlock(userBlock(text))
+	m.appendBlock(userBlock(text + imageSuffix(images)))
 	m.startRun(func(runCtx context.Context) (string, error) {
-		return m.sess.Resume(runCtx, history, text)
+		return m.sess.Resume(runCtx, history, text, images...)
 	})
 	return m, nil
+}
+
+// splitAttachments extracts @path tokens: an existing image file
+// attaches (resolved absolute, stripped from the text), anything else
+// stays literal. Emails and decorators never resolve, so they pass
+// through untouched; a present non-image file is certainly a mistake
+// and errors instead of riding along as text. Paths with spaces need
+// quotes: @"my screenshot.png".
+func splitAttachments(ws *workspace.Workspace, text string) (string, []string, error) {
+	if ws == nil || !strings.Contains(text, "@") {
+		return text, nil, nil
+	}
+	toks := splitTokens(text)
+	var kept []string
+	var images []string
+	for _, tok := range toks {
+		quoted := false
+		raw := tok
+		if strings.HasPrefix(tok, "@\"") && strings.HasSuffix(tok, "\"") && len(tok) > 3 {
+			quoted = true
+			raw = "@" + tok[2 : len(tok)-1]
+		}
+		if !strings.HasPrefix(raw, "@") || len(raw) == 1 {
+			kept = append(kept, tok)
+			continue
+		}
+		full, err := ws.Resolve(raw[1:])
+		if err != nil {
+			return "", nil, fmt.Errorf("image %q escapes the workspace", raw)
+		}
+		fi, statErr := os.Stat(full)
+		if statErr != nil {
+			if quoted {
+				return "", nil, fmt.Errorf("image %q not found", raw)
+			}
+			kept = append(kept, tok)
+			continue
+		}
+		if fi.IsDir() {
+			return "", nil, fmt.Errorf("%s is a directory, not an image", raw)
+		}
+		if !llm.IsImagePath(full) {
+			return "", nil, fmt.Errorf("%s is not an image (png, jpg, webp, gif, bmp)", raw)
+		}
+		images = append(images, full)
+	}
+	return strings.Join(kept, " "), images, nil
+}
+
+// splitTokens splits on whitespace but keeps @"..." quoted spans
+// whole: screenshot filenames love spaces.
+func splitTokens(text string) []string {
+	var toks []string
+	var cur strings.Builder
+	inQuotes := false
+	flush := func() {
+		if cur.Len() > 0 {
+			toks = append(toks, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range text {
+		switch {
+		case r == '"' && !inQuotes && strings.HasSuffix(cur.String(), "@"):
+			inQuotes = true
+			cur.WriteRune(r)
+		case r == '"' && inQuotes:
+			inQuotes = false
+			cur.WriteRune(r)
+		case (r == ' ' || r == '\t' || r == '\n') && !inQuotes:
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return toks
+}
+
+// imageSuffix marks attached pictures on the echoed user block, so the
+// transcript shows what the model saw alongside the text.
+func imageSuffix(images []string) string {
+	if len(images) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range images {
+		b.WriteString("\n[image: " + filepath.Base(p) + "]")
+	}
+	return b.String()
 }
 
 // startRun resets run counters and executes run in the background,
@@ -101,13 +201,13 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 // startInitial begins the argv task: it renders as the opening user
 // block, then runs like any fresh turn. Without it the opening task
 // is invisible — only follow-ups echo.
-func (m *model) startInitial(task string) error {
-	sess, err := m.newSession(task, m.stateFile)
+func (m *model) startInitial(task string, images []string) error {
+	sess, err := m.newSession(task, m.stateFile, images)
 	if err != nil {
 		return err
 	}
 	m.sess = sess
-	m.appendBlock(userBlock(strings.TrimSpace(task)))
+	m.appendBlock(userBlock(strings.TrimSpace(task) + imageSuffix(images)))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return sess.Run(runCtx)
 	})
@@ -179,12 +279,12 @@ func (m *model) compactNow() (tea.Model, tea.Cmd) {
 
 // startFresh begins a new task in a fresh transcript and state dir,
 // mirroring how the CLI namespaces one task per .tars/tasks/<id>.
-func (m *model) startFresh(task string) error {
+func (m *model) startFresh(task string, images []string) error {
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
 	stateFile := filepath.Join(workspace.TaskDir(taskID), "state.json")
 	_ = workspace.WriteSessionTitle(filepath.Dir(stateFile), workspace.TitleLine(task))
-	sess, err := m.newSession(task, stateFile)
+	sess, err := m.newSession(task, stateFile, images)
 	if err != nil {
 		return err
 	}
@@ -194,7 +294,7 @@ func (m *model) startFresh(task string) error {
 	nb := markerBlock("— new task —")
 	nb.breakBefore = true
 	m.appendBlock(nb)
-	m.appendBlock(userBlock(task))
+	m.appendBlock(userBlock(task + imageSuffix(images)))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return m.sess.Run(runCtx)
 	})

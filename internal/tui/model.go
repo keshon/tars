@@ -23,6 +23,7 @@ import (
 	"github.com/keshon/tars/internal/audit"
 	"github.com/keshon/tars/internal/llm"
 	"github.com/keshon/tars/internal/roles"
+	"github.com/keshon/tars/internal/workspace"
 )
 
 // Config wires one TUI run. Env carries the full harness (client,
@@ -33,6 +34,9 @@ type Config struct {
 	Task      string
 	StateFile string
 	Verify    func(ctx context.Context) (output string, ok bool)
+	// Images attaches pictures to the opening task (-image with
+	// -tui); follow-up turns attach their own @paths per turn.
+	Images []string
 	// AuditPath, when set, appends gate decisions as JSONL (see audit).
 	AuditPath string
 }
@@ -92,9 +96,12 @@ type model struct {
 	interrupted bool
 	// stateFile locates the saved transcript for follow-ups.
 	stateFile string
+	// ws resolves @image paths against the workspace, escape-checked
+	// like every file tool path. Stored, not rebuilt per turn.
+	ws *workspace.Workspace
 	// newSession builds a session for a fresh task (first run and
 	// /new). Follow-ups reuse the running session via Resume.
-	newSession func(task, stateFile string) (*api.Session, error)
+	newSession func(task, stateFile string, images []string) (*api.Session, error)
 	// retryRun is the last turn's closure, kept so /retry can
 	// re-attempt it exactly. Set by startRun, gated by runErr.
 	retryRun func(ctx context.Context) (string, error)
@@ -239,6 +246,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		// Status facts come from cfg once: the TUI never re-reads Env.
 		backendKind: cfg.Env.BackendKind,
 		modelName:   cfg.Env.Model,
+		ws:          cfg.Env.WS,
 		wsRoot:      wsRootOf(cfg.Env.WS),
 		thinkBudget: cfg.Env.ReasoningBudget,
 		mcpCount:    len(cfg.Env.MCPTools),
@@ -249,12 +257,13 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 
 	env := withoutPrintHooks(cfg.Env)
 	env.Gate = audit.Hook(cfg.AuditPath, "tui", m.gateHook(hub, runCtx, cfg.Env.WS))
-	m.newSession = func(task, stateFile string) (*api.Session, error) {
+	m.newSession = func(task, stateFile string, images []string) (*api.Session, error) {
 		return api.New(api.Config{
 			Env:       env,
 			Task:      task,
 			StateFile: stateFile,
 			Verify:    cfg.Verify,
+			Images:    images,
 			Answer:    hub.Suspender(),
 			OnEvent: func(ev api.Event) {
 				eventsCh <- ev
@@ -264,7 +273,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.send = prog.Send
 	if strings.TrimSpace(cfg.Task) != "" {
-		if err := m.startInitial(cfg.Task); err != nil {
+		if err := m.startInitial(cfg.Task, cfg.Images); err != nil {
 			cancel()
 			return "", err
 		}

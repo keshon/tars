@@ -96,6 +96,7 @@ func main() {
 	serveFlag := flag.Bool("serve", false, "serve JSON-RPC over stdio instead of running one task: methods run/respond/cancel, events on stdout. See docs/rpc.md")
 	tuiFlag := flag.Bool("tui", false, "fullscreen terminal UI instead of print mode: live transcript, status, and gate prompts")
 	noVerifyFlag := flag.Bool("no-verify", false, "skip the self-check verify round (finish accepted without the extra verification turn). Saves 1-2 model calls; strong models only")
+	imageFlag := flag.String("image", "", "attach pictures to the task (comma-separated paths): the model sees them alongside the text. Needs a vision-capable backend (llama-server with --mmproj); koboldcpp refuses loudly")
 	flag.Parse()
 
 	task := strings.Join(flag.Args(), " ")
@@ -447,6 +448,23 @@ func main() {
 		note("note: -stream is unsupported on koboldcpp, using unary requests")
 	}
 
+	// Images resolve against the workspace (escape-checked like every
+	// file tool path) into absolute paths the backend layer reads.
+	var images []string
+	if strings.TrimSpace(*imageFlag) != "" {
+		for _, p := range strings.Split(*imageFlag, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			full, err := ws.Resolve(p)
+			if err != nil {
+				log.Fatalf("image: %v", err)
+			}
+			images = append(images, full)
+		}
+	}
+
 	// The subagent this spawns previously also carried Verify. That was
 	// dead configuration: a subagent sets SkipVerify with no
 	// VerifyOnZeroWrites, so verifyWanted is never true and the hook could
@@ -465,6 +483,7 @@ func main() {
 			Task:      task,
 			StateFile: stateFile,
 			Verify:    verify,
+			Images:    images,
 		})
 		if err != nil {
 			log.Fatalf("agent failed: %v", err)
@@ -473,6 +492,7 @@ func main() {
 		fmt.Println(answer)
 		return
 	}
+
 	var a *agent.Agent
 	if *planFlag {
 		a = roles.Planner(env, "plan", stateFile)
@@ -516,7 +536,7 @@ func main() {
 		}
 	} else {
 		var err error
-		result, err = a.Run(ctx, task)
+		result, err = a.Run(ctx, task, images...)
 		if err != nil {
 			log.Fatalf("agent failed: %v", err)
 		}
