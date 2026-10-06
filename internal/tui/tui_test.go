@@ -310,18 +310,13 @@ func TestCommand_HelpAndUnknown(t *testing.T) {
 	if mm.quit || mm.state != stDone {
 		t.Fatalf("help must not quit or resume: quit=%v state=%v", mm.quit, mm.state)
 	}
-	if mm.dialog != nil {
-		t.Fatal("help must post to history, not a modal")
+	if mm.dialog == nil || !mm.dialog.help {
+		t.Fatal("/help must open the shared help modal")
 	}
-	for _, want := range []string{"/quit", "/retry", "/status"} {
-		found := false
-		for _, b := range mm.blocks {
-			if strings.Contains(b.text, want) {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("help missing %q: %+v", want, mm.blocks)
+	mm.dialog.page = 3
+	for _, want := range []string{"/help", "/sessions"} {
+		if !strings.Contains(mm.dialogView(), want) {
+			t.Fatalf("help missing %q", want)
 		}
 	}
 	// A second unrelated command works on its own model state.
@@ -1013,13 +1008,8 @@ func TestHelpMentionsThinkKey(t *testing.T) {
 	m.input.SetValue("/help")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(*model)
-	found := false
-	for _, b := range mm.blocks {
-		if strings.Contains(b.text, thinkToggleHint) {
-			found = true
-		}
-	}
-	if !found {
+	mm.dialog.page = 1
+	if !strings.Contains(mm.dialogView(), thinkToggleHint) {
 		t.Fatal("help must document the think key")
 	}
 }
@@ -1564,7 +1554,7 @@ func TestHintAlwaysShown(t *testing.T) {
 func TestHelpSections(t *testing.T) {
 	st := defaultStyles()
 	out := renderBlock(markerBlock(strings.Join(renderHelp(), "\n")), st, false, 80)
-	for _, want := range []string{"keys", "gates", "commands"} {
+	for _, want := range []string{"Input", "Navigate", "Run", "Commands"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing %q", want)
 		}
@@ -1575,9 +1565,9 @@ func TestHelpSections(t *testing.T) {
 	// Two columns: every command description starts at the same
 	// absolute column (keys padded to the section max).
 	cmds := map[string]string{
-		"/quit": "exit", "/help": "this list", "/new [task]": "fresh task (empty resets to chat)",
-		"/status": "run facts", "/retry": "re-run last failed turn", "/sessions": "past sessions",
-		"/compact": "shrink this session's history",
+		"/quit": "Quit", "/help": "Open this help", "/new [task]": "Start a fresh task; omit task for an empty session",
+		"/status": "Show current run facts", "/retry": "Retry the last failed turn", "/sessions": "Browse saved sessions",
+		"/compact": "Shrink this session's history",
 	}
 	col, found := -1, 0
 	for _, ln := range renderHelp() {

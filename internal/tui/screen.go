@@ -22,21 +22,33 @@ func (m *model) screenContent() string {
 		bottomRule = m.styles.dim.Render(strings.Repeat("─", column) + "┴" + strings.Repeat("─", width-column-1))
 		spacer = m.sidebarDetails() + " " + m.styles.dim.Render("│")
 	}
-	body := m.vp.View()
+	popup := len(m.suggestions.items) > 0 && m.vp.Height() >= 4 && m.vp.Width() >= 24
+	bodyHeight := m.vp.Height()
+	transcript := m.vp.View()
+	if popup {
+		bodyHeight++
+		transcript += "\n"
+	}
+	body := m.suggestionView(transcript)
 	if m.state == stPermission || m.state == stAsk {
 		body = m.gateVP.View()
 	}
 	if m.sidebarVisible() {
 		borderStyle := m.styles.dim
 		divider := strings.Repeat(borderStyle.Render(" │ ")+"\n", max(m.vp.Height()-1, 0)) + borderStyle.Render("─┤ ")
-		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), divider, body)
+		sidebar := m.sidebarView()
+		if popup {
+			sidebar += "\n" + m.sidebarDetails()
+			divider += "\n" + borderStyle.Render(" │ ")
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, divider, body)
 	}
 	if m.dialog != nil {
 		body = m.dialogView()
 	} else if m.sessions != nil {
 		body = m.sessionsView()
 	}
-	body = cellFrame(body, max(m.termW, 0), m.vp.Height())
+	body = cellFrame(body, max(m.termW, 0), bodyHeight)
 	var bottom string
 	if m.dialog != nil {
 		bottom = m.styles.dim.Render("Draft preserved")
@@ -74,8 +86,13 @@ func (m *model) screenContent() string {
 	if m.actionBarVisible() {
 		bottom += "\n" + m.actionBar()
 	}
+	// The popup occupies the breathing row, bringing it one row nearer the input.
+	gap := "\n" + spacer
+	if popup {
+		gap = ""
+	}
 	// Fill the terminal exactly; the renderer owns cursor placement and wrapping.
-	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+"\n"+spacer+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW, 0), max(m.termH, 0))
+	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+gap+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW, 0), max(m.termH, 0))
 }
 
 func (m *model) View() tea.View {

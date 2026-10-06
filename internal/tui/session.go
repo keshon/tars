@@ -5,10 +5,13 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/keshon/tars/internal/agent"
@@ -33,9 +36,7 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pushHistory(text)
-	// @paths attach before anything else runs: a missing file stays
-	// literal, a present non-image errors, an image strips out of the
-	// text and rides the turn.
+	// Resolve explicit file references before starting a turn.
 	text, images, err := splitAttachments(m.ws, text)
 	if err != nil {
 		m.appendBlock(errorBlock(err.Error()))
@@ -49,7 +50,7 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 	m.fitInput()
 	m.fitBottom()
 	if m.sess == nil {
-		if err := m.startFresh(text, images); err != nil {
+		if err := m.startFreshPrompt(text, strings.TrimSpace(original), images); err != nil {
 			m.input.SetValue(original)
 			m.fitInput()
 			m.fitBottom()
@@ -72,58 +73,134 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 		m.appendBlock(errorBlock("cannot save mode: " + err.Error()))
 		return m, nil
 	}
-	m.appendBlock(userBlock(text + imageSuffix(images)))
+	m.appendBlock(userBlock(strings.TrimSpace(original) + imageSuffix(images)))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return m.sess.Resume(runCtx, history, text, images...)
 	})
 	return m, nil
 }
 
-// splitAttachments extracts @path tokens: an existing image file
-// attaches (resolved absolute, stripped from the text), anything else
-// stays literal. Emails and decorators never resolve, so they pass
-// through untouched; a present non-image file is certainly a mistake
-// and errors instead of riding along as text. Paths with spaces need
-// quotes: @"my screenshot.png".
+const referenceStart = "\n\n<attached_workspace_files>\n"
+const referenceEnd = "\n</attached_workspace_files>"
+
+const maxReferenceBytes = 32 * 1024
+const maxTurnReferenceBytes = 64 * 1024
+
+// References retain their names in the prompt, followed by bounded file snapshots.
+// Image references use the existing vision attachment path.
 func splitAttachments(ws *workspace.Workspace, text string) (string, []string, error) {
 	if ws == nil || !strings.Contains(text, "@") {
 		return text, nil, nil
 	}
-	toks := splitTokens(text)
-	var kept []string
-	var images []string
-	for _, tok := range toks {
-		quoted := false
+	var kept, images, files []string
+	seen := map[string]bool{}
+	total := 0
+	for _, tok := range splitTokens(text) {
 		raw := tok
-		if strings.HasPrefix(tok, "@\"") && strings.HasSuffix(tok, "\"") && len(tok) > 3 {
-			quoted = true
+		quoted := strings.HasPrefix(tok, "@\"") && strings.HasSuffix(tok, "\"") && len(tok) > 3
+		if quoted {
 			raw = "@" + tok[2:len(tok)-1]
 		}
 		if !strings.HasPrefix(raw, "@") || len(raw) == 1 {
 			kept = append(kept, tok)
 			continue
 		}
-		full, err := ws.Resolve(raw[1:])
+		full, err := referencePath(ws, raw[1:])
 		if err != nil {
-			return "", nil, fmt.Errorf("image %q escapes the workspace", raw)
-		}
-		fi, statErr := os.Stat(full)
-		if statErr != nil {
-			if quoted {
-				return "", nil, fmt.Errorf("image %q not found", raw)
+			if os.IsNotExist(err) && !quoted && !strings.ContainsAny(raw[1:], "/\\.") {
+				kept = append(kept, tok)
+				continue
 			}
-			kept = append(kept, tok)
+			// Preserve legacy literal mentions of missing unquoted images.
+			if os.IsNotExist(err) && !quoted && llm.IsImagePath(raw[1:]) {
+				kept = append(kept, tok)
+				continue
+			}
+			return "", nil, fmt.Errorf("reference %s: %w", tok, err)
+		}
+		info, err := os.Stat(full)
+		if err != nil {
+			return "", nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return "", nil, fmt.Errorf("%s is not a regular file", tok)
+		}
+		if llm.IsImagePath(full) {
+			if !seen[full] {
+				images = append(images, full)
+				seen[full] = true
+			}
 			continue
 		}
-		if fi.IsDir() {
-			return "", nil, fmt.Errorf("%s is a directory, not an image", raw)
+		kept = append(kept, tok)
+		if seen[full] {
+			continue
 		}
-		if !llm.IsImagePath(full) {
-			return "", nil, fmt.Errorf("%s is not an image (png, jpg, webp, gif, bmp)", raw)
+		f, err := os.Open(full)
+		if err != nil {
+			return "", nil, err
 		}
-		images = append(images, full)
+		data, err := io.ReadAll(io.LimitReader(f, maxReferenceBytes+1))
+		f.Close()
+		if err != nil {
+			return "", nil, err
+		}
+		if len(data) > maxReferenceBytes {
+			return "", nil, fmt.Errorf("%s exceeds the 32 KiB reference limit; reference a smaller file", tok)
+		}
+		if !utf8.Valid(data) || strings.ContainsRune(string(data), 0) {
+			return "", nil, fmt.Errorf("%s is binary or not UTF-8 text", tok)
+		}
+		total += len(data)
+		if total > maxTurnReferenceBytes {
+			return "", nil, fmt.Errorf("file references exceed 64 KiB for this message")
+		}
+		rel, _ := filepath.Rel(ws.Root(), full)
+		files = append(files, "Workspace file "+strconv.Quote(filepath.ToSlash(rel))+" (attached content):\n"+string(data))
+		seen[full] = true
 	}
-	return strings.Join(kept, " "), images, nil
+	clean := text
+	if len(images) > 0 {
+		clean = strings.Join(kept, " ")
+	}
+	if len(files) > 0 {
+		clean += referenceStart + strings.Join(files, "\n\n") + referenceEnd
+	}
+	return clean, images, nil
+}
+
+// Keep snapshots in model history without dumping their contents into the UI.
+func displayInputContent(text string) string {
+	if strings.HasSuffix(text, referenceEnd) {
+		if original, _, ok := strings.Cut(text, referenceStart); ok {
+			return original
+		}
+	}
+	return text
+}
+
+// Resolve symlinks as well as textual paths before exposing file contents.
+func referencePath(ws *workspace.Workspace, path string) (string, error) {
+	if filepath.IsAbs(path) || filepath.VolumeName(path) != "" {
+		return "", fmt.Errorf("use a workspace-relative path")
+	}
+	full, err := ws.Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	full, err = filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(ws.Root())
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path escapes the workspace")
+	}
+	return full, nil
 }
 
 // splitTokens splits on whitespace but keeps @"..." quoted spans
@@ -305,6 +382,10 @@ func (m *model) compactNow() (tea.Model, tea.Cmd) {
 // startFresh begins a new task in a fresh transcript and state dir,
 // mirroring how the CLI namespaces one task per .tars/tasks/<id>.
 func (m *model) startFresh(task string, images []string) error {
+	return m.startFreshPrompt(task, task, images)
+}
+
+func (m *model) startFreshPrompt(task, display string, images []string) error {
 	sum := sha1.Sum([]byte(task + time.Now().String()))
 	taskID := hex.EncodeToString(sum[:])[:8]
 	taskDir := workspace.TaskDir(taskID)
@@ -319,7 +400,7 @@ func (m *model) startFresh(task string, images []string) error {
 	if err := writeChatMode(stateFile, m.plan); err != nil {
 		return err
 	}
-	if err := workspace.WriteSessionTitle(taskDir, workspace.TitleLine(task)); err != nil {
+	if err := workspace.WriteSessionTitle(taskDir, workspace.TitleLine(display)); err != nil {
 		return err
 	}
 	m.saveDraft()
@@ -327,13 +408,13 @@ func (m *model) startFresh(task string, images []string) error {
 		delete(m.drafts, "")
 	}
 	m.sess, m.stateFile = sess, stateFile
-	m.hist, m.histIdx, m.draft = []string{task}, 1, ""
+	m.hist, m.histIdx, m.draft = []string{display}, 1, ""
 	m.queued = ""
 	m.blocks = nil
 	nb := markerBlock("— new task —")
 	nb.breakBefore = true
 	m.appendBlock(nb)
-	m.appendBlock(userBlock(task + imageSuffix(images)))
+	m.appendBlock(userBlock(display + imageSuffix(images)))
 	if m.ws != nil {
 		if snap := snapshot.Track(m.ws.Root(), filepath.Join(taskDir, "snapshots")); snap.Path == "" {
 			m.appendBlock(markerBlock("Pre-run checkpoint unavailable; this run cannot be undone with -revert."))

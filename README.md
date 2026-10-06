@@ -39,10 +39,24 @@ In the browser, Ctrl+R renames and Ctrl+D stages deletion. Shift+Enter adds a
 newline to the chat input; Ctrl+O is a fallback for terminals without modifier reporting. The footer displays function-key numbers beside colored labels and keeps F1 Help, F2 Sessions, F3 Details,
 F4 New, F5 Mode, F6 Sidebar, F7 Latest, and F10 Quit in fixed positions;
 click a button or press its function key. Narrow terminals use two rows.
-Unavailable actions are dimmed during prompts. Up/Down always move within the input;
+Unavailable actions are dimmed during prompts. Up/Down move within the input;
 Alt+Up/Down recall submitted inputs and restore the draft. Ctrl+End jumps to the latest message; Ctrl+U
 clears the draft explicitly. Esc preserves idle drafts and stops active runs.
 Drafts and input history stay with each chat while the TUI is open.
+
+F1 and `/help` open the same categorized help modal. Tab or Left/Right
+changes category; Up/Down, PgUp/PgDn, and the mouse wheel scroll its content.
+
+Type `/` to suggest commands, or `@` to browse workspace files. Up/Down
+selects a suggestion, Tab inserts it, and Esc dismisses the picker. Enter
+runs a selected command or inserts a selected file path. With the picker
+closed, Enter submits the draft. Directory suggestions let you browse deeper;
+paths with spaces are quoted automatically. For example, `review @internal/tui/input.go`
+includes that file's contents in the message. Images use the existing vision
+attachment path. Text references must be UTF-8, at most 32 KiB each and
+64 KiB combined per message; binary files and paths outside the workspace
+are rejected. File snapshots stay in model history, while the transcript
+shows the original message. Queued references resolve when their turn starts.
 
 During a run, Enter queues a follow-up. Its preview stays above the input;
 Ctrl+E moves it back into an empty input for editing, and Ctrl+X cancels it.

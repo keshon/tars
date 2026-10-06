@@ -109,15 +109,7 @@ func (m *model) footerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.dialog != nil {
 			m.closeDialog()
 		} else {
-			m.openDialog("Help", []string{
-				"F1 Help   F2 Sessions   F3 Details   F4 New",
-				"F5 Plan/Act mode   F6 Sidebar   F7 Latest",
-				"Enter send / queue / answer   Shift+Enter newline",
-				"Up/Down edit   Alt+Up/Down input history",
-				"Tab switch pane   Esc stop run / go back",
-				"Ctrl+E edit queue   Ctrl+X cancel queue",
-				"Ctrl+U clear draft   /help full reference",
-			})
+			m.openHelp()
 		}
 	case tea.KeyF2:
 		if m.sessions != nil {

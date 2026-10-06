@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	navigatorWidth    = 36
+	navigatorWidth    = 34
 	navigatorMinWidth = 110
 )
 
@@ -70,19 +70,19 @@ func (m *model) sidebarView() string {
 	end := min(m.nav.offset+visible, len(m.nav.entries))
 	for i := m.nav.offset; i < end; i++ {
 		e := m.nav.entries[i]
-		mark := "  "
+		mark := " "
 		switch m.entryState(e) {
 		case "Working", "Stopping":
-			mark = "* "
+			mark = "*"
 		case "Needs input":
-			mark = "? "
+			mark = "?"
 		case "Failed", "Unreadable":
-			mark = "! "
+			mark = "!"
 		}
 		if m.navFocused && i == m.nav.cursor {
-			mark = "› "
-		} else if sameSession(e.dir, m.stateFile) && mark == "  " {
-			mark = "• "
+			mark = "›"
+		} else if sameSession(e.dir, m.stateFile) && mark == " " {
+			mark = m.styles.hunk.Render("▌")
 		}
 		age := strings.TrimSuffix(ageString(e.updated), " ago")
 		if age == "just now" {

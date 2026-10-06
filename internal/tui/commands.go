@@ -6,6 +6,20 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// Shared by help and command completion.
+func commandReference() [][2]string {
+	return [][2]string{
+		{"/help", "Open this help"},
+		{"/sessions", "Browse saved sessions"},
+		{"/new [task]", "Start a fresh task; omit task for an empty session"},
+		{"/mode plan|act", "Preview changes or execute them"},
+		{"/status", "Show current run facts"},
+		{"/retry", "Retry the last failed turn"},
+		{"/compact", "Shrink this session's history"},
+		{"/quit", "Quit"},
+	}
+}
+
 // command handles local slash commands. Anything unrecognized is
 // reported, never sent to the model — a typo must not become a task.
 func (m *model) command(text string) (tea.Model, tea.Cmd) {
@@ -17,14 +31,7 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 		m.cancel()
 		return m, tea.Quit
 	case "help":
-		// Reference goes to history, not a modal: opencode centers
-		// dialogs, pi embeds panels inline, and for read-only text
-		// inline wins (scrollback keeps it, nothing to dismiss).
-		// Modals stay reserved for interactive pickers (P10-5).
-		// Bare (no per-line gutter): section titles carry identity.
-		hb := markerBlock(strings.Join(renderHelp(), "\n"))
-		hb.bare = true
-		m.appendBlock(hb)
+		m.openHelp()
 		return m, nil
 	case "new":
 		task := strings.TrimSpace(arg)
@@ -42,7 +49,7 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 			m.appendBlock(errorBlock(err.Error()))
 			return m, nil
 		}
-		if err := m.startFresh(clean, images); err != nil {
+		if err := m.startFreshPrompt(clean, task, images); err != nil {
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
 			return m, nil
 		}

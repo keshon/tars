@@ -590,8 +590,8 @@ func TestSplitAttachments(t *testing.T) {
 		t.Fatal("quoted missing file must error, not ride as text")
 	}
 
-	if _, _, err = splitAttachments(ws, "read @notes.txt"); err == nil {
-		t.Fatal("present non-image must error, not ride as text")
+	if clean, _, err = splitAttachments(ws, "read @notes.txt"); err != nil || !strings.Contains(clean, "Workspace file \"notes.txt\"") {
+		t.Fatalf("text reference missing: %q %v", clean, err)
 	}
 	if _, _, err = splitAttachments(nil, "look @shot.png"); err != nil {
 		t.Fatal(err)

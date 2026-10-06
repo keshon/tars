@@ -23,8 +23,10 @@ func wsRootOf(ws *workspace.Workspace) string {
 // the transcript body, so no ANSI splicing is needed and scroll state
 // underneath survives untouched.
 type dialog struct {
-	title string
-	lines []string
+	title        string
+	lines        []string
+	help         bool
+	page, offset int
 }
 
 // openDialog pushes the overlay and shows the dialog; closeDialog pops
@@ -52,23 +54,40 @@ func (m *model) dialogView() string {
 	if m.ready {
 		availW, availH = m.vp.Width(), m.vp.Height()
 	}
-	inner := availW - 6
+	inner := min(availW-6, 72)
 	if inner < 10 {
 		inner = 10
 	}
 	rows := []string{m.styles.gate.Render(truncate(d.title, inner))}
-	for _, ln := range d.lines {
-		rows = append(rows, truncate(ln, inner))
+	lines := d.lines
+	hint := "Esc / Enter close"
+	if d.help {
+		sections := helpSections()
+		tabs := make([]string, len(sections))
+		for i, section := range sections {
+			label := section.title
+			if i == d.page {
+				label = m.styles.gate.Render("[" + label + "]")
+			} else {
+				label = m.styles.dim.Render(label)
+			}
+			tabs[i] = label
+		}
+		rows = append(rows, strings.Split(lipgloss.NewStyle().Width(inner).Render(strings.Join(tabs, "  ")), "\n")...)
+		rows = append(rows, "")
+		lines = m.helpRows(sections[d.page], inner)
+		hint = "Tab / ← → category   ↑ ↓ scroll   Esc close"
 	}
-	rows = append(rows, m.styles.dim.Render("[Esc] close"))
-	// Cap rows to the viewport: title + hint always survive the cut.
-	maxRows := availH - 2
-	if maxRows < 2 {
-		maxRows = 2
+	capacity := max(availH-2-len(rows)-3, 1)
+	d.offset = min(max(d.offset, 0), max(len(lines)-capacity, 0))
+	for _, ln := range lines[d.offset:min(d.offset+capacity, len(lines))] {
+		rows = append(rows, cellLine(ln, inner))
 	}
-	if len(rows) > maxRows {
-		rows = append(rows[:maxRows-1], rows[len(rows)-1])
+	rows = append(rows, "")
+	if len(lines) > capacity {
+		rows = append(rows, m.styles.dim.Render(strconv.Itoa(d.offset+1)+"–"+strconv.Itoa(min(d.offset+capacity, len(lines)))+" / "+strconv.Itoa(len(lines))))
 	}
+	rows = append(rows, m.styles.dim.Render(truncate(hint, inner)))
 	return renderBox(rows, availW, availH)
 }
 
@@ -103,46 +122,71 @@ type helpSection struct {
 	rows  [][2]string
 }
 
+func (m *model) openHelp() {
+	m.openDialog("Help", nil)
+	m.dialog.help = true
+}
+
 func helpSections() []helpSection {
 	return []helpSection{
-		{"keys", [][2]string{
-			{"F1 / F2 / F3", "help / sessions / details"},
-			{"F4 / F5 / F6 / F7", "new / mode / sidebar / latest"},
-			{"F10", "quit"},
-			{"Ctrl+Q", "quit"},
-			{"Esc", "stop run, stay in chat"},
-			{"Enter", "queue a follow-up during a run"},
-			{"Ctrl+C", "abort (quits mid-run)"},
-			{"Y / N / A", "answer permission"},
-			{"Enter", "submits"},
-			{"Shift+Enter / Ctrl+O", "newline"},
-			{"Ctrl+P", "search saved sessions"},
-			{"Ctrl+B", "show/hide sidebar"},
-			{"Tab", "switch sidebar/input"},
-			{"Ctrl+N", "new chat when idle"},
-			{"Alt+Up / Alt+Down", "history"},
-			{"Ctrl+G", "expand/collapse thinking and tool details"},
-			{"PgUp / PgDn + wheel", "scroll"},
-			{"Ctrl+End", "jump to latest in every state"},
-			{"Ctrl+U", "clear draft deliberately"},
-			{"Ctrl+E / Ctrl+X", "edit / cancel queued follow-up"},
+		{"Input", [][2]string{
+			{"Enter", "Send a message; queue a follow-up while running"},
+			{"Shift+Enter / Ctrl+O", "Insert a new line"},
+			{"Up / Down", "Move within the draft"},
+			{"Alt+Up / Alt+Down", "Recall input history"},
+			{"Ctrl+U", "Clear the draft"},
+			{"/ or @", "Suggest commands or workspace paths"},
+			{"Enter / Tab / Esc", "Run a command, insert a suggestion, or dismiss the picker"},
+			{"Ctrl+E", "Move the queued follow-up back to the draft"},
+			{"Ctrl+X", "Cancel the queued follow-up"},
+			{"@\"image path\"", "Attach a workspace file or image; quote paths with spaces"},
 		}},
-		{"gates", [][2]string{
-			{"Y", "once"},
-			{"A", "always for this run (confirm)"},
-			{"N", "reject (a note redirects the model)"},
+		{"Navigate", [][2]string{
+			{"F1", "Open or close help"},
+			{"F2 / Ctrl+P", "Browse and search sessions"},
+			{"F3 / Ctrl+G", "Expand or collapse thinking and tool details"},
+			{"F6 / Ctrl+B", "Show or hide the session pane"},
+			{"Tab", "Switch between sessions and input"},
+			{"PgUp / PgDn", "Scroll the conversation; mouse wheel also works"},
+			{"F7 / Ctrl+End", "Jump to the latest message"},
 		}},
-		{"commands", [][2]string{
-			{"/quit", "exit"},
-			{"/help", "this list"},
-			{"/new [task]", "fresh task (empty resets to chat)"},
-			{"/status", "run facts"},
-			{"/mode plan|act", "preview changes or execute"},
-			{"/retry", "re-run last failed turn"},
-			{"/sessions", "past sessions"},
-			{"/compact", "shrink this session's history"},
+		{"Run", [][2]string{
+			{"F4 / Ctrl+N", "Start a new session when idle"},
+			{"F5", "Switch Plan / Act mode when idle"},
+			{"Esc", "Stop the current run; keep the session open"},
+			{"Y", "Allow the requested tool once"},
+			{"A", "Allow for this run, after confirmation"},
+			{"N", "Reject a tool; optionally add a redirect note"},
+			{"F10 / Ctrl+Q", "Quit"},
+			{"Ctrl+C", "Abort and quit, including during a run"},
 		}},
+		{"Commands", commandReference()},
 	}
+}
+
+// Keep descriptions complete: narrow terminals stack them below the keys.
+func (m *model) helpRows(section helpSection, width int) []string {
+	keyWidth := 0
+	for _, row := range section.rows {
+		keyWidth = max(keyWidth, lipgloss.Width(row[0]))
+	}
+	var rows []string
+	for _, row := range section.rows {
+		if width-keyWidth-3 < 24 {
+			rows = append(rows, m.styles.gate.Render(row[0]))
+			for _, line := range strings.Split(lipgloss.NewStyle().Width(max(width-2, 1)).Render(row[1]), "\n") {
+				rows = append(rows, "  "+line)
+			}
+		} else {
+			description := strings.Split(lipgloss.NewStyle().Width(width-keyWidth-3).Render(row[1]), "\n")
+			rows = append(rows, m.styles.gate.Render(cellLine(row[0], keyWidth))+"   "+description[0])
+			for _, line := range description[1:] {
+				rows = append(rows, strings.Repeat(" ", keyWidth+3)+line)
+			}
+		}
+		rows = append(rows, "")
+	}
+	return rows[:max(len(rows)-1, 0)]
 }
 
 // renderHelp lays sections out: bold title, key column padded to the

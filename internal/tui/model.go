@@ -61,8 +61,9 @@ type doneMsg struct {
 }
 type tickMsg time.Time
 type model struct {
-	vp    viewport.Model
-	input textarea.Model
+	vp          viewport.Model
+	input       textarea.Model
+	suggestions suggestionState
 	// hist is the submitted-line history (cap 50, consecutive dedup);
 	// histIdx points past the end when typing fresh input. draft holds
 	// the unsent line parked while browsing history.
@@ -100,7 +101,7 @@ type model struct {
 	interrupted bool
 	// stateFile locates the saved transcript for follow-ups.
 	stateFile string
-	// ws resolves @image paths against the workspace, escape-checked
+	// ws resolves @file paths against the workspace, escape-checked
 	// like every file tool path. Stored, not rebuilt per turn.
 	ws *workspace.Workspace
 	// newSession builds a session for a fresh task (first run and
@@ -356,7 +357,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	default:
 		m.state = stDone
 		m.stateFile = ""
-		m.appendBlock(markerBlock("New chat · type a task to begin\n/mode plan previews changes · /mode act executes them\n@path attaches images"))
+		m.appendBlock(markerBlock("New chat · type a task to begin\n/mode plan previews changes · /mode act executes them\n@path attaches workspace files or images"))
 		m.input.Focus()
 	}
 	final, err := prog.Run()

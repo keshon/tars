@@ -39,6 +39,7 @@ func tick(active bool) tea.Cmd {
 	})
 }
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer m.syncSuggestions()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width(msg)
@@ -147,6 +148,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.Mouse().X >= navigatorWidth+3 && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.vp.Height() && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 			m.navFocused = false
 			return m, m.input.Focus()
+		}
+		if m.dialog != nil && m.dialog.help {
+			switch msg.Mouse().Button {
+			case tea.MouseWheelDown:
+				m.dialog.offset++
+			case tea.MouseWheelUp:
+				m.dialog.offset = max(m.dialog.offset-1, 0)
+			}
+			return m, nil
 		}
 		// An overlay freezes the background: scroll resumes on close.
 		if m.dialog != nil || m.sessions != nil {
@@ -518,6 +528,17 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	m.syncSuggestions()
+	commandSelected := len(m.suggestions.items) > 0 && strings.HasPrefix(m.suggestions.items[m.suggestions.selected].value, "/")
+	if m.suggestionKey(msg) {
+		if msg.String() != "enter" || !commandSelected {
+			return m, nil
+		}
+		if m.state == stDone {
+			return m.followUp()
+		}
+		// During a run, queue the completed command through the normal Enter path.
+	}
 	if m.sessions == nil && m.dialog == nil && !m.navFocused && (m.state == stDone || m.state == stAsk || m.state == stRunning) && msg.Mod.Contains(tea.ModAlt) && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
 		m.historyWalk(msg.Code == tea.KeyUp)
 		m.fitInput()
@@ -575,6 +596,24 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
+		}
+		if m.dialog.help {
+			switch msg.String() {
+			case "tab", "right":
+				m.dialog.page = (m.dialog.page + 1) % len(helpSections())
+				m.dialog.offset = 0
+			case "shift+tab", "left":
+				m.dialog.page = (m.dialog.page + len(helpSections()) - 1) % len(helpSections())
+				m.dialog.offset = 0
+			case "down":
+				m.dialog.offset++
+			case "up":
+				m.dialog.offset = max(m.dialog.offset-1, 0)
+			case "pgdown":
+				m.dialog.offset += max(m.vp.Height()/2, 1)
+			case "pgup":
+				m.dialog.offset = max(m.dialog.offset-max(m.vp.Height()/2, 1), 0)
+			}
 		}
 		return m, nil
 	}
