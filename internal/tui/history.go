@@ -20,13 +20,12 @@ func (m *model) pushHistory(line string) {
 	m.histIdx = len(m.hist)
 }
 
-// historyWalk moves through history like a shell: up recalls older,
-// down moves newer, and only at the caret edges — otherwise the keys
-// move the cursor, so multiline edits are never lost to a recall.
+// historyWalk handles explicit Alt+Up/Down recall. Plain arrows belong
+// to the editor, including at the first and last line.
 // Returns true when it consumed the key.
 func (m *model) historyWalk(up bool) bool {
 	if up {
-		if m.input.Line() != 0 || len(m.hist) == 0 {
+		if len(m.hist) == 0 {
 			return false
 		}
 		if m.histIdx >= len(m.hist) {
@@ -39,7 +38,7 @@ func (m *model) historyWalk(up bool) bool {
 		m.input.CursorEnd()
 		return true
 	}
-	if m.input.Line() != m.input.LineCount()-1 || len(m.hist) == 0 {
+	if len(m.hist) == 0 || m.histIdx >= len(m.hist) {
 		return false
 	}
 	if m.histIdx < len(m.hist) {

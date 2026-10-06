@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/permission"
@@ -44,6 +43,7 @@ func newNote() textinput.Model {
 // a time. It answers through resolveGate only: every exit path tears
 // the overlay down, so a answered gate can never strand a stage.
 func (m *model) gateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	defer m.fitBottom()
 	if msg.String() == "ctrl+q" {
 		// Quit works from every gate stage: letters are answers here.
 		m.quit = true
@@ -118,6 +118,9 @@ func (m *model) resolveGate(answer string) {
 	m.note.Blur()
 	m.popOverlay()
 	m.state = stRunning
+	m.fitBottom()
+	m.refreshContent()
+	m.input.Focus()
 }
 
 // gateBar renders the bottom bar for the permission overlay by stage.
@@ -127,13 +130,13 @@ func (m *model) gateBar() string {
 	switch m.gstage {
 	case gsAlways:
 		return m.styles.gate.Render(fmt.Sprintf(
-			"always allow %s on %q for this run? [enter] confirm · [esc] back",
+			"Enter confirm  Esc back  allow %s on %q for this run",
 			m.gateTool, truncate(m.gateResource, 80)))
 	case gsReject:
-		return m.styles.dim.Render("reject with note (empty = plain deny) · [esc] back") +
+		return m.styles.dim.Render("reject with note (empty = plain deny)  [Esc] back") +
 			"\n" + m.note.View()
 	default:
-		return m.styles.gate.Render("[y]es / [a]lways / [n]o")
+		return m.styles.gate.Render("Y allow once  N deny with note  A allow this run  Esc deny")
 	}
 }
 
@@ -143,10 +146,8 @@ func (m *model) gateHook(hub *api.GateHub, runCtx context.Context, ws *workspace
 		return m.contextGate(hub, ws)(runCtx, tool, resource, args)
 	}
 }
-
 func (m *model) contextGate(hub *api.GateHub, ws *workspace.Workspace) func(context.Context, string, string, json.RawMessage) (permission.Effect, error) {
 	return func(runCtx context.Context, tool, resource string, args json.RawMessage) (permission.Effect, error) {
-
 		key := [2]string{tool, resource}
 		m.alwaysMu.Lock()
 		allowed := m.always[key]
@@ -189,4 +190,15 @@ func isAlwaysAnswer(answer string) bool {
 		return true
 	}
 	return false
+}
+func (m *model) refreshGate() {
+	title := "Permission required"
+	if m.state == stAsk {
+		title = "Answer required"
+	}
+	rows := []string{m.styles.gate.Render(title), ""}
+	for _, line := range strings.Split(m.gate, "\n") {
+		rows = append(rows, reflow(line, max(m.gateVP.Width-1, 1))...)
+	}
+	m.gateVP.SetContent(strings.Join(rows, "\n"))
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/llm"
@@ -254,8 +253,8 @@ func TestSessions_DeleteActiveRefusesWhileRunning(t *testing.T) {
 }
 
 // Enter switches sessions: stateFile swaps, the transcript rebuilds
-// from history, follow-ups continue via Resume. Harness nudges and
-// system messages stay out of the rendered conversation.
+// from history, follow-ups continue via Resume. Harness notices remain
+// visible; the system prompt stays out of the conversation.
 func TestSessions_EnterResumesWithHistory(t *testing.T) {
 	tmp := t.TempDir()
 	chdirSessions(t, tmp)
@@ -288,12 +287,12 @@ func TestSessions_EnterResumesWithHistory(t *testing.T) {
 		texts = append(texts, b.text, b.result)
 	}
 	joined := strings.Join(texts, "\n")
-	for _, want := range []string{"resumed", "build the widget", "on it", "list_files", "a.go", "widget built"} {
+	for _, want := range []string{"opened", "[harness] verify yourself", "build the widget", "on it", "list_files", "a.go", "widget built"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("transcript missing %q:\n%s", want, joined)
 		}
 	}
-	for _, banned := range []string{"system prompt", "[harness]"} {
+	for _, banned := range []string{"system prompt"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("transcript leaked %q", banned)
 		}
@@ -400,16 +399,16 @@ func TestSessions_CommandOpensAndEscCloses(t *testing.T) {
 	}
 	// The overlay owns the bottom bar (slim line, no input): the list
 	// gains the freed rows, and closing hands them back.
-	if mm.vp.Height != 24-6 {
-		t.Fatalf("sessions viewport height = %d, want 18", mm.vp.Height)
+	if mm.vp.Height != 24-7-1 {
+		t.Fatalf("sessions viewport height = %d, want 16", mm.vp.Height)
 	}
 	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	mm = updated.(*model)
 	if mm.sessions != nil {
 		t.Fatal("esc did not close the screen")
 	}
-	if mm.vp.Height != 24-6-1 {
-		t.Fatalf("closed viewport height = %d, want 17", mm.vp.Height)
+	if mm.vp.Height != 24-7-1 {
+		t.Fatalf("closed viewport height = %d, want 16", mm.vp.Height)
 	}
 }
 
@@ -420,8 +419,8 @@ func TestViewportRefitsOnResize(t *testing.T) {
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	mm := updated.(*model)
-	if mm.vp.Height != 30-6-1 {
-		t.Fatalf("resized viewport height = %d, want 23", mm.vp.Height)
+	if mm.vp.Height != 30-7-1 {
+		t.Fatalf("resized viewport height = %d, want 22", mm.vp.Height)
 	}
 }
 

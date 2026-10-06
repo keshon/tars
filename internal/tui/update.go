@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 )
@@ -19,7 +18,6 @@ func (m *model) Init() tea.Cmd {
 	// Update explicitly — the catch-all would drop it.
 	return tea.Batch(waitEvents(m), tick(), cursor.Blink)
 }
-
 func waitEvents(m *model) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-m.events
@@ -34,19 +32,16 @@ func waitEvents(m *model) tea.Cmd {
 		return eventMsg(ev)
 	}
 }
-
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
-
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width(msg)
 		return m, nil
-
 	case tickMsg:
 		// The clock runs only while a run is in flight (gates
 		// included: a run blocked on input hasn't finished). Once
@@ -55,18 +50,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.elapsed = time.Since(m.started).Round(time.Second)
 		}
 		return m, tick()
-
 	case eventMsg:
 		if m.state != stStopping {
 			m.handleEvent(api.Event(msg))
 		}
 		return m, waitEvents(m)
-
 	case doneMsg:
 		wasInterrupted := m.interrupted
 		m.answer = msg.answer
 		m.runErr = msg.err
 		m.state = stDone
+		m.refreshNavigator()
 		// Partial live text is not an answer: discard it either way.
 		m.live, m.liveCut, m.livePainted = "", false, 0
 		if m.interrupted {
@@ -89,20 +83,53 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue(m.gateDraft)
 			m.gateDraft = ""
 		}
+		m.fitInput()
 		m.fitBottom()
 		if m.queued != "" {
 			queued := m.queued
-			m.queued = ""
-			if m.runErr == nil && !wasInterrupted {
+			if m.runErr == nil && !wasInterrupted && strings.TrimSpace(m.input.Value()) == "" {
+				m.queued = ""
 				m.input.SetValue(queued)
 				_, cmd := m.followUp()
 				return m, tea.Batch(cmd, waitEvents(m))
 			}
-			m.input.SetValue(queued)
 		}
 		return m, tea.Batch(m.input.Focus(), waitEvents(m))
-
 	case tea.MouseMsg:
+		if m.state == stPermission || m.state == stAsk {
+			var cmd tea.Cmd
+			m.gateVP, cmd = m.gateVP.Update(msg)
+			return m, cmd
+		}
+		if m.sessions != nil {
+			return m.browserMouse(msg)
+		}
+		if m.sidebarVisible() && msg.X < navigatorWidth && msg.Y >= 3 && msg.Y < 3+m.vp.Height {
+			if m.state == stPermission || m.state == stAsk {
+				return m, nil
+			}
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.nav.cursor--
+			case tea.MouseButtonWheelDown:
+				m.nav.cursor++
+			case tea.MouseButtonLeft:
+				if msg.Action != tea.MouseActionPress {
+					return m, nil
+				}
+				row := (msg.Y - 6) / 2
+				if msg.Y < 6 || row >= max((m.vp.Height-5)/2, 1) {
+					return m, nil
+				}
+				m.nav.cursor = m.nav.offset + row
+			default:
+				return m, nil
+			}
+			m.nav.clamp(max((m.vp.Height-5)/2, 1))
+			m.navFocused = true
+			m.input.Blur()
+			return m, nil
+		}
 		// An overlay freezes the background: scroll resumes on close.
 		if m.dialog != nil || m.sessions != nil {
 			return m, nil
@@ -110,7 +137,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The input never consumes mouse messages, so scroll works in
 		// every state: wheel in ask/done used to fall through and die.
 		return m.scrollViewport(msg)
-
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	default:
@@ -118,6 +144,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// unexported blink seed included) reach the focused input:
 		// the standard bubbletea pattern, scoped to focus so
 		// background states never leak keystrokes anywhere.
+		if m.state == stPermission && m.gstage == gsReject {
+			var cmd tea.Cmd
+			m.note, cmd = m.note.Update(msg)
+			return m, cmd
+		}
+		if m.sessions != nil && m.sessions.mode == sessRename {
+			var cmd tea.Cmd
+			m.note, cmd = m.note.Update(msg)
+			return m, cmd
+		}
+		if m.sessions != nil && m.sessions.mode == sessList {
+			var cmd tea.Cmd
+			m.sessions.filter, cmd = m.sessions.filter.Update(msg)
+			return m, cmd
+		}
 		if m.input.Focused() {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -126,7 +167,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-
 func (m *model) width(msg tea.WindowSizeMsg) {
 	m.termW, m.termH = msg.Width, msg.Height
 	if !m.ready {
@@ -146,8 +186,11 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 	m.input.MaxHeight = maxRows
 	m.fitInput()
 	m.fitBottom()
-	m.input.SetWidth(msg.Width - 4)
-	m.note.Width = max(msg.Width-10, 10)
+	m.input.SetWidth(max(msg.Width-5, 1))
+	m.note.Width = max(msg.Width-10, 1)
+	if m.sessions != nil {
+		m.sessions.filter.Width = max(msg.Width-14, 1)
+	}
 	// Height follows the terminal too: without a refit here a resize
 	// leaves a stale viewport height, clipping content by the delta.
 	m.fitBottom()
@@ -169,6 +212,15 @@ func (m *model) fitBottom() {
 	if !m.ready {
 		return
 	}
+	switch m.state {
+	case stAsk:
+		m.input.Prompt = "Answer> "
+	case stRunning:
+		m.input.Prompt = "Next> "
+	default:
+		m.input.Prompt = "Task> "
+	}
+	m.input.SetWidth(max(m.termW-5, 1))
 	// Done budgets the input box only (the hint moved right into the
 	// status row); a run error adds its own line on top.
 	lines := 1
@@ -182,21 +234,40 @@ func (m *model) fitBottom() {
 	if m.state == stAsk || m.state == stDone || m.state == stRunning || m.state == stStopping {
 		lines += m.input.Height() - 1
 	}
-	// The -6 counts header bar, header rule, status line, divider rule,
+	// The -7 counts header, identity, header rule, status, divider,
 	// bottom base, and the breathing blank line above the divider
 	// (layout, not content: a content trailing newline breaks scroll
 	// math — phantom blank rows mid-scroll).
 	// `lines` adds per-state extras (done hint, reject label, input growth).
 	// A takeover overlay owns the bottom bar (one slim line), so it
 	// budgets nothing extra: the chat input hides with it.
-	if m.sessions != nil {
-		lines = 0
+	if m.queued != "" && m.state != stPermission && m.state != stAsk {
+		lines++
 	}
-	h := m.termH - 6 - lines
+	if m.sessions != nil {
+		lines = 1
+	}
+	oldWidth := m.vp.Width
+	m.fitColumns()
+	if oldWidth != m.vp.Width {
+		m.refreshContent()
+	}
+	h := m.termH - 7 - lines
 	if h < 1 {
 		h = 1
 	}
 	m.vp.Height = h
+	m.gateVP.Width, m.gateVP.Height = m.vp.Width, h
+	if m.state == stPermission || m.state == stAsk {
+		m.refreshGate()
+	}
+	if m.sessions != nil {
+		width := m.termW - 1
+		if width >= 90 {
+			width = min(44, (width-3)/2)
+		}
+		m.sessions.filter.Width = max(width-10, 1)
+	}
 }
 
 // scrollViewport forwards a scroll message (mouse or paging key) to
@@ -211,7 +282,6 @@ func (m *model) scrollViewport(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.follow = m.vp.AtBottom()
 	return m, cmd
 }
-
 func (m *model) handleEvent(ev api.Event) {
 	switch ev.Name {
 	case "step":
@@ -232,18 +302,17 @@ func (m *model) handleEvent(ev api.Event) {
 		// Reasoning above its reply (TUI-15, user call): the collapsed
 		// think line introduces the answer it produced, causal order.
 		// Tool calls render as cards below, whatever prompted them.
-		if reasoning, _ := ev.Fields["reasoning"].(string); reasoning != "" {
-			tb := thinkBlock(reasoning)
-			m.appendBlock(tb)
-		}
-		if text, _ := ev.Fields["text"].(string); text != "" {
-			ab := answerBlock(text)
-			m.appendBlock(ab)
-		} else if live != "" {
+		reasoning, _ := ev.Fields["reasoning"].(string)
+		text, _ := ev.Fields["text"].(string)
+		if text == "" && live != "" {
 			if calls, _ := ev.Fields["tool_calls"].([]any); len(calls) == 0 {
-				m.appendBlock(answerBlock(live))
+				text = live
 			}
 		}
+		for _, b := range assistantBlocks(text, reasoning) {
+			m.appendBlock(b)
+		}
+
 		if calls, _ := ev.Fields["tool_calls"].([]any); len(calls) > 0 {
 			for _, c := range calls {
 				call, _ := c.(map[string]any)
@@ -287,6 +356,14 @@ func (m *model) handleEvent(ev api.Event) {
 		kind, _ := ev.Fields["kind"].(string)
 		prompt, _ := ev.Fields["prompt"].(string)
 		m.gate = prompt
+		m.gateVP = viewport.New(max(m.termW-1, 1), max(m.vp.Height, 1))
+		if m.sessions != nil {
+			m.closeSessions()
+		}
+		if m.dialog != nil {
+			m.closeDialog()
+		}
+		m.navFocused = false
 		// The prompt lives in the transcript, not the bottom bar: the
 		// bar has a fixed 1-line budget (2 with the answer box), so the
 		// viewport math below always fits the terminal. A long question
@@ -308,12 +385,16 @@ func (m *model) handleEvent(ev api.Event) {
 			m.input.SetValue("")
 			m.input.Focus()
 		}
+		m.fitInput()
+		m.fitBottom()
 	case "input_answered":
 		m.state = stRunning
 		m.gate = ""
 		m.input.SetValue(m.gateDraft)
 		m.gateDraft = ""
 		m.input.Focus()
+		m.fitInput()
+		m.fitBottom()
 	case "result":
 		if report, ok := ev.Fields["report"].(string); ok && report != "" {
 			m.appendBlock(answerBlock(report))
@@ -367,8 +448,92 @@ func (m *model) handleEvent(ev api.Event) {
 		}
 	}
 }
-
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyCtrlQ || msg.Type == tea.KeyCtrlC {
+		m.quit = true
+		m.cancel()
+		return m, tea.Quit
+	}
+	if m.state == stPermission || m.state == stAsk {
+		if msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown || msg.Type == tea.KeyCtrlEnd {
+			var cmd tea.Cmd
+			if msg.Type == tea.KeyCtrlEnd {
+				m.gateVP.GotoBottom()
+				return m, nil
+			}
+			m.gateVP, cmd = m.gateVP.Update(msg)
+			return m, cmd
+		}
+	}
+	if m.sessions == nil && m.dialog == nil && m.state != stPermission {
+		switch msg.Type {
+		case tea.KeyCtrlEnd:
+			m.vp.GotoBottom()
+			m.follow = true
+			return m, nil
+		case tea.KeyCtrlU:
+			m.input.SetValue("")
+			m.fitInput()
+			m.fitBottom()
+			return m, nil
+		case tea.KeyCtrlX:
+			if m.queued != "" {
+				m.queued = ""
+				m.fitBottom()
+				return m, nil
+			}
+		case tea.KeyCtrlE:
+			if m.queued != "" && m.state != stAsk {
+				if m.input.Value() != "" {
+					m.appendBlock(markerBlock("Keep or clear the current draft before editing the queue."))
+					return m, nil
+				}
+				m.input.SetValue(m.queued)
+				m.queued = ""
+				m.fitInput()
+				m.fitBottom()
+				return m, m.input.Focus()
+			}
+		}
+	}
+	if m.sessions == nil && m.dialog == nil && !m.navFocused && (m.state == stDone || m.state == stAsk || m.state == stRunning) && msg.Alt && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown) {
+		m.historyWalk(msg.Type == tea.KeyUp)
+		m.fitInput()
+		m.fitBottom()
+		return m, nil
+	}
+	if m.state != stPermission && m.state != stAsk && m.sessions == nil && m.dialog == nil {
+		switch msg.String() {
+		case "ctrl+p":
+			m.openSessions()
+			return m, nil
+		case "ctrl+b":
+			m.sidebarHidden = !m.sidebarHidden
+			m.fitBottom()
+			m.refreshContent()
+			return m, nil
+		case "tab", "shift+tab":
+			if m.sidebarVisible() {
+				m.navFocused = !m.navFocused
+				if m.navFocused {
+					m.input.Blur()
+				} else {
+					return m, m.input.Focus()
+				}
+				return m, nil
+			}
+		case "ctrl+n":
+			if m.state == stDone {
+				m.navFocused = false
+				m.newChat()
+				return m, m.input.Focus()
+			}
+			return m, nil
+		}
+		if m.navFocused {
+			return m.navigatorKey(msg)
+		}
+	}
 	if m.sessions != nil && m.state != stPermission {
 		// The sessions screen owns its keys like a dialog — except
 		// over a permission gate, which is always on top: its y/n/a
@@ -404,6 +569,20 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.gateKey(msg)
 	case stAsk:
 		switch msg.Type {
+		case tea.KeyEsc:
+			if answer := m.input.Value(); answer != "" {
+				if m.gateDraft != "" {
+					answer = m.gateDraft + "\n" + answer
+				}
+				m.input.SetValue(answer)
+				m.gateDraft = ""
+				m.fitInput()
+			}
+			m.interrupted = true
+			m.cancel()
+			m.state = stStopping
+			m.fitBottom()
+			return m, nil
 		case tea.KeyPgUp, tea.KeyPgDown:
 			// Paging scrolls the transcript in every state; the
 			// input keeps arrows and typing only.
@@ -417,18 +596,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
-		case tea.KeyUp:
-			if m.historyWalk(true) {
-				m.fitInput()
-				m.fitBottom()
-				return m, nil
-			}
-		case tea.KeyDown:
-			if m.historyWalk(false) {
-				m.fitInput()
-				m.fitBottom()
-				return m, nil
-			}
+
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -443,9 +611,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			return m.followUp()
 		case tea.KeyEsc:
-			m.input.SetValue("")
-			m.fitInput()
-			m.fitBottom()
 			return m, nil
 		case tea.KeyCtrlC, tea.KeyCtrlQ:
 			// Quit lives on ctrl+q (and ctrl+c): a letter key must
@@ -454,18 +619,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			m.cancel()
 			return m, tea.Quit
-		case tea.KeyUp:
-			if m.historyWalk(true) {
-				m.fitInput()
-				m.fitBottom()
-				return m, nil
-			}
-		case tea.KeyDown:
-			if m.historyWalk(false) {
-				m.fitInput()
-				m.fitBottom()
-				return m, nil
-			}
+
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -504,14 +658,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fitInput()
 			m.fitBottom()
 			return m, nil
-		case tea.KeyEnd:
-			m.vp.GotoBottom()
-			m.follow = true
-			return m, nil
-		case tea.KeyHome:
-			m.vp.GotoTop()
-			m.follow = false
-			return m, nil
 		case tea.KeyPgUp, tea.KeyPgDown:
 			return m.scrollViewport(msg)
 		}
@@ -520,6 +666,5 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.fitInput()
 		m.fitBottom()
 		return m, cmd
-
 	}
 }

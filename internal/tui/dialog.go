@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -58,7 +57,7 @@ func (m *model) dialogView() string {
 	for _, ln := range d.lines {
 		rows = append(rows, truncate(ln, inner))
 	}
-	rows = append(rows, m.styles.dim.Render("[esc] close"))
+	rows = append(rows, m.styles.dim.Render("[Esc] close"))
 	// Cap rows to the viewport: title + hint always survive the cut.
 	maxRows := availH - 2
 	if maxRows < 2 {
@@ -105,28 +104,35 @@ type helpSection struct {
 func helpSections() []helpSection {
 	return []helpSection{
 		{"keys", [][2]string{
-			{"ctrl+q", "quit"},
-			{"esc", "stop run, stay in chat"},
-			{"enter", "queue a follow-up during a run"},
-			{"ctrl+c", "abort (quits mid-run)"},
-			{"y / n / a", "answer permission"},
-			{"enter", "submits"},
-			{"ctrl+o", "newline"},
-			{"up / down", "history"},
-			{"ctrl+g", "compact history"},
-			{"pgup / pgdn + wheel", "scroll"},
-			{"end", "back to live"},
+			{"Ctrl+Q", "quit"},
+			{"Esc", "stop run, stay in chat"},
+			{"Enter", "queue a follow-up during a run"},
+			{"Ctrl+C", "abort (quits mid-run)"},
+			{"Y / N / A", "answer permission"},
+			{"Enter", "submits"},
+			{"Ctrl+O", "newline"},
+			{"Ctrl+P", "search saved sessions"},
+			{"Ctrl+B", "show/hide sidebar"},
+			{"Tab", "switch sidebar/input"},
+			{"Ctrl+N", "new chat when idle"},
+			{"Alt+Up / Alt+Down", "history"},
+			{"Ctrl+G", "expand/collapse thinking and tool details"},
+			{"PgUp / PgDn + wheel", "scroll"},
+			{"Ctrl+End", "jump to latest in every state"},
+			{"Ctrl+U", "clear draft deliberately"},
+			{"Ctrl+E / Ctrl+X", "edit / cancel queued follow-up"},
 		}},
 		{"gates", [][2]string{
-			{"y", "once"},
-			{"a", "always for this run (confirm)"},
-			{"n", "reject (a note redirects the model)"},
+			{"Y", "once"},
+			{"A", "always for this run (confirm)"},
+			{"N", "reject (a note redirects the model)"},
 		}},
 		{"commands", [][2]string{
 			{"/quit", "exit"},
 			{"/help", "this list"},
 			{"/new [task]", "fresh task (empty resets to chat)"},
 			{"/status", "run facts"},
+			{"/mode plan|act", "preview changes or execute"},
 			{"/retry", "re-run last failed turn"},
 			{"/sessions", "past sessions"},
 			{"/compact", "shrink this session's history"},
@@ -162,12 +168,12 @@ func (m *model) statusLines() []string {
 	if m.stateFile != "" {
 		taskDir = filepath.Dir(m.stateFile)
 	}
-	// The toggle's own name comes from the bottom bar ("ctrl+g
+	// The toggle's own name comes from the bottom bar ("Ctrl+G
 	// details"), not the history internals: compact here describes the
 	// transcript view, never context compaction.
-	details := "collapsed (ctrl+g)"
+	details := "collapsed (Ctrl+G)"
 	if !m.compact {
-		details = "full (ctrl+g)"
+		details = "full (Ctrl+G)"
 	}
 	// Zero means the loop's default; the TUI must not print "0".
 	budget := "default"
@@ -188,12 +194,12 @@ func (m *model) statusLines() []string {
 		"workspace: " + nonEmpty(m.wsRoot),
 		"task dir: " + taskDir,
 		"context: " + m.meter(),
-		"run: " + strconv.Itoa(m.steps) + " steps · " + m.statusWord() + " · " + formatElapsed(m.elapsed),
+		"run: " + strconv.Itoa(m.steps) + " steps  " + m.statusWord() + "  " + formatElapsed(m.elapsed),
 		"details: " + details,
 		"thinking budget: " + budget,
-		"permissions: y allow once · a always allow · n deny with note",
+		"permissions: Y allow once  A always allow  N deny with note",
 		"always allowed: " + allowed,
-		"tools: " + strconv.Itoa(m.mcpCount) + " mcp · " + strconv.Itoa(m.policyRules) + " policy rules",
+		"tools: " + strconv.Itoa(m.mcpCount) + " mcp  " + strconv.Itoa(m.policyRules) + " policy rules",
 	})
 }
 

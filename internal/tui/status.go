@@ -13,17 +13,23 @@ import (
 func (m *model) statusLine() string {
 	follow := ""
 	if !m.follow {
-		follow = " · ↓ end"
+		follow = "  Ctrl+End latest"
 	}
 	counts := ""
 	if m.toolsUsed > 0 {
-		counts = fmt.Sprintf(" · tools %d", m.toolsUsed)
+		counts = fmt.Sprintf("  tools %d", m.toolsUsed)
 		if len(m.filesTouched) > 0 {
-			counts += fmt.Sprintf(" · files %d", len(m.filesTouched))
+			counts += fmt.Sprintf("  files %d", len(m.filesTouched))
 		}
 	}
-	return m.styles.status.Render(fmt.Sprintf(
-		"step %d/%d · %s · elapsed %s%s%s%s",
+	if m.sessions != nil {
+		return m.styles.status.Render("Search: type  List: ↑↓ choose  Enter open")
+	}
+	if m.state == stDone && (m.sess == nil || (m.steps == 0 && m.tokens == 0 && m.toolsUsed == 0 && m.elapsed == 0)) {
+		return m.styles.status.Render(m.actionHint())
+	}
+	return m.styles.status.Render(m.actionHint() + "  " + fmt.Sprintf(
+		m.statusWord()+"  step %d/%d  %s  elapsed %s%s%s%s",
 		m.steps, m.maxSteps, m.meter(), formatElapsed(m.elapsed), m.ttft(), counts, follow))
 }
 
@@ -34,7 +40,7 @@ func (m *model) ttft() string {
 	if m.state != stRunning || m.firstToken.IsZero() {
 		return ""
 	}
-	return " · ttft " + formatElapsed(m.firstToken.Sub(m.started))
+	return "  ttft " + formatElapsed(m.firstToken.Sub(m.started))
 }
 
 func (m *model) statusWord() string {
@@ -46,9 +52,12 @@ func (m *model) statusWord() string {
 	case stStopping:
 		return "stopping"
 	case stDone:
+		if m.runErr != nil {
+			return "failed"
+		}
 		return "ready"
 	default:
-		return "thinking"
+		return "working"
 	}
 }
 
@@ -129,10 +138,7 @@ func kTokens(n int) string {
 
 // dividerLine splits history from the bottom zone with a dim rule.
 func (m *model) dividerLine() string {
-	w := m.termW
-	if m.ready && m.vp.Width > 0 {
-		w = m.vp.Width
-	}
+	w := max(m.termW-1, 0)
 	if w < minWrapWidth {
 		w = minWrapWidth
 	}

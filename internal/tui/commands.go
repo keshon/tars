@@ -52,6 +52,34 @@ func (m *model) command(text string) (tea.Model, tea.Cmd) {
 		sb.bare = true
 		m.appendBlock(sb)
 		return m, nil
+	case "mode":
+		mode := strings.ToLower(strings.TrimSpace(arg))
+		if mode == "" {
+			m.appendBlock(markerBlock("Mode: " + m.modeName() + " · /mode plan previews changes · /mode act executes them"))
+			return m, nil
+		}
+		if m.mission || (mode != "plan" && mode != "act") {
+			m.appendBlock(errorBlock("Choose /mode plan or /mode act for a chat."))
+			return m, nil
+		}
+		previous := m.plan
+		m.plan = mode == "plan"
+		if m.sess != nil {
+			sess, err := m.newSession(m.activeSessionTitle(), m.stateFile, nil)
+			if err != nil {
+				m.plan = previous
+				m.appendBlock(errorBlock(err.Error()))
+				return m, nil
+			}
+			if err := m.saveMode(); err != nil {
+				m.plan = previous
+				m.appendBlock(errorBlock(err.Error()))
+				return m, nil
+			}
+			m.sess = sess
+		}
+		m.appendBlock(markerBlock("Mode: " + m.modeName()))
+		return m, nil
 	case "retry":
 		if m.runErr == nil || m.retryRun == nil {
 			m.appendBlock(markerBlock("nothing to retry: last run did not fail"))

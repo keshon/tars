@@ -181,7 +181,7 @@ func runMain() error {
 		if info, err := os.Stat(stateFile); err == nil && info.IsDir() {
 			stateFile = filepath.Join(stateFile, "state.json")
 		}
-	} else if !*revertFlag && !*revertPreview && !*serveFlag {
+	} else if !*revertFlag && !*revertPreview && !*serveFlag && (!*tuiFlag || task != "" || *forkFlag != "") {
 		sum := sha1.Sum([]byte(task + time.Now().String()))
 		taskID := hex.EncodeToString(sum[:])[:8]
 		taskDir := filepath.Join(ws.Root(), workspace.TaskDir(taskID))
@@ -364,7 +364,7 @@ func runMain() error {
 	// Git snapshot before any work, so the run is reviewable/revertible.
 	// Skipped in serve mode: each served run snapshots into its own
 	// task dir instead, and this stateFile belongs to no run.
-	if !*serveFlag {
+	if !*serveFlag && stateFile != "" {
 		if snap := snapshot.Track(ws.Root(), filepath.Join(filepath.Dir(stateFile), "snapshots")); snap.Path != "" {
 			note("snapshot: %s", snap.Path)
 		} else {
@@ -512,8 +512,10 @@ func runMain() error {
 		if err != nil {
 			return fmt.Errorf("agent failed: %w", err)
 		}
-		fmt.Println("\n=== result ===")
-		fmt.Println(answer)
+		if strings.TrimSpace(answer) != "" {
+			fmt.Println("\n=== result ===")
+			fmt.Println(answer)
+		}
 		return nil
 	}
 

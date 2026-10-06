@@ -1,5 +1,11 @@
 package tui
 
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
 // View assembles the four regions: header bar, transcript viewport,
 // one-line status, fixed-budget bottom bar. Block building lives in
 // transcript.go, status text in status.go — this function only stacks.
@@ -7,7 +13,21 @@ func (m *model) View() string {
 	if !m.ready {
 		return "starting..."
 	}
+	topRule, bottomRule, spacer := m.dividerLine(), m.dividerLine(), ""
+	if m.sidebarVisible() {
+		column, width := navigatorWidth+1, m.termW-1
+		topRule = m.styles.dim.Render(strings.Repeat("─", column) + "┬" + strings.Repeat("─", width-column-1))
+		bottomRule = m.styles.dim.Render(strings.Repeat("─", column) + "┴" + strings.Repeat("─", width-column-1))
+		spacer = strings.Repeat(" ", column) + m.styles.dim.Render("│")
+	}
 	body := m.vp.View()
+	if m.state == stPermission || m.state == stAsk {
+		body = m.gateVP.View()
+	}
+	if m.sidebarVisible() {
+		divider := strings.Repeat(m.styles.dim.Render(" \u2502 ")+"\n", max(m.vp.Height-1, 0)) + m.styles.dim.Render(" \u2502 ")
+		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), divider, body)
+	}
 	if m.dialog != nil {
 		body = m.dialogView()
 	} else if m.sessions != nil {
@@ -42,5 +62,11 @@ func (m *model) View() string {
 			bottom = m.input.View()
 		}
 	}
-	return m.headerLine() + "\n" + m.dividerLine() + "\n" + body + "\n\n" + m.dividerLine() + "\n" + m.statusLine() + "\n" + bottom
+	if m.queued != "" && m.sessions == nil && m.state != stPermission && m.state != stAsk {
+		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, max(m.termW-1, 0)) + "\n" + bottom
+	}
+	// Leave the bottom row and rightmost column unused. Writing the last
+	// terminal cell can trigger automatic wrapping and scroll the whole
+	// screen on Windows consoles, even with the alternate screen enabled.
+	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+"\n"+spacer+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW-1, 0), max(m.termH-1, 0))
 }

@@ -66,7 +66,7 @@ secrets) gated to ask. See `SECURITY.md` for the trust boundary.
 |---|---|---|
 | `-mode MODE` | `print` | `print` (human-readable) or `json` (one JSON object per line on stdout; human chatter goes to stderr so the stream pipes cleanly) |
 | `-serve` | `false` | Serve JSON-RPC over stdio instead of running one task: methods `run`/`respond`/`cancel`, events on stdout. See `docs/rpc.md` |
-| `-tui` | `false` | Fullscreen terminal UI instead of print mode: live transcript, status bar, inline gate prompts. Supports direct, `-plan`, `-resume`, `-fork` and `-mission` runs |
+| `-tui` | `false` | Fullscreen terminal UI instead of print mode: live transcript, responsive session sidebar, searchable session browser (Ctrl+P), and inline gate prompts. Supports direct, `-plan`, `-resume`, `-fork` and `-mission` runs |
 | `-image PATHS` | — | Attach pictures to the task (comma-separated, e.g. `-image shot.png,plan.webp`). In the TUI use `@path` inline instead (`@"my shot.png"` when the name has spaces). Needs a vision-capable backend: llama-server with `--mmproj` and VL weights. Koboldcpp refuses loudly; a text-only model on a vision server fails at the backend, not silently |
 | `-stream` | `false` | Stream response tokens live. OpenAI/llama backends only; koboldcpp falls back to unary |
 | `-debug` | `false` | Log raw request/response JSON plus per-call token usage to `agent-debug.log` |

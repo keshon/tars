@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/keshon/tars/internal/llm"
 )
 
 // thinkToggleHint names the thinking expand/collapse key in UI text.
 // The binding lives in handleKey; both stay in sync through this.
-const thinkToggleHint = "ctrl+g"
+const thinkToggleHint = "Ctrl+G"
 
 // role names the kind of a transcript block. The renderer maps every
 // role to a style + gutter, so unstyled text in the transcript is a
@@ -58,6 +60,39 @@ type block struct {
 	result string
 	open   bool
 	failed bool
+}
+
+// assistantBlocks normalizes both backend reasoning formats for display only.
+// Stored messages remain unchanged, including incomplete think regions.
+func assistantBlocks(content, reasoning string) []block {
+	var answer strings.Builder
+	thoughts := []string{}
+	if strings.TrimSpace(reasoning) != "" {
+		thoughts = append(thoughts, reasoning)
+	}
+	prev := 0
+	regions := llm.ThinkRegions(content)
+	for _, region := range regions {
+		answer.WriteString(content[prev:region[0]])
+		thought := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content[region[0]:region[1]], "<think>"), "</think>"))
+		if thought != "" {
+			thoughts = append(thoughts, thought)
+		}
+		prev = region[1]
+	}
+	answer.WriteString(content[prev:])
+	var blocks []block
+	if len(thoughts) > 0 {
+		blocks = append(blocks, thinkBlock(strings.Join(thoughts, "\n\n")))
+	}
+	text := answer.String()
+	if len(regions) > 0 {
+		text = strings.TrimSpace(text)
+	}
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, answerBlock(text))
+	}
+	return blocks
 }
 
 func answerBlock(s string) block { return block{role: roleAnswer, text: s, at: time.Now()} }
@@ -217,6 +252,9 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 			raw = thinkSummary(b.text)
 		}
 		out = renderSpeaker(b, st, st.gate.Render("TARS")+st.dim.Render("  [THINKING]"), false, raw, stamped, width)
+	case !b.bare && (b.role == roleMarker || b.role == roleGate || b.role == roleMission || b.role == roleError || b.role == roleWarning):
+		out = renderNotice(b, st, raw, stamped, width)
+		spoke = true
 	case isMdRole(b.role):
 		out = renderMdBlock(b, raw, st, stamped, width)
 	default:
@@ -238,6 +276,51 @@ func renderBlock(b block, st styles, expandThink bool, width int) string {
 		out[0] = alignStamp(out[0], st, b.at, width)
 	}
 	return strings.Join(out, "\n")
+}
+
+// renderNotice uses the same label and body columns as conversation turns.
+// It stays raw: harness prompts, paths, and diagnostics are literal text.
+func renderNotice(b block, st styles, raw string, stamped bool, width int) []string {
+	label := "SYS"
+	switch b.role {
+	case roleGate:
+		label = "ASK"
+	case roleError:
+		label = "ERR"
+	case roleWarning:
+		label = "WARN"
+	}
+	bodyW := max(width-len(speakerRail), 1)
+	if stamped && bodyW-stampWidth-1 < minWrapWidth {
+		stamped = false
+	}
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		// Step tags carry a leading space for inline use in harness prompts.
+		// On their own display row, the shared body rail provides the indent.
+		if b.role == roleMarker && strings.HasPrefix(raw, "[harness] ") && strings.HasPrefix(strings.TrimLeft(line, " \t"), "(step ") {
+			line = strings.TrimLeft(line, " \t")
+		}
+		wrapW := bodyW
+		if stamped && len(out) == 0 {
+			wrapW -= stampWidth + 1
+		}
+		for _, fragment := range reflow(line, max(wrapW, 1)) {
+			prefix := speakerRail
+			if len(out) == 0 {
+				prefix = fmt.Sprintf("%-6s", label)
+			}
+			if fragment == "" && len(out) > 0 {
+				out = append(out, "")
+				continue
+			}
+			out = append(out, applyRoleStyle(b.role, line, prefix+fragment, st))
+		}
+	}
+	if stamped && len(out) > 0 {
+		out[0] = alignStamp(out[0], st, b.at, width)
+	}
+	return out
 }
 
 // speakerRail indents conversation bodies under the speaker tag:
@@ -589,27 +672,7 @@ func reflow(line string, width int) []string {
 		return []string{line}
 	}
 	line = strings.ReplaceAll(line, "\t", "    ")
-	if line == "" {
-		return []string{""}
-	}
-	var out []string
-	for len([]rune(line)) > width {
-		r := []rune(line)
-		cut := width
-		for i := width; i >= 0; i-- {
-			if r[i] == ' ' {
-				cut = i
-				break
-			}
-			if i == 0 {
-				cut = width
-			}
-		}
-		out = append(out, strings.TrimRight(string(r[:cut]), " "))
-		line = strings.TrimLeft(string(r[cut:]), " ")
-	}
-	out = append(out, line)
-	return out
+	return strings.Split(ansi.Wrap(line, width, ""), "\n")
 }
 
 // allRoles lists every role for exhaustive tests (gutter width, etc.).

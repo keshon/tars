@@ -11,9 +11,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/llm"
+	"github.com/keshon/tars/internal/snapshot"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -21,9 +21,12 @@ import (
 // the saved transcript carries the conversation, so every follow-up is
 // a continuation, not a fresh run. A /command runs locally instead.
 func (m *model) followUp() (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.Value())
-	m.input.SetValue("")
+	original := m.input.Value()
+	text := strings.TrimSpace(original)
 	if strings.HasPrefix(text, "/") {
+		m.input.SetValue("")
+		m.fitInput()
+		m.fitBottom()
 		return m.command(text)
 	}
 	if text == "" {
@@ -42,15 +45,31 @@ func (m *model) followUp() (tea.Model, tea.Cmd) {
 	// a fresh run rather than resuming nothing. The echo lives in
 	// startFresh (after its transcript reset) so every fresh-task
 	// path — first line, /new — renders the opening task exactly once.
+	m.input.SetValue("")
+	m.fitInput()
+	m.fitBottom()
 	if m.sess == nil {
 		if err := m.startFresh(text, images); err != nil {
+			m.input.SetValue(original)
+			m.fitInput()
+			m.fitBottom()
 			m.appendBlock(errorBlock("cannot start: " + err.Error()))
 		}
 		return m, nil
 	}
 	history, err := agent.LoadState(m.stateFile)
 	if err != nil {
+		m.input.SetValue(original)
+		m.fitInput()
+		m.fitBottom()
 		m.appendBlock(errorBlock("cannot resume: " + err.Error()))
+		return m, nil
+	}
+	if err := m.saveMode(); err != nil {
+		m.input.SetValue(original)
+		m.fitInput()
+		m.fitBottom()
+		m.appendBlock(errorBlock("cannot save mode: " + err.Error()))
 		return m, nil
 	}
 	m.appendBlock(userBlock(text + imageSuffix(images)))
@@ -188,7 +207,10 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.cancel = cancel
 	m.ctx = runCtx
 	m.state = stRunning
+	m.navFocused = false
+	m.refreshNavigator()
 	m.input.Focus()
+	m.fitInput()
 	m.fitBottom()
 	m.started = time.Now()
 	m.steps = 0
@@ -208,6 +230,9 @@ func (m *model) startInitial(task string, images []string) error {
 		return err
 	}
 	m.sess = sess
+	if err := m.saveMode(); err != nil {
+		return err
+	}
 	m.appendBlock(userBlock(strings.TrimSpace(task) + imageSuffix(images)))
 	m.startRun(func(runCtx context.Context) (string, error) {
 		return sess.Run(runCtx)
@@ -219,21 +244,19 @@ func (m *model) startInitial(task string, images []string) error {
 // and last-turn state go, the next submitted line starts a fresh run
 // through the sess==nil path in followUp. Bare /new.
 func (m *model) newChat() {
+	if m.stateFile == "" && m.sess == nil {
+		return
+	}
+	m.saveDraft()
 	m.cancel()
-	m.sess = nil
-	m.stateFile = ""
-	m.blocks = nil
-	m.retryRun = nil
-	m.runErr = nil
-	m.answer = ""
-	m.steps = 0
-	m.tokens = 0
-	m.state = stDone
-	nb := markerBlock("— new task —")
-	nb.breakBefore = true
-	m.appendBlock(nb)
-	m.input.SetValue("")
-	m.fitBottom()
+	m.sess, m.stateFile, m.blocks = nil, "", nil
+	m.mission = false
+	m.resetRunFacts()
+	m.state, m.navFocused = stDone, false
+	m.restoreDraft()
+	m.appendBlock(markerBlock("New chat · type a task to begin"))
+	m.follow = true
+	m.vp.GotoBottom()
 }
 
 // compactNow mechanically compacts the active session's saved history
@@ -288,20 +311,35 @@ func (m *model) startFresh(task string, images []string) error {
 		taskDir = filepath.Join(m.ws.Root(), taskDir)
 	}
 	stateFile := filepath.Join(taskDir, "state.json")
-	_ = workspace.WriteSessionTitle(filepath.Dir(stateFile), workspace.TitleLine(task))
 	sess, err := m.newSession(task, stateFile, images)
 	if err != nil {
 		return err
 	}
-	m.sess = sess
-	m.stateFile = stateFile
+	if err := writeChatMode(stateFile, m.plan); err != nil {
+		return err
+	}
+	if err := workspace.WriteSessionTitle(taskDir, workspace.TitleLine(task)); err != nil {
+		return err
+	}
+	m.saveDraft()
+	if m.stateFile == "" {
+		delete(m.drafts, "")
+	}
+	m.sess, m.stateFile = sess, stateFile
+	m.hist, m.histIdx, m.draft = []string{task}, 1, ""
+	m.queued = ""
 	m.blocks = nil
 	nb := markerBlock("— new task —")
 	nb.breakBefore = true
 	m.appendBlock(nb)
 	m.appendBlock(userBlock(task + imageSuffix(images)))
+	if m.ws != nil {
+		if snap := snapshot.Track(m.ws.Root(), filepath.Join(taskDir, "snapshots")); snap.Path == "" {
+			m.appendBlock(markerBlock("Pre-run checkpoint unavailable; this run cannot be undone with -revert."))
+		}
+	}
 	m.startRun(func(runCtx context.Context) (string, error) {
-		return m.sess.Run(runCtx)
+		return sess.Run(runCtx)
 	})
 	return nil
 }

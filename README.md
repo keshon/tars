@@ -30,6 +30,25 @@ tasks receive a recommendation. `-plan` proposes without touching
 anything; `-mode json` emits machine-readable step events; `-tui` renders
 the same run fullscreen with live transcript and inline gate prompts.
 
+Start an empty chat with `go run ./cmd/agent -tui`. Wide terminals show a
+session sidebar; narrower terminals keep the chat full-width. Ctrl+P opens
+the searchable session browser, Tab switches between sidebar and input,
+Ctrl+B toggles the sidebar, and Ctrl+N starts a new chat when idle. Enter
+opens saved history without running the model; send a follow-up to continue.
+In the browser, Ctrl+R renames and Ctrl+D stages deletion. Ctrl+O adds a
+newline to the chat input. Up/Down always move within the input;
+Alt+Up/Down recall submitted inputs and restore the draft. Ctrl+End jumps to the latest message; Ctrl+U
+clears the draft explicitly. Esc preserves idle drafts and stops active runs.
+Drafts and input history stay with each chat while the TUI is open.
+
+During a run, Enter queues a follow-up. Its preview stays above the input;
+Ctrl+E moves it back into an empty input for editing, and Ctrl+X cancels it.
+It runs after a successful response when the input is empty; failures and
+interruptions keep it available. Permission and question prompts own a
+scrollable preview (PgUp/PgDn) so their context stays beside the controls.
+Ctrl+Q quits from every screen. `/mode plan` and `/mode act` switch the
+idle chat mode; the header shows it and saved chats remember it.
+
 All flags are in [docs/cli.md](docs/cli.md). Remote-provider keys resolve
 from `-api-key`, `-api-key-env`, or environment (`TARS_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`,

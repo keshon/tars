@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/audit"
@@ -359,7 +358,7 @@ func TestCommand_BareNewResetsToChat(t *testing.T) {
 	if mm.sess != nil || mm.stateFile != "" {
 		t.Fatal("bare /new must drop the session")
 	}
-	if len(mm.blocks) != 1 || mm.blocks[0].text != "— new task —" {
+	if len(mm.blocks) != 1 || !strings.Contains(mm.blocks[0].text, "New chat") {
 		t.Fatalf("blocks = %+v, want a clean transcript with one marker", mm.blocks)
 	}
 	// The next line starts a fresh run, not a follow-up to nothing:
@@ -544,56 +543,59 @@ func consecutiveBlanks(s string) int {
 
 func TestViewportSizedWithoutTTY(t *testing.T) {
 	m := sizeModel(t, testModel())
-	if !m.ready || m.vp.Width != 80 {
+	if !m.ready || m.vp.Width != 79 {
 		t.Fatalf("viewport not sized: %+v", m.vp)
 	}
 }
 
-func TestHistory_EdgeGated(t *testing.T) {
+func TestHistory_ExplicitRecallRestoresDraft(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.pushHistory("first")
 	m.pushHistory("second")
-
-	// Up on a single-line input recalls.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	mm := updated.(*model)
-	if mm.input.Value() != "second" {
-		t.Fatalf("up recalled %q", mm.input.Value())
+	m.input.SetValue("draft\nsecond line")
+	for _, want := range []string{"second", "first"} {
+		m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+		if m.input.Value() != want {
+			t.Fatalf("recall %q, want %q", m.input.Value(), want)
+		}
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyUp})
-	mm = updated.(*model)
-	if mm.input.Value() != "first" {
-		t.Fatalf("up again recalled %q", mm.input.Value())
-	}
-	// Down walks forward, past the end restores the draft.
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyDown})
-	mm = updated.(*model)
-	if mm.input.Value() != "second" {
-		t.Fatalf("down recalled %q", mm.input.Value())
-	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyDown})
-	mm = updated.(*model)
-	if mm.input.Value() != "" {
-		t.Fatalf("down past end restored %q, want draft", mm.input.Value())
+	for _, want := range []string{"second", "draft\nsecond line"} {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+		if m.input.Value() != want {
+			t.Fatalf("recall %q, want %q", m.input.Value(), want)
+		}
 	}
 }
 
-func TestHistory_MultilineCaretGate(t *testing.T) {
+func TestHistory_ArrowsNeverRecallAtEditorEdges(t *testing.T) {
+	for _, state := range []runState{stDone, stAsk, stRunning} {
+		m := sizeModel(t, testModel())
+		m.state = state
+		m.pushHistory("old")
+		m.input.SetValue("first line")
+		m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+		m.Update(keyRunes('x'))
+		draft := m.input.Value()
+		if draft != "first line\nx" {
+			t.Fatalf("newline failed: %q", draft)
+		}
+		for _, direction := range []tea.KeyType{tea.KeyUp, tea.KeyDown} {
+			for i := 0; i < 6; i++ {
+				m.Update(tea.KeyMsg{Type: direction})
+			}
+			if m.input.Value() != draft || m.input.Height() < 2 {
+				t.Fatalf("state %d: arrows replaced multiline draft: %q", state, m.input.Value())
+			}
+		}
+	}
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	m.pushHistory("old")
-	m.input.SetValue("line1\nline2")
-	// Cursor lands at the end: first up moves within the text (no
-	// recall), second up — now on the first line — recalls.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	mm := updated.(*model)
-	if mm.input.Value() != "line1\nline2" {
-		t.Fatalf("up on last line must move caret, got %q", mm.input.Value())
-	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if mm := updated.(*model); mm.input.Value() != "old" {
-		t.Fatalf("up on first line must recall, got %q", mm.input.Value())
+	m.input.SetValue("single line")
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.input.Value() != "single line" {
+		t.Fatal("down erased idle draft")
 	}
 }
 
@@ -710,10 +712,10 @@ func TestFollowUnfollowsOnScroll(t *testing.T) {
 	if mm.follow {
 		t.Fatal("pgup must unfollow")
 	}
-	if !strings.Contains(mm.View(), "↓ end") {
+	if !strings.Contains(mm.View(), "Ctrl+End") {
 		t.Fatal("unfollowed state must show jump hint")
 	}
-	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, _ = mm.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
 	mm = updated.(*model)
 	if !mm.follow {
 		t.Fatal("end must re-arm follow")
@@ -791,7 +793,7 @@ func TestQDraftsDuringRun(t *testing.T) {
 }
 
 func TestScrollRoutedInEveryState(t *testing.T) {
-	for _, state := range []runState{stRunning, stAsk, stDone} {
+	for _, state := range []runState{stRunning, stDone} {
 		m := sizeModel(t, testModel())
 		for i := 0; i < 40; i++ {
 			m.appendBlock(markerBlock("block"))
@@ -1436,7 +1438,7 @@ func TestStatusLinesPlainLanguage(t *testing.T) {
 			t.Fatalf("status keeps harness jargon %q:\n%s", banned, out)
 		}
 	}
-	for _, want := range []string{"details", "ctrl+g", "permissions", "y allow once", "always allowed", "none"} {
+	for _, want := range []string{"details", "Ctrl+G", "permissions", "Y allow once", "always allowed", "none"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status missing %q:\n%s", want, out)
 		}
@@ -1449,6 +1451,7 @@ func TestWithoutPrintHooks_Silent(t *testing.T) {
 	// nil dereference whatever the loop passes.
 	env.OnStep("l", 1, llm.Message{Content: "x"})
 	env.OnToolResult("c", "r")
+	env.OnResult(agent.ToolResult{})
 	env.OnUsage(1, llm.Usage{})
 	env.OnDelta("z")
 }
@@ -1506,25 +1509,24 @@ func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 17 {
-		t.Fatalf("done viewport height = %d, want 17 (24 - header - rule - status - rule - gap - input)", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height != 16 {
+		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - gap - input)", mm.vp.Height)
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height != 17 {
-		t.Fatalf("running viewport height = %d, want 17", mm.vp.Height)
+	if mm := updated.(*model); mm.vp.Height != 16 {
+		t.Fatalf("running viewport height = %d, want 16", mm.vp.Height)
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm = updated.(*model); mm.vp.Height != 17 {
-		t.Fatalf("composing viewport height = %d, want 17", mm.vp.Height)
+	if mm = updated.(*model); mm.vp.Height != 16 {
+		t.Fatalf("composing viewport height = %d, want 16", mm.vp.Height)
 	}
-	// Exact fit: viewport + gap + rule + status + input == 23,
-	// same total as before the merge (one spare terminal row, no clip).
+	// The bottom row stays unused to prevent Windows console scrolling.
 	if n := len(strings.Split(mm.View(), "\n")); n != 23 {
 		t.Fatalf("view is %d lines, want 23", n)
 	}
@@ -1533,7 +1535,7 @@ func TestBottomZoneHeights(t *testing.T) {
 // Keys live only in /help now that the status row carries state
 // instead of a manual: every essential binding must be listed there.
 func TestHintAlwaysShown(t *testing.T) {
-	for _, want := range []string{"ctrl+q", "ctrl+g", "enter", "up / down", "esc"} {
+	for _, want := range []string{"Ctrl+Q", "Ctrl+G", "Enter", "Alt+Up / Alt+Down", "Esc"} {
 		found := false
 		for _, s := range helpSections() {
 			for _, r := range s.rows {
@@ -1643,8 +1645,8 @@ func TestBareSkipsGutter(t *testing.T) {
 	w0 := lipgloss.Width(renderBlock(b, st, false, 80))
 	b.bare = true
 	w1 := lipgloss.Width(renderBlock(b, st, false, 80))
-	if w0-w1 != gutterWidth {
-		t.Fatalf("bare must drop exactly the gutter: %d vs %d", w0, w1)
+	if w0-w1 != len(speakerRail) {
+		t.Fatalf("bare must drop the system label column: %d vs %d", w0, w1)
 	}
 }
 
@@ -1817,7 +1819,7 @@ func TestFindingRendersWarning(t *testing.T) {
 	if len(mm.blocks) != 1 || mm.blocks[0].role != roleWarning {
 		t.Fatalf("finding must be a warning block: %+v", mm.blocks)
 	}
-	if view := mm.vp.View(); !strings.Contains(view, "»") || !strings.Contains(view, "a.go:3") {
+	if view := mm.vp.View(); !strings.Contains(view, "WARN") || !strings.Contains(view, "a.go:3") {
 		t.Fatalf("warning missing rail/content: %q", view)
 	}
 	// Rule-less events append nothing, never a blank warning.
@@ -2011,7 +2013,7 @@ func TestToggleHoldsPosition(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		m2.appendBlock(markerBlock("filler"))
 	}
-	updated, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, _ = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
 	mm2 := updated.(*model)
 	updated, _ = mm2.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	mm2 = updated.(*model)
@@ -2162,8 +2164,8 @@ func TestStatusBrand_RightAligned(t *testing.T) {
 	if header == "" {
 		t.Fatal("header missing brand line")
 	}
-	if n := lipgloss.Width(header); n != 160 {
-		t.Fatalf("header width = %d, want full 160 (clock right)", n)
+	if n := lipgloss.Width(header); n != 159 {
+		t.Fatalf("header width = %d, want 159 (clock right, one column reserved)", n)
 	}
 	// Fixed two-line zone: the blocked input stays visible while
 	// running (empty transcript here, so "> " can only be the box).

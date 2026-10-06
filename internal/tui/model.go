@@ -8,6 +8,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 	"github.com/keshon/tars/internal/audit"
@@ -44,7 +44,6 @@ type Config struct {
 	// AuditPath, when set, appends gate decisions as JSONL (see audit).
 	AuditPath string
 }
-
 type runState int
 
 const (
@@ -56,14 +55,11 @@ const (
 )
 
 type eventMsg api.Event
-
 type doneMsg struct {
 	answer string
 	err    error
 }
-
 type tickMsg time.Time
-
 type model struct {
 	vp    viewport.Model
 	input textarea.Model
@@ -176,7 +172,14 @@ type model struct {
 	// browsable past-task list with rename/delete. Like a dialog it
 	// replaces the body and owns its keys; unlike a dialog it borrows
 	// the note input for rename entry.
-	sessions *sessionsState
+	sessions      *sessionsState
+	nav           sessionsState
+	navFocused    bool
+	sidebarHidden bool
+	drafts        map[string]chatDraft
+	plan          bool
+	mission       bool
+	gateVP        viewport.Model
 	// Status facts snapshotted from cfg at construction for /status:
 	// backend/workspace identity and budgets the run was given.
 	backendKind string
@@ -211,6 +214,7 @@ func withoutPrintHooks(env roles.Env) roles.Env {
 	env.OnDelta = func(string) {}
 	env.OnStep = func(string, int, llm.Message) {}
 	env.OnToolResult = func(string, string) {}
+	env.OnResult = func(agent.ToolResult) {}
 	env.OnUsage = func(int, llm.Usage) {}
 	env.OnFinding = nil
 	env.OnNudge = nil
@@ -239,7 +243,6 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		case <-uiCtx.Done():
 		}
 	})
-
 	runCtx, cancel := context.WithCancel(uiCtx)
 	m := &model{
 		events:    eventsCh,
@@ -253,6 +256,8 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		maxSteps:  envMaxSteps(cfg.Env),
 		follow:    true,
 		compact:   true,
+		plan:      cfg.Plan,
+		mission:   cfg.Mission != nil,
 		stateFile: cfg.StateFile,
 		note:      newNote(),
 		always:    map[[2]string]bool{},
@@ -265,9 +270,12 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		mcpCount:    len(cfg.Env.MCPTools),
 		policyRules: len(cfg.Env.Policy.Rules),
 	}
+	if len(cfg.History) > 0 && !cfg.Plan && readChatMode(filepath.Dir(cfg.StateFile)) == "Plan" {
+		m.plan = true
+	}
+	m.refreshNavigator()
 	m.input = newInput()
 	m.input.Prompt = "> "
-
 	env := withoutPrintHooks(cfg.Env)
 	env.Gate = nil
 	env.GateContext = audit.ContextHook(cfg.AuditPath, "tui", m.contextGate(hub, cfg.Env.WS))
@@ -275,7 +283,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		return api.New(api.Config{
 			Env:          env,
 			Task:         task,
-			Plan:         cfg.Plan,
+			Plan:         m.plan,
 			StateFile:    stateFile,
 			Verify:       cfg.Verify,
 			Images:       images,
@@ -306,7 +314,6 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		case <-uiCtx.Done():
 		}
 	}
-	m.appendBlock(markerBlock(fmt.Sprintf("%s / %s · context %d · workspace %s\nShell commands run with your user permissions; workspace paths are a guardrail, not a sandbox.", cfg.Env.BackendKind, cfg.Env.Model, cfg.Env.ContextLimit, m.wsRoot)))
 	switch {
 	case cfg.Mission != nil:
 		m.appendBlock(userBlock(cfg.Task))
@@ -343,10 +350,10 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		}
 	default:
 		m.state = stDone
-		m.appendBlock(markerBlock("type a task to begin · @path attaches images"))
+		m.stateFile = ""
+		m.appendBlock(markerBlock("New chat · type a task to begin\n/mode plan previews changes · /mode act executes them\n@path attaches images"))
 		m.input.Focus()
 	}
-
 	final, err := prog.Run()
 	if err != nil {
 		cancel()
@@ -358,7 +365,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 	}
 	if fm.quit {
 		cancel()
-		return "", context.Canceled
+		return "", nil
 	}
 	return fm.answer, fm.runErr
 }
