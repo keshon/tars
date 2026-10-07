@@ -414,6 +414,7 @@ func (m *model) openSelected() tea.Cmd {
 	mb := markerBlock("— opened " + cur.title + " —")
 	mb.breakBefore = true
 	m.blocks = append([]block{mb}, renderHistory(history)...)
+	m.restoreContext(history)
 	m.retryRun = nil
 	m.runErr = nil
 	m.answer = ""

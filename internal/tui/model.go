@@ -30,6 +30,7 @@ import (
 // workspace, tools, policy, budgets); gate behavior comes from the TUI,
 // so Env.Gate is overridden, never read.
 type Config struct {
+	BackendURL   string
 	Plan         bool
 	History      []llm.Message
 	ResumeAnswer string
@@ -124,7 +125,15 @@ type model struct {
 	// tokensEst marks estimated numbers (streaming backends that report
 	// no usage block); the meter prefixes "~" so estimates never pose
 	// as measurements.
-	tokensEst bool
+	tokensEst     bool
+	contextSource string
+	usageAt       time.Time
+	lastUsage     usageSnapshot
+	usageThisRun  bool
+	headerFocused bool
+	headerIndex   int
+	headerMenu    string
+	headerRow     int
 	// follow tracks viewport stickiness: new blocks auto-scroll only
 	// while the user hasn't scrolled away. Any manual scroll re-arms
 	// on reaching the bottom; End always re-arms.
@@ -185,6 +194,9 @@ type model struct {
 	// Status facts snapshotted from cfg at construction for /status:
 	// backend/workspace identity and budgets the run was given.
 	backendKind string
+	backendURL  string
+	responseCap int
+	streaming   bool
 	modelName   string
 	wsRoot      string
 	thinkBudget int
@@ -265,6 +277,9 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		always:    map[[2]string]bool{},
 		// Status facts come from cfg once: the TUI never re-reads Env.
 		backendKind: cfg.Env.BackendKind,
+		backendURL:  safeEndpoint(cfg.BackendURL),
+		responseCap: cfg.Env.MaxTokens,
+		streaming:   cfg.Env.Stream && cfg.Env.BackendKind != "kobold",
 		modelName:   cfg.Env.Model,
 		ws:          cfg.Env.WS,
 		wsRoot:      wsRootOf(cfg.Env.WS),
@@ -347,6 +362,7 @@ func Run(ctx context.Context, cfg Config) (string, error) {
 		}
 		m.sess = sess
 		m.blocks = append(m.blocks, renderHistory(cfg.History)...)
+		m.restoreContext(cfg.History)
 		m.startRun(func(runCtx context.Context) (string, error) {
 			return sess.Resume(runCtx, cfg.History, task, cfg.Images...)
 		})

@@ -115,7 +115,7 @@ func TestHeaderPrioritizesRunMetricsOnNarrowTerminals(t *testing.T) {
 	for _, width := range []int{80, 120} {
 		m.width(tea.WindowSizeMsg{Width: width, Height: 30})
 		line := ansi.Strip(m.identityLine())
-		for _, fact := range []string{"step 2/25", "ctx 4.1k / 16.4k (25%)", "elapsed 00:32"} {
+		for _, fact := range []string{"step 2/25", "CTX 4.1k / 16.4k", "00:32"} {
 			if !strings.Contains(line, fact) {
 				t.Fatalf("header at width %d lost %q: %q", width, fact, line)
 			}

@@ -48,19 +48,7 @@ func (m *model) fitColumns() {
 	}
 	m.vp.SetWidth(max(width, 1))
 }
-func (m *model) identityLine() string {
-	identity := m.statusWord()
-	if facts := m.runFacts(); facts != "" {
-		// Put run progress before model details so it survives narrow terminals.
-		identity += "  " + facts + "  " + nonEmpty(m.modelName)
-	} else {
-		identity += "  " + nonEmpty(m.modelName)
-		if m.limit > 0 {
-			identity += "  context " + kTokens(m.limit)
-		}
-	}
-	return cellLine(m.styles.dim.Render(m.modeName()+"  ")+cellLine(m.spinner(), 1)+m.styles.dim.Render(" "+identity), max(m.termW, 0))
-}
+func (m *model) identityLine() string { return m.badgeLine() }
 func (m *model) conversationOffset() int {
 	if m.sidebarVisible() {
 		return navigatorWidth + 3

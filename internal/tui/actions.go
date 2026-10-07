@@ -20,18 +20,18 @@ type footerCell struct {
 
 func (m *model) footerActions() []footerAction {
 	gated := m.state == stPermission || m.state == stAsk
-	chat := !gated && m.dialog == nil && m.sessions == nil
+	chat := !gated && m.dialog == nil && m.sessions == nil && !m.headerFocused
 	idle := chat && m.state == stDone
 	return []footerAction{
-		{tea.KeyF1, "F1", "Help", "Help", !gated && m.sessions == nil},
-		{tea.KeyF2, "F2", "Search", "Search", !gated && m.dialog == nil},
+		{tea.KeyF1, "F1", "Help", "Help", !gated && m.sessions == nil && !m.headerFocused},
+		{tea.KeyF2, "F2", "Search", "Search", !gated && m.dialog == nil && !m.headerFocused},
 		{tea.KeyF3, "F3", "Details", "View", chat},
 		{tea.KeyF4, "F4", "New", "New", idle},
 		{tea.KeyF5, "F5", "Mode", "Mode", idle && !m.mission},
 		{tea.KeyF6, "F6", "Sidebar", "Pane", chat && m.termW >= navigatorMinWidth},
 		{tea.KeyF7, "F7", "Latest", "End", chat},
 		{tea.KeyF8, "F8", "", "", false},
-		{tea.KeyF9, "F9", "", "", false},
+		{tea.KeyF9, "F9", "Menu", "Menu", !gated && m.dialog == nil && m.sessions == nil},
 		{tea.KeyF10, "F10", "Quit", "Quit", true},
 	}
 }
@@ -145,6 +145,9 @@ func (m *model) footerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyF7:
 		m.vp.GotoBottom()
 		m.follow = true
+	case tea.KeyF9:
+		m.headerFocused = !m.headerFocused
+		m.headerMenu = ""
 	case tea.KeyF10:
 		m.quit = true
 		m.cancel()

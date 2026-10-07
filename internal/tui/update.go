@@ -64,6 +64,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitEvents(m)
 	case doneMsg:
+		m.persistUsage()
 		wasInterrupted := m.interrupted
 		m.answer = msg.answer
 		m.runErr = msg.err
@@ -104,6 +105,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.input.Focus(), waitEvents(m))
 	case tea.MouseMsg:
+		if handled, cmd := m.headerMouse(msg); handled {
+			return m, cmd
+		}
 		if m.actionBarVisible() && msg.Mouse().Y >= m.termH-m.actionBarRows() && msg.Mouse().Y < m.termH && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 			for _, cell := range m.footerCells() {
 				if msg.Mouse().Y == m.termH-m.actionBarRows()+cell.row && msg.Mouse().X >= cell.start && msg.Mouse().X < cell.end {
@@ -189,7 +193,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions.filter, cmd = m.sessions.filter.Update(msg)
 			return m, cmd
 		}
-		if m.input.Focused() {
+		if m.input.Focused() && !m.headerFocused {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			m.fitInput()
@@ -384,8 +388,16 @@ func (m *model) handleEvent(ev api.Event) {
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {
 			m.tokens = int(p)
 			m.tokensEst, _ = ev.Fields["estimated"].(bool)
+			m.contextSource = "Last request prompt"
+			if m.tokensEst {
+				m.contextSource = "Last request estimate"
+			}
+			m.usageAt = time.Now()
+			m.usageThisRun = true
+			m.lastUsage = usageSnapshot{Tokens: m.tokens, Estimated: m.tokensEst, At: m.usageAt, Model: m.modelName}
 		}
 	case "awaiting_input":
+		m.closeHeader()
 		kind, _ := ev.Fields["kind"].(string)
 		prompt, _ := ev.Fields["prompt"].(string)
 		m.gate = prompt
@@ -482,6 +494,9 @@ func (m *model) handleEvent(ev api.Event) {
 	}
 }
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.headerFocused {
+		return m.headerKey(msg)
+	}
 	switch msg.String() {
 	case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10":
 		return m.footerKey(msg)

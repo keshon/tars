@@ -2228,7 +2228,7 @@ func TestStartRunResetsClock(t *testing.T) {
 	if m.started.Before(before) {
 		t.Fatal("startRun must reset the clock")
 	}
-	if m.steps != 0 || m.tokens != 0 || m.state != stRunning {
+	if m.steps != 0 || m.tokens != 42 || m.state != stRunning {
 		t.Fatalf("run not reset: steps=%d tokens=%d state=%v", m.steps, m.tokens, m.state)
 	}
 	if !m.input.Focused() {

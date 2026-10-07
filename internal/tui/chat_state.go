@@ -33,7 +33,8 @@ func (m *model) restoreDraft() {
 func (m *model) resetRunFacts() {
 	m.retryRun, m.runErr = nil, nil
 	m.answer, m.live, m.gateDraft = "", "", ""
-	m.steps, m.tokens, m.toolsUsed, m.livePainted = 0, 0, 0, 0
+	m.steps, m.toolsUsed, m.livePainted = 0, 0, 0
+	m.clearContext()
 	m.tokensEst, m.liveCut, m.interrupted = false, false, false
 	m.filesTouched = nil
 	m.elapsed = 0

@@ -292,7 +292,8 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.fitBottom()
 	m.started = time.Now()
 	m.steps = 0
-	m.tokens = 0
+	m.usageThisRun = false
+	m.headerFocused, m.headerMenu = false, ""
 	go func() {
 		answer, err := run(runCtx)
 		m.send(doneMsg{answer: answer, err: err})
@@ -370,6 +371,7 @@ func (m *model) compactNow() (tea.Model, tea.Cmd) {
 	// the kept tail, which reads identical to before — the marker is
 	// the only visible signal that anything happened.
 	m.blocks = append(renderHistory(history), mb)
+	m.restoreContext(history)
 	m.refreshContent()
 	// The point of manual compaction is seeing the shrunken transcript:
 	// re-arm follow and jump to bottom even if the reader scrolled up,
@@ -408,6 +410,7 @@ func (m *model) startFreshPrompt(task, display string, images []string) error {
 		delete(m.drafts, "")
 	}
 	m.sess, m.stateFile = sess, stateFile
+	m.clearContext()
 	m.hist, m.histIdx, m.draft = []string{display}, 1, ""
 	m.queued = ""
 	m.blocks = nil

@@ -81,6 +81,9 @@ func (m *model) screenContent() string {
 	if m.sessions != nil {
 		content = m.overlaySearch(content)
 	}
+	if m.headerMenu != "" {
+		content = m.overlayHeader(content)
+	}
 	return content
 }
 
@@ -88,7 +91,7 @@ func (m *model) View() tea.View {
 	v := tea.NewView(m.screenContent())
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	if !m.ready || m.dialog != nil {
+	if !m.ready || m.dialog != nil || m.headerFocused {
 		return v
 	}
 	if m.sessions != nil {

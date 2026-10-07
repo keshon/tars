@@ -34,8 +34,9 @@ helpers; they are not required or distributed as part of the setup.
 ## Screen and focus
 
 The header shows session identity, Plan/Act mode, model, and run status.
-During a run, a Braille spinner and step/context/elapsed/tool metrics appear
-at the top. Estimated context usage has a `~` prefix.
+During a run, a Braille spinner and step/context/elapsed metrics appear
+at the top; the Run menu includes tool and file counts. Estimated context
+usage has a `~` prefix.
 
 At 110 columns and 18 rows or larger, the 34-column Sessions pane appears
 unless hidden with F6 or Ctrl+B. Tab switches between the pane and input.
@@ -49,6 +50,25 @@ extra spacing; horizontal rules are reserved for pane boundaries. Thinking and
 tool results can be collapsed or expanded with F3 or Ctrl+G. Collapsing is
 visual only; it does not remove model history. Scrolling up stops automatic
 following; F7 or Ctrl+End returns to the latest content.
+
+## Header badges
+
+The session title and clock sit above a badge strip: Act/Plan, Ready/Work/Wait/
+Stop/Error, model, context, and run progress. Work includes the braille spinner.
+Click a badge or use F9 to open its menu without moving the conversation. Pane
+rules remain gray. Narrow terminals omit run and model badges before context.
+
+Mode offers Act/Plan while idle; Activity offers Stop or Retry when applicable.
+Model shows the configured backend, sanitized endpoint, transport, context
+window, and response budget. These are configuration details, not server-health
+measurements. Context offers manual compaction when an idle chat has saved state.
+
+The context badge retains the latest request's prompt usage between turns.
+`~CTX` marks an estimate. Opening or compacting a saved chat recomputes an
+estimate from replayed text and tool calls, excluding tool schemas and image
+tokens. Context details identify the source and show previous request usage,
+which is saved in optional `usage.json` alongside `state.json`. Missing or
+corrupt usage metadata does not prevent opening a session.
 
 ## Input and suggestions
 
@@ -128,7 +148,10 @@ missing text-file paths with an extension/path separator report an error.
 - F5 Mode: switch Plan/Act when idle in a direct chat.
 - F6 Sidebar: show/hide the pane when the terminal is wide enough.
 - F7 Latest: jump to the latest message.
-- F8 and F9: reserved, disabled, with no label.
+- F8: reserved, disabled, with no label.
+- F9: focus the header menu. Left/Right selects a badge; Enter opens it.
+  Up/Down browses details and actions; Enter chooses an action. Esc goes back
+  or returns to the composer. You can also click badges and actions.
 - F10 Quit: exit TARS.
 
 The footer can be clicked. Disabled actions are dimmed. Below 80 columns,

@@ -446,7 +446,7 @@ func runMain() error {
 			suspend:      suspend,
 		}
 		if *tuiFlag {
-			_, err := tui.Run(ctx, tui.Config{Env: env, Task: task, StateFile: filepath.Join(missionDir, "mission.json"), AuditPath: *auditPath, Mission: func(runCtx context.Context, runEnv roles.Env, answer agent.Suspender, emitter *events.Emitter) error {
+			_, err := tui.Run(ctx, tui.Config{BackendURL: *backend, Env: env, Task: task, StateFile: filepath.Join(missionDir, "mission.json"), AuditPath: *auditPath, Mission: func(runCtx context.Context, runEnv roles.Env, answer agent.Suspender, emitter *events.Emitter) error {
 				p := params
 				p.env = runEnv
 				p.suspend = answer
@@ -499,6 +499,7 @@ func runMain() error {
 		}
 
 		answer, err := tui.Run(ctx, tui.Config{
+			BackendURL:   *backend,
 			Plan:         *planFlag,
 			History:      history,
 			ResumeAnswer: *answer,

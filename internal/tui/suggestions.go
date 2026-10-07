@@ -63,7 +63,7 @@ func (m *model) completionToken() (start, end int, prefix string) {
 
 func (m *model) syncSuggestions() {
 	s := &m.suggestions
-	if m.navFocused || m.dialog != nil || m.sessions != nil || (m.ready && (m.vp.Height() < 4 || m.vp.Width() < 24)) || (m.state != stDone && m.state != stRunning) {
+	if m.headerFocused || m.navFocused || m.dialog != nil || m.sessions != nil || (m.ready && (m.vp.Height() < 4 || m.vp.Width() < 24)) || (m.state != stDone && m.state != stRunning) {
 		s.items = nil
 		s.key = ""
 		return

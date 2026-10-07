@@ -152,6 +152,8 @@ func helpSections() []helpSection {
 			{"Ctrl+R / Ctrl+D", "Rename / delete the selected session in the Sessions pane"},
 			{"PgUp / PgDn", "Scroll the conversation; mouse wheel also works"},
 			{"F7 / Ctrl+End", "Jump to the latest message"},
+			{"F9", "Focus header badges; Left / Right choose, Enter opens"},
+			{"Header menus", "Click a badge; Up / Down browse, Enter choose, Esc back"},
 		}},
 		{"Run", [][2]string{
 			{"F4 / Ctrl+N", "Start a new session when idle"},
