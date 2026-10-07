@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/keshon/tars/internal/agent"
 	"github.com/keshon/tars/internal/api"
 )
@@ -271,7 +272,7 @@ func (m *model) fitBottom() {
 	if m.queued != "" && m.state != stPermission && m.state != stAsk {
 		lines++
 	}
-	if m.sessions != nil || m.dialog != nil {
+	if m.dialog != nil {
 		lines = 1
 	}
 	oldWidth := m.vp.Width()
@@ -294,11 +295,11 @@ func (m *model) fitBottom() {
 		m.refreshGate()
 	}
 	if m.sessions != nil {
-		width := m.termW
-		if width >= 90 {
-			width = min(44, (width-3)/2)
+		width := m.searchGeometry().width - 2
+		m.sessions.filter.SetWidth(max(width-lipgloss.Width(m.sessions.filter.Prompt)-1, 1))
+		if m.sessions.mode == sessRename {
+			m.note.SetWidth(max(width-lipgloss.Width(m.note.Prompt)-1, 1))
 		}
-		m.sessions.filter.SetWidth(max(width-10, 1))
 	}
 }
 

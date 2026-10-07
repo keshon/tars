@@ -210,10 +210,7 @@ func (m *model) suggestionView(body string) string {
 	height := max(m.vp.Height(), lipgloss.Height(body))
 	count := min(6, height-3, len(s.items))
 	start := min(max(s.selected-count+1, 0), len(s.items)-count)
-	background := lipgloss.Color("#1B2430")
-	normal := lipgloss.NewStyle().Foreground(lipgloss.Color("#B6C2D2")).Background(background)
-	border := normal.Foreground(lipgloss.Color("#65768A"))
-	selected := normal.Foreground(lipgloss.Color("#F1F4F8")).Background(lipgloss.Color("#3B526F")).Bold(true)
+	normal, border, selected := popupStyles()
 	title, action := "Files", "Enter / Tab insert"
 	if strings.HasPrefix(s.items[0].value, "/") {
 		title, action = "Commands", "Enter run  Tab insert"

@@ -122,7 +122,7 @@ missing text-file paths with an extension/path separator report an error.
 ## Function-key footer
 
 - F1 Help: open/close the help modal.
-- F2 Sessions: open/close the saved-session browser.
+- F2 Search: open/close the centered session search popup.
 - F3 Details: expand/collapse thinking and tool output.
 - F4 New: start an empty session when idle.
 - F5 Mode: switch Plan/Act when idle in a direct chat.
@@ -136,12 +136,23 @@ it uses two rows; very small terminals omit it.
 
 ## Sessions
 
-F2 or Ctrl+P opens search by title or session ID. Up/Down and PgUp/PgDn move
-through results; Enter opens the selected history without generating a new
-response. Type a follow-up to continue. Ctrl+R renames; Ctrl+D asks for deletion
-confirmation. Esc returns to the chat. Saved Plan/Act mode is restored when
+F2 or Ctrl+P opens a centered popup over the chat, using the same palette as
+input suggestions. Search matches session names/IDs and saved user messages
+and assistant replies, case-insensitively. Title matches rank ahead of history
+matches; empty search shows recent sessions. Results show gray ages and a
+highlighted matching excerpt. Up/Down and PgUp/PgDn move through results;
+Enter opens the session without generating a response. History matches jump
+to the matching message. Esc closes and preserves the composer draft.
+
+Search covers the saved `state.json` conversation: compacted-away messages,
+system/harness instructions, reasoning, and tool output are not searched.
+Stop a running turn before switching sessions.
+
+Focus the Sessions pane with Tab, then use Ctrl+R to rename or Ctrl+D to
+confirm deletion. The same shortcuts remain available in the search popup.
+Type a follow-up to continue. Saved Plan/Act mode is restored when
 opening a direct chat. Missions can be resumed from the CLI; the session
-browser does not resume them as direct chats.
+search popup does not resume them as direct chats.
 
 Drafts, input history, and the queued follow-up are kept separately for each
 chat while the UI is open. They are not persisted across app restarts. Saved
@@ -170,7 +181,7 @@ PgUp/PgDn, and the mouse wheel scroll. Esc, Enter, or F1 closes it.
 The draft is preserved while Help is open.
 
 - `/help`: help modal.
-- `/sessions`: saved-session browser.
+- `/sessions`: session search popup.
 - `/new [task]`: start a new task; without text, reset to an empty chat.
 - `/mode plan|act`: switch direct-chat mode; `/mode` alone shows the mode.
 - `/status`: append current run facts to the transcript.

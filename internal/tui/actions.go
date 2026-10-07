@@ -24,7 +24,7 @@ func (m *model) footerActions() []footerAction {
 	idle := chat && m.state == stDone
 	return []footerAction{
 		{tea.KeyF1, "F1", "Help", "Help", !gated && m.sessions == nil},
-		{tea.KeyF2, "F2", "Sessions", "Sessions", !gated && m.dialog == nil},
+		{tea.KeyF2, "F2", "Search", "Search", !gated && m.dialog == nil},
 		{tea.KeyF3, "F3", "Details", "View", chat},
 		{tea.KeyF4, "F4", "New", "New", idle},
 		{tea.KeyF5, "F5", "Mode", "Mode", idle && !m.mission},

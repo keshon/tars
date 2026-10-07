@@ -17,7 +17,7 @@ import (
 	"github.com/keshon/tars/internal/workspace"
 )
 
-// Sessions screen: a browsable list of past sessions with open,
+// Session search: a centered popup over the chat with open,
 // rename, and delete. A session is a conversation: each task dir holds
 // the whole turn history in state.json, so one row per dir.
 //
@@ -40,14 +40,18 @@ const (
 )
 
 type sessionEntry struct {
-	id      string
-	title   string
-	dir     string
-	msgs    int
-	updated time.Time
-	status  string
-	mode    string
-	preview string
+	id           string
+	title        string
+	dir          string
+	msgs         int
+	updated      time.Time
+	status       string
+	mode         string
+	preview      string
+	search       []sessionText
+	matchText    string
+	matchBlock   int
+	historyMatch bool
 }
 
 type sessionsState struct {
@@ -62,7 +66,8 @@ type sessionsState struct {
 	flash  string
 	// root is the tasks dir scanned at open; mutations re-scan it so
 	// the list always reflects disk, never a stale copy.
-	root string
+	root          string
+	fromNavigator bool
 }
 
 // tasksRoot mirrors TaskDir's layout: relative, like every task path
@@ -101,6 +106,11 @@ func listSessionsIn(root string) []sessionEntry {
 				if history, err := agent.LoadState(state); err == nil {
 					e.status = "Saved"
 					e.msgs = len(history)
+					for i, b := range renderHistory(history) {
+						if b.role == roleUser || b.role == roleAnswer {
+							e.search = append(e.search, sessionText{text: b.text, block: i})
+						}
+					}
 					if _, question, paused := agent.PausedOnQuestion(history); paused {
 						e.status, e.preview = "Needs input", question
 					} else {
@@ -136,11 +146,10 @@ func listSessionsIn(root string) []sessionEntry {
 	return out
 }
 
-// sessChrome counts title, search, gap, and hint, plus the
-// flash line and rename input when shown. Each entry costs three rows
-// (title + meta + gap), so capacity is what remains divided by three.
+// sessChrome counts border title, search, gap, hint and bottom border,
+// plus mutation prompts. Each result has a title and an excerpt.
 func (m *model) sessChrome() int {
-	chrome := 4
+	chrome := 5
 	if m.sessions.flash != "" {
 		chrome++
 	}
@@ -157,9 +166,9 @@ func (m *model) sessChrome() int {
 func (m *model) sessVisible() int {
 	availH := m.termH - 3
 	if m.ready {
-		availH = m.vp.Height()
+		availH = m.paneHeight()
 	}
-	if n := (availH - m.sessChrome()) / 3; n > 0 {
+	if n := min(6, (availH-m.sessChrome())/2); n > 0 {
 		return n
 	}
 	return 1
@@ -199,19 +208,18 @@ func ageString(t time.Time) string {
 func (m *model) openSessions() {
 	m.refreshNavigator()
 	filter := textinput.New()
-	filter.Prompt = "Search > "
+	filter.Prompt = "> "
 	filter.SetVirtualCursor(false)
 	style := filter.Styles()
 	style.Cursor.Shape = tea.CursorUnderline
 	filter.SetStyles(style)
-	filter.Placeholder = "title or session ID"
+	filter.Placeholder = "Session name or conversation text"
 	filter.CharLimit = 80
 	filter.SetWidth(max(m.termW-14, 1))
 	filter.Focus()
 	m.sessions = &sessionsState{entries: m.nav.entries, all: m.nav.entries, root: m.sessionRoot(), filter: filter}
 	m.pushOverlay(ovSessions)
-	// The overlay shrinks the bottom bar (slim line, no input):
-	// refit so the list gains the freed rows.
+	// Search overlays the existing panes without changing composer geometry.
 	m.fitBottom()
 	m.refreshContent()
 }
@@ -240,6 +248,7 @@ func (m *model) resetNote() {
 // Search accepts typing; ctrl+r/ctrl+d are list commands — except rename mode, where the
 // borrowed note input owns every key but esc/enter, like gsReject.
 func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	defer m.fitBottom()
 	s := m.sessions
 	if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 		m.quit = true
@@ -254,6 +263,9 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.resetNote()
 			s.mode = sessList
+			if s.fromNavigator {
+				m.closeSessions()
+			}
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -268,6 +280,9 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "n", "N", "esc":
 			s.mode = sessList
 			s.flash = ""
+			if s.fromNavigator {
+				m.closeSessions()
+			}
 			return m, nil
 		}
 		return m, nil
@@ -279,7 +294,7 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch key {
-	case "esc":
+	case "esc", "ctrl+p":
 		m.closeSessions()
 		return m, nil
 	case "enter":
@@ -413,6 +428,16 @@ func (m *model) openSelected() tea.Cmd {
 	// mid-history or blank. follow stays on so live turns behave.
 	m.follow = true
 	m.vp.GotoTop()
+	if cur.historyMatch {
+		// Match indices refer to renderHistory; the opened marker adds one block.
+		target := cur.matchBlock + 1
+		row := 0
+		for i := 0; i < target && i < len(m.partLines); i++ {
+			row += m.partLines[i] + 1 // rendered part plus the blank row between parts
+		}
+		m.follow = false
+		m.vp.SetYOffset(row)
+	}
 	m.restoreDraft()
 	return m.input.Focus()
 }
@@ -502,6 +527,9 @@ func (m *model) commitRename() {
 	if s.all != nil {
 		s.replaceEntries(m.nav.entries)
 	}
+	if s.fromNavigator {
+		m.closeSessions()
+	}
 }
 
 // deleteSelected removes the session dir — title goes with it, so no
@@ -548,6 +576,9 @@ func (m *model) deleteSelected() {
 	m.clampOffset()
 	s.mode = sessList
 	s.flash = ""
+	if s.fromNavigator {
+		m.closeSessions()
+	}
 }
 
 // headerLine renders the top bar: brand + session title left, wall
@@ -586,18 +617,6 @@ func (m *model) activeSessionTitle() string {
 	}
 	return filepath.Base(dir)
 }
-
-// sessionsBar is the one-line bottom bar while the screen is open:
-// which session is active, since the list shows everything but marks
-// nothing. The chat input stays hidden — its keys belong to the list.
-func (m *model) sessionsBar() string {
-	return m.styles.dim.Render("Ctrl+R rename  Ctrl+D delete  Esc back  active: " + truncate(m.activeSessionTitle(), 60))
-}
-
-// sessionsView renders the list centered like a dialog: cursor-marked
-// rows, per-mode hint, rename input or delete question when staged.
-// Widths clamp to the viewport; the viewport clips the rest.
-func (m *model) sessionsView() string { return m.browserView() }
 
 // sessionRoot follows the chosen workspace, independently of the process cwd.
 func (m *model) sessionRoot() string {
@@ -644,12 +663,31 @@ func (s *sessionsState) clamp(visible int) {
 }
 func (s *sessionsState) applyFilter() {
 	query := strings.ToLower(strings.TrimSpace(s.filter.Value()))
-	s.entries = nil
-	for _, e := range s.all {
-		if strings.Contains(strings.ToLower(e.title+" "+e.id), query) {
-			s.entries = append(s.entries, e)
+	var titles, history []sessionEntry
+	for _, original := range s.all {
+		e := original
+		e.historyMatch, e.matchText = false, ""
+		if query == "" || strings.Contains(strings.ToLower(e.title+" "+e.id), query) {
+			if query != "" {
+				for _, message := range e.search {
+					if strings.Contains(strings.ToLower(message.text), query) {
+						e.matchText = message.text
+						break
+					}
+				}
+			}
+			titles = append(titles, e)
+			continue
+		}
+		for _, message := range e.search {
+			if strings.Contains(strings.ToLower(message.text), query) {
+				e.matchText, e.matchBlock, e.historyMatch = message.text, message.block, true
+				history = append(history, e)
+				break
+			}
 		}
 	}
+	s.entries = append(titles, history...)
 	s.cursor, s.offset = 0, 0
 }
 
@@ -674,24 +712,22 @@ func (m *model) browserMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if s.mode != sessList {
 		return m, nil
 	}
-	width := max(m.termW, 1)
-	if width >= 90 {
-		width = min(44, (width-3)/2)
-	}
-	if msg.Mouse().X >= width || msg.Mouse().Y < 3 || msg.Mouse().Y >= 3+m.vp.Height() {
+	g := m.searchGeometry()
+	mouse := msg.Mouse()
+	if mouse.X < g.x || mouse.X >= g.x+g.width || mouse.Y < g.y || mouse.Y >= g.y+g.height {
 		return m, nil
 	}
-	switch msg.Mouse().Button {
+	switch mouse.Button {
 	case tea.MouseWheelUp:
 		s.cursor--
 	case tea.MouseWheelDown:
 		s.cursor++
 	case tea.MouseLeft:
-		if !isMouseClick(msg) || msg.Mouse().Y < 6 {
+		if !isMouseClick(msg) {
 			return m, nil
 		}
-		row := (msg.Mouse().Y - 6) / 3
-		if row >= m.sessVisible() || s.offset+row >= len(s.entries) {
+		row := (mouse.Y - g.y - 3) / 2
+		if mouse.Y < g.y+3 || row >= m.sessVisible() || s.offset+row >= len(s.entries) {
 			return m, nil
 		}
 		s.cursor = s.offset + row

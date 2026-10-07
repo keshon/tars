@@ -34,7 +34,7 @@ func cellFrame(s string, width, height int) string {
 }
 func (m *model) sidebarVisible() bool {
 	return !m.sidebarHidden && m.termW >= navigatorMinWidth && m.termH >= 18 &&
-		m.sessions == nil && m.dialog == nil
+		m.dialog == nil
 }
 func (m *model) fitColumns() {
 	width := m.termW
@@ -149,82 +149,6 @@ func (m *model) entryState(e sessionEntry) string {
 	}
 	return ""
 }
-func (m *model) browserList(width int) string {
-	s := m.sessions
-	rows := []string{m.styles.hunk.Render("Saved sessions"), s.filter.View(), ""}
-	m.clampOffset()
-	for i := s.offset; i < min(s.offset+m.sessVisible(), len(s.entries)); i++ {
-		e := s.entries[i]
-		mark := "  "
-		if i == s.cursor {
-			mark = "› "
-		}
-		line := cellLine(mark+e.title, width)
-		if i == s.cursor {
-			line = m.styles.hunk.Bold(true).Reverse(true).Render(line)
-		}
-		rows = append(rows, line, m.styles.dim.Render(cellLine("  "+strings.TrimSpace(m.entryState(e)+"  "+nonEmpty(e.mode))+"  "+ageString(e.updated), width)), "")
-	}
-	if len(s.entries) == 0 {
-		if s.filter.Value() != "" {
-			rows = append(rows, "No sessions match this search.")
-		} else {
-			rows = append(rows, "No saved sessions yet.")
-		}
-	}
-	pos := ""
-	if len(s.entries) > 0 {
-		pos = fmt.Sprintf("%d/%d  ", s.cursor+1, len(s.entries))
-	}
-	rows = append(rows, m.styles.dim.Render(pos+"Enter open"))
-	if s.flash != "" {
-		rows = append(rows, m.styles.err.Render(s.flash))
-	}
-	switch s.mode {
-	case sessRename:
-		rows = append(rows, "New name  Enter save  Esc back", m.note.View())
-	case sessConfirm:
-		if len(s.entries) > 0 {
-			rows = append(rows, m.styles.err.Render("Delete "+s.entries[s.cursor].title+"? y / n"))
-		}
-	}
-	return strings.Join(rows, "\n")
-}
-func (m *model) browserPreview(width int) string {
-	s := m.sessions
-	if len(s.entries) == 0 {
-		return ""
-	}
-	e := s.entries[s.cursor]
-	rows := []string{m.styles.hunk.Render(e.title), m.styles.dim.Render(strings.TrimSpace(m.entryState(e) + "  " + e.mode)), ""}
-	if e.preview != "" {
-		rows = append(rows, reflow(e.preview, max(width, 8))...)
-	} else {
-		rows = append(rows, "Open to inspect saved history.")
-	}
-	rows = append(rows, "", fmt.Sprintf("History  %d messages", e.msgs), "Saved  "+ageString(e.updated), "ID  "+e.id, "")
-	switch {
-	case e.mode == "Mission":
-		rows = append(rows, "Resume this mission from the CLI.")
-	case e.status == "Unreadable":
-		rows = append(rows, "Snapshot cannot be read. Delete or repair it.")
-	default:
-		rows = append(rows, "Opening history does not start a run.", "Send a follow-up to continue.")
-	}
-	return strings.Join(rows, "\n")
-}
-func (m *model) browserView() string {
-	width, height := max(m.termW, 0), m.vp.Height()
-	if width >= 90 {
-		left := min(44, (width-3)/2)
-		divider := strings.Repeat(m.styles.dim.Render(" │ ")+"\n", max(height-1, 0)) + m.styles.dim.Render(" │ ")
-		return lipgloss.JoinHorizontal(lipgloss.Top,
-			cellFrame(m.browserList(left), left, height), divider,
-			cellFrame(m.browserPreview(width-left-3), width-left-3, height))
-	}
-	// Small terminals keep the browser usable without squeezing the transcript.
-	return cellFrame(m.browserList(width), width, height)
-}
 func (m *model) navigatorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
 		m.quit = true
@@ -245,7 +169,7 @@ func (m *model) navigatorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.nav.cursor += step
 		m.nav.clamp(m.navigatorRows())
-	case "enter":
+	case "enter", "ctrl+r", "ctrl+d":
 		if m.state != stDone {
 			m.appendBlock(markerBlock("Stop the run before switching sessions."))
 			return m, nil
@@ -260,6 +184,10 @@ func (m *model) navigatorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.sessions.cursor = i
 				break
 			}
+		}
+		if msg.String() != "enter" {
+			m.sessions.fromNavigator = true
+			return m.sessionsKey(msg)
 		}
 		return m, m.openSelected()
 	}

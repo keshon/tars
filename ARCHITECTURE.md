@@ -167,7 +167,7 @@ or closing the transport releases it. Policy Deny never becomes a question,
 and Ask without a live approval handler fails closed.
 
 The TUI owns presentation and input routing. A responsive Sessions pane and
-search browser open saved conversations without generating; drafts and a single
+centered title/history search open saved conversations without generating; drafts and a single
 queued follow-up remain per-chat in memory. Help, session search, and permission
 prompts own their keys while open. Run metrics and the Braille spinner live in
 the header; the function-key footer owns a fixed set of action slots.

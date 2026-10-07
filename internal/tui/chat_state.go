@@ -85,7 +85,7 @@ func writeChatMode(stateFile string, plan bool) error {
 
 func (m *model) actionHint() string {
 	if m.navFocused {
-		return "↑↓ choose  Enter open  Tab input"
+		return "↑↓ choose  Enter open  Ctrl+R rename  Ctrl+D delete  Tab input"
 	}
 	switch m.state {
 	case stPermission:

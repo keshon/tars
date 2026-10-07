@@ -32,8 +32,6 @@ func (m *model) screenContent() string {
 	}
 	if m.dialog != nil {
 		body = m.dialogView()
-	} else if m.sessions != nil {
-		body = m.sessionsView()
 	}
 	bodyHeight := m.vp.Height()
 	if popup {
@@ -44,8 +42,6 @@ func (m *model) screenContent() string {
 	switch {
 	case m.dialog != nil:
 		bottom = m.styles.dim.Render("Draft preserved")
-	case m.sessions != nil:
-		bottom = m.sessionsBar()
 	case m.state == stPermission:
 		bottom = m.gateBar()
 	default:
@@ -54,7 +50,7 @@ func (m *model) screenContent() string {
 			bottom = m.styles.err.Render("error: "+truncate(m.runErr.Error(), 240)) + "\n" + bottom
 		}
 	}
-	if m.queued != "" && m.sessions == nil && m.dialog == nil && m.state != stPermission && m.state != stAsk {
+	if m.queued != "" && m.dialog == nil && m.state != stPermission && m.state != stAsk {
 		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, m.vp.Width()) + "\n" + bottom
 	}
 	bottom = cellFrame(bottom, m.vp.Width(), lipgloss.Height(bottom))
@@ -81,7 +77,11 @@ func (m *model) screenContent() string {
 		}
 		content += "\n" + rule + "\n" + m.actionBar()
 	}
-	return cellFrame(content, max(m.termW, 0), max(m.termH, 0))
+	content = cellFrame(content, max(m.termW, 0), max(m.termH, 0))
+	if m.sessions != nil {
+		content = m.overlaySearch(content)
+	}
+	return content
 }
 
 func (m *model) View() tea.View {
@@ -92,19 +92,18 @@ func (m *model) View() tea.View {
 		return v
 	}
 	if m.sessions != nil {
+		g := m.searchGeometry()
 		if m.sessions.mode == sessRename {
 			v.Cursor = m.note.Cursor()
 			if v.Cursor != nil {
-				width := m.termW
-				if width >= 90 {
-					width = min(44, (width-3)/2)
-				}
-				v.Cursor.Y += 3 + lipgloss.Height(m.browserList(width)) - 1
+				v.Cursor.X += g.x + 1
+				v.Cursor.Y += g.noteRow
 			}
 		} else if m.sessions.mode == sessList {
 			v.Cursor = m.sessions.filter.Cursor()
 			if v.Cursor != nil {
-				v.Cursor.Y += 4
+				v.Cursor.X += g.x + 1
+				v.Cursor.Y += g.y + 1
 			}
 		}
 	} else if m.state == stPermission {

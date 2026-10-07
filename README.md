@@ -42,9 +42,9 @@ suggestions or `@` for workspace files. Enter runs the highlighted command
 or inserts a file path; Tab only inserts. Text references include bounded
 file snapshots; images require a vision-capable backend.
 
-F1 opens categorized help. F2 opens the searchable session browser; wide
+F1 opens categorized help. F2 opens centered session search by title and saved conversation text; wide
 terminals also show a compact Sessions pane. The function-key footer exposes
-Help, Sessions, Details, New, Mode, Sidebar, Latest, and Quit. During a run,
+Help, Search, Details, New, Mode, Sidebar, Latest, and Quit. During a run,
 you can queue one follow-up, edit it, or stop the run without losing the chat.
 
 On Windows, keep KoboldCPP in its own terminal:

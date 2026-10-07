@@ -31,3 +31,11 @@ func defaultStyles() styles {
 		warn:   lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 	}
 }
+
+// popupStyles is shared by input completion and session search.
+func popupStyles() (normal, border, selected lipgloss.Style) {
+	normal = lipgloss.NewStyle().Foreground(lipgloss.Color("#B6C2D2")).Background(lipgloss.Color("#1B2430"))
+	border = normal.Foreground(lipgloss.Color("#65768A"))
+	selected = normal.Foreground(lipgloss.Color("#F1F4F8")).Background(lipgloss.Color("#3B526F")).Bold(true)
+	return
+}

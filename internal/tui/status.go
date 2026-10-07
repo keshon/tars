@@ -9,7 +9,7 @@ import (
 // statusLine describes the current input; run metrics belong in the header.
 func (m *model) statusLine() string {
 	if m.sessions != nil {
-		return m.styles.status.Render("Type to search  ↑↓ select  Enter open  Esc back")
+		return m.styles.status.Render("Search names and saved conversation text")
 	}
 	if m.dialog != nil {
 		return m.styles.status.Render("Esc close  F1 close help")

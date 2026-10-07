@@ -145,10 +145,11 @@ func helpSections() []helpSection {
 		}},
 		{"Navigate", [][2]string{
 			{"F1", "Open or close help"},
-			{"F2 / Ctrl+P", "Browse and search sessions"},
+			{"F2 / Ctrl+P", "Search session names and conversation history"},
 			{"F3 / Ctrl+G", "Expand or collapse thinking and tool details"},
 			{"F6 / Ctrl+B", "Show or hide the session pane"},
 			{"Tab", "Switch between sessions and input"},
+			{"Ctrl+R / Ctrl+D", "Rename / delete the selected session in the Sessions pane"},
 			{"PgUp / PgDn", "Scroll the conversation; mouse wheel also works"},
 			{"F7 / Ctrl+End", "Jump to the latest message"},
 		}},
