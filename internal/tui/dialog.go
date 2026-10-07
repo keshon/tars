@@ -74,7 +74,9 @@ func (m *model) dialogView() string {
 			tabs[i] = label
 		}
 		rows = append(rows, strings.Split(lipgloss.NewStyle().Width(inner).Render(strings.Join(tabs, "  ")), "\n")...)
-		rows = append(rows, "")
+		if availH >= 10 {
+			rows = append(rows, "")
+		}
 		lines = m.helpRows(sections[d.page], inner)
 		hint = "Tab / ← → category   ↑ ↓ scroll   Esc close"
 	}

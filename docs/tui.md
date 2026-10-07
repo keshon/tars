@@ -44,12 +44,19 @@ marks the current saved session; `›` marks the row selected in the focused
 pane. Ages are gray. `*`, `?`, and `!` indicate working/stopping, input
 needed, and failed/unreadable states.
 
-The transcript distinguishes YOU, TARS, and SYS/ERR notices. Thinking and
+The transcript distinguishes YOU, TARS, and SYS/ERR notices. New turns use
+extra spacing; horizontal rules are reserved for pane boundaries. Thinking and
 tool results can be collapsed or expanded with F3 or Ctrl+G. Collapsing is
 visual only; it does not remove model history. Scrolling up stops automatic
 following; F7 or Ctrl+End returns to the latest content.
 
 ## Input and suggestions
+
+The composer sits below the transcript inside the conversation pane; its
+suggestions and prompts share that pane's width. The Sessions divider extends
+to a full-width separator above the global function-key footer. Session
+details sit at the bottom of the pane without a separate divider. Hiding Sessions gives the composer the full
+terminal width.
 
 The prompt is `>` with an underline caret. The input grows to fit multiline
 text, up to six visible rows (less in short terminals).

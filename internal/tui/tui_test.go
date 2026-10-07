@@ -621,7 +621,7 @@ func TestNativeUnderlineCaretTracksComposerAndHidesOnHelp(t *testing.T) {
 	m.fitInput()
 	m.fitBottom()
 	v := m.View()
-	if v.Cursor == nil || v.Cursor.Shape != tea.CursorUnderline || v.Cursor.Y != m.termH-m.actionBarRows()-1 {
+	if v.Cursor == nil || v.Cursor.Shape != tea.CursorUnderline || v.Cursor.Y != m.termH-m.footerRows()-1 {
 		t.Fatalf("incorrect native composer cursor: %+v", v.Cursor)
 	}
 	if v.Cursor.X != 2+len("second") {
@@ -647,15 +647,8 @@ func TestTranscriptBreathesBeforeDivider(t *testing.T) {
 	}
 	m.vp.GotoBottom()
 	lines := strings.Split(m.View().Content, "\n")
-	// The transcript divider is the last rule: the header owns the
-	// first, so scan from the bottom.
-	div := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.Contains(lines[i], "─") {
-			div = i
-			break
-		}
-	}
+	// The composer rule sits below the transcript breathing row.
+	div := 3 + m.vp.Height() + 1
 	if div < 1 {
 		t.Fatalf("no divider in view:\n%s", m.View().Content)
 	}
@@ -1510,22 +1503,22 @@ func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height() != 16 {
-		t.Fatalf("done viewport height = %d, want 16 (24 - header - identity - rule - status - rule - metrics - input - actions)", mm.vp.Height())
+	if mm := updated.(*model); mm.vp.Height() != 15 {
+		t.Fatalf("done viewport height = %d, want 15 (24 - header - identity - rule - status - rule - breathing row - input - footer separator - actions)", mm.vp.Height())
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height() != 16 {
-		t.Fatalf("running viewport height = %d, want 16", mm.vp.Height())
+	if mm := updated.(*model); mm.vp.Height() != 15 {
+		t.Fatalf("running viewport height = %d, want 15", mm.vp.Height())
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm = updated.(*model); mm.vp.Height() != 16 {
-		t.Fatalf("composing viewport height = %d, want 16", mm.vp.Height())
+	if mm = updated.(*model); mm.vp.Height() != 15 {
+		t.Fatalf("composing viewport height = %d, want 15", mm.vp.Height())
 	}
 	// The frame uses every row, including the footer at the bottom edge.
 	if n := len(strings.Split(mm.View().Content, "\n")); n != 24 {
@@ -1713,17 +1706,18 @@ func TestTurnSeparators(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.appendBlock(answerBlock("first"))
 	m.appendBlock(userBlock("❯ second"))
-	if n := strings.Count(m.vp.View(), "─"); n != m.vp.Width() {
-		t.Fatalf("one full-width rule expected, got %d dashes", n)
+	view := ansi.Strip(m.vp.View())
+	if strings.Contains(view, "─") || !regexp.MustCompile(`\n *\n *\nYOU`).MatchString(view) {
+		t.Fatalf("turn should use two blank rows instead of a pane rule: %q", view)
 	}
-	// Marker-then-echo shares one turn: no double rule.
+	// Marker-then-echo shares one turn: no extra turn spacing.
 	m2 := sizeModel(t, testModel())
 	nb := markerBlock("— new task —")
 	nb.breakBefore = true
 	m2.appendBlock(nb)
 	m2.appendBlock(userBlock("❯ go"))
 	if n := strings.Count(m2.vp.View(), "─"); n != 0 {
-		t.Fatalf("opener pair must not double-rule, got %d", n)
+		t.Fatalf("opener pair must not add rules, got %d", n)
 	}
 }
 

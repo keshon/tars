@@ -8,91 +8,80 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// View assembles the four regions: header bar, transcript viewport,
-// one-line status, fixed-budget bottom bar. Block building lives in
-// transcript.go, status text in status.go — this function only stacks.
+// screenContent keeps the composer inside the conversation column and the
+// function-key bar outside both panes.
 func (m *model) screenContent() string {
 	if !m.ready {
 		return "starting..."
 	}
-	topRule, bottomRule, spacer := m.dividerLine(), m.dividerLine(), ""
+	topRule := m.dividerLine()
 	if m.sidebarVisible() {
-		column, width := navigatorWidth+1, m.termW
-		topRule = m.paneRule(column, "SESSIONS", m.navFocused) + m.styles.dim.Render("┬") + m.paneRule(width-column-1, "CHAT", !m.navFocused)
-		bottomRule = m.styles.dim.Render(strings.Repeat("─", column) + "┴" + strings.Repeat("─", width-column-1))
-		spacer = m.sidebarDetails() + " " + m.styles.dim.Render("│")
+		column := navigatorWidth + 1
+		topRule = m.paneRule(column, "SESSIONS", m.navFocused) + m.styles.dim.Render("┬") + m.paneRule(m.termW-column-1, "CHAT", !m.navFocused)
 	}
 	popup := len(m.suggestions.items) > 0 && m.vp.Height() >= 4 && m.vp.Width() >= 24
-	bodyHeight := m.vp.Height()
-	transcript := m.vp.View()
+	body := m.vp.View()
+	gap := "\n"
 	if popup {
-		bodyHeight++
-		transcript += "\n"
+		body += "\n"
+		gap = ""
 	}
-	body := m.suggestionView(transcript)
+	body = m.suggestionView(body)
 	if m.state == stPermission || m.state == stAsk {
 		body = m.gateVP.View()
-	}
-	if m.sidebarVisible() {
-		borderStyle := m.styles.dim
-		divider := strings.Repeat(borderStyle.Render(" │ ")+"\n", max(m.vp.Height()-1, 0)) + borderStyle.Render("─┤ ")
-		sidebar := m.sidebarView()
-		if popup {
-			sidebar += "\n" + m.sidebarDetails()
-			divider += "\n" + borderStyle.Render(" │ ")
-		}
-		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, divider, body)
 	}
 	if m.dialog != nil {
 		body = m.dialogView()
 	} else if m.sessions != nil {
 		body = m.sessionsView()
 	}
-	body = cellFrame(body, max(m.termW, 0), bodyHeight)
+	bodyHeight := m.vp.Height()
+	if popup {
+		bodyHeight++
+	}
+	body = cellFrame(body, m.vp.Width(), bodyHeight)
 	var bottom string
-	if m.dialog != nil {
+	switch {
+	case m.dialog != nil:
 		bottom = m.styles.dim.Render("Draft preserved")
-	} else if m.sessions != nil {
-		// The screen owns its keys, so it owns the bottom bar too:
-		// leaving the chat input visible underneath suggests typing
-		// works there (it doesn't — every key belongs to the list)
-		// and its stale height adds phantom lines.
+	case m.sessions != nil:
 		bottom = m.sessionsBar()
-	} else {
-		switch m.state {
-		case stPermission:
-			bottom = m.gateBar()
-		case stAsk:
-			bottom = m.input.View()
-		case stDone:
-			// No hint line: its keys moved right into the status row,
-			// the freed line belongs to the transcript.
-			if m.runErr != nil {
-				bottom = m.styles.err.Render("error: "+truncate(m.runErr.Error(), 240)) + "\n" + m.input.View()
-			} else {
-				bottom = m.input.View()
-			}
-		default:
-			// Blocked input, same box: the zone stays status + input
-			// in every state, so layout never jumps when a run
-			// starts or lands. Keys route to the viewport here;
-			// the blur below hides the caret.
-			bottom = m.input.View()
+	case m.state == stPermission:
+		bottom = m.gateBar()
+	default:
+		bottom = m.input.View()
+		if m.state == stDone && m.runErr != nil {
+			bottom = m.styles.err.Render("error: "+truncate(m.runErr.Error(), 240)) + "\n" + bottom
 		}
 	}
 	if m.queued != "" && m.sessions == nil && m.dialog == nil && m.state != stPermission && m.state != stAsk {
-		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, max(m.termW, 0)) + "\n" + bottom
+		bottom = cellLine("Queued  Ctrl+E edit  Ctrl+X cancel: "+m.queued, m.vp.Width()) + "\n" + bottom
 	}
+	bottom = cellFrame(bottom, m.vp.Width(), lipgloss.Height(bottom))
+	conversation := body + gap + "\n" + m.styles.dim.Render(strings.Repeat("─", m.vp.Width())) + "\n" + cellLine(m.statusLine(), m.vp.Width()) + "\n" + bottom
+	conversation = cellFrame(conversation, m.vp.Width(), m.paneHeight())
+	if m.sidebarVisible() {
+		divider := strings.Repeat(m.styles.dim.Render(" │ ")+"\n", m.paneHeight()-1) + m.styles.dim.Render(" │ ")
+		// Connect only the conversation composer rule to the vertical divider.
+		rows := strings.Split(divider, "\n")
+		ruleRow := bodyHeight
+		if !popup {
+			ruleRow++
+		}
+		rows[ruleRow] = m.styles.dim.Render(" ├─")
+		divider = strings.Join(rows, "\n")
+		conversation = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), divider, conversation)
+	}
+	content := m.headerLine() + "\n" + m.identityLine() + "\n" + topRule + "\n" + conversation
 	if m.actionBarVisible() {
-		bottom += "\n" + m.actionBar()
+		rule := m.dividerLine()
+		if m.sidebarVisible() {
+			column := navigatorWidth + 1
+			rule = m.styles.dim.Render(strings.Repeat("─", column) + "┴" + strings.Repeat("─", m.termW-column-1))
+		}
+		content += "\n" + rule + "\n" + m.actionBar()
 	}
-	// The popup occupies the breathing row, bringing it one row nearer the input.
-	gap := "\n" + spacer
-	if popup {
-		gap = ""
-	}
-	// Fill the terminal exactly; the renderer owns cursor placement and wrapping.
-	return cellFrame(m.headerLine()+"\n"+m.identityLine()+"\n"+topRule+"\n"+body+gap+"\n"+bottomRule+"\n"+m.statusLine()+"\n"+bottom, max(m.termW, 0), max(m.termH, 0))
+	return cellFrame(content, max(m.termW, 0), max(m.termH, 0))
 }
 
 func (m *model) View() tea.View {
@@ -122,13 +111,15 @@ func (m *model) View() tea.View {
 		if m.gstage == gsReject {
 			v.Cursor = m.note.Cursor()
 			if v.Cursor != nil {
-				v.Cursor.Y += m.termH - m.actionBarRows() - 1
+				v.Cursor.X += m.conversationOffset()
+				v.Cursor.Y += m.termH - m.footerRows() - 1
 			}
 		}
 	} else if !m.navFocused {
 		v.Cursor = m.input.Cursor()
 		if v.Cursor != nil {
-			v.Cursor.Y += m.termH - m.actionBarRows() - m.input.Height()
+			v.Cursor.X += m.conversationOffset()
+			v.Cursor.Y += m.termH - m.footerRows() - m.input.Height()
 		}
 	}
 	return v

@@ -34,7 +34,7 @@ func cellFrame(s string, width, height int) string {
 }
 func (m *model) sidebarVisible() bool {
 	return !m.sidebarHidden && m.termW >= navigatorMinWidth && m.termH >= 18 &&
-		m.sessions == nil && m.dialog == nil && m.state != stPermission && m.state != stAsk
+		m.sessions == nil && m.dialog == nil
 }
 func (m *model) fitColumns() {
 	width := m.termW
@@ -61,7 +61,14 @@ func (m *model) identityLine() string {
 	}
 	return cellLine(m.styles.dim.Render(m.modeName()+"  ")+cellLine(m.spinner(), 1)+m.styles.dim.Render(" "+identity), max(m.termW, 0))
 }
-func (m *model) navigatorRows() int { return max(m.vp.Height()-1, 1) }
+func (m *model) conversationOffset() int {
+	if m.sidebarVisible() {
+		return navigatorWidth + 3
+	}
+	return 0
+}
+func (m *model) paneHeight() int    { return max(m.termH-3-m.footerRows(), 1) }
+func (m *model) navigatorRows() int { return max(m.paneHeight()-1, 1) }
 
 func (m *model) sidebarView() string {
 	rows := []string{}
@@ -98,11 +105,11 @@ func (m *model) sidebarView() string {
 	if len(m.nav.entries) == 0 {
 		rows = append(rows, m.styles.dim.Render("No saved sessions yet"))
 	}
-	for len(rows) < m.vp.Height()-1 {
+	for len(rows) < m.navigatorRows() {
 		rows = append(rows, "")
 	}
-	rows = append(rows, m.styles.dim.Render(strings.Repeat("─", navigatorWidth)))
-	return cellFrame(strings.Join(rows, "\n"), navigatorWidth, m.vp.Height())
+	rows = append(rows, m.sidebarDetails())
+	return cellFrame(strings.Join(rows, "\n"), navigatorWidth, m.paneHeight())
 }
 
 func (m *model) sidebarDetails() string {

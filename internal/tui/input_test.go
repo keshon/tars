@@ -22,7 +22,7 @@ func TestModifiedEnterAddsNewlineWithoutSubmitting(t *testing.T) {
 			if m.input.Value() != "first\nsecond" || m.input.Height() != 2 || m.state != state || m.queued != "" {
 				t.Fatalf("%s in state %d submitted or lost multiline input: %q", key.String(), state, m.input.Value())
 			}
-			if cursor := m.View().Cursor; cursor == nil || cursor.Y != m.termH-m.actionBarRows()-1 {
+			if cursor := m.View().Cursor; cursor == nil || cursor.Y != m.termH-m.footerRows()-1 {
 				t.Fatalf("newline scrolled out earlier rows despite room in the composer: %+v", cursor)
 			}
 			if state == stRunning {

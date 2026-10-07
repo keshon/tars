@@ -47,6 +47,14 @@ func (m *model) actionBarRows() int {
 	return 1
 }
 
+// footerRows includes the separator above the global action bar.
+func (m *model) footerRows() int {
+	if !m.actionBarVisible() {
+		return 0
+	}
+	return m.actionBarRows() + 1
+}
+
 // Rendering and mouse clicks share these cell boundaries, including gaps.
 func (m *model) footerCells() []footerCell {
 	actions := m.footerActions()

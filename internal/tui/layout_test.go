@@ -39,12 +39,16 @@ func TestCompactSessionRowsSharePagingAndMouseGeometry(t *testing.T) {
 		}
 	}
 	frame := strings.Split(ansi.Strip(m.View().Content), "\n")
-	footer := 3 + m.vp.Height()
-	if rule := []rune(frame[footer-1]); string(rule[navigatorWidth:navigatorWidth+2]) != "─┤" {
-		t.Fatal("session footer rule left a gap before the vertical divider")
+	footer := 3 + m.paneHeight() - 1
+	if strings.Contains(frame[footer-1][:navigatorWidth], "─") {
+		t.Fatal("Sessions status still has its own divider")
 	}
-	if !strings.Contains(frame[footer], "Act  1 message") || !strings.Contains(frame[footer+1], "┴") {
-		t.Fatal("empty line separates session details from the bottom rule")
+	if !strings.Contains(frame[footer], "Act  1 message") || !strings.Contains(frame[footer], "│") {
+		t.Fatal("session details are not at the bottom of the pane")
+	}
+	rule := frame[footer+1]
+	if lipgloss.Width(rule) != m.termW || strings.ReplaceAll(rule, "─", "") != "┴" {
+		t.Fatal("global footer separator does not span both panes")
 	}
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if m.nav.cursor != m.navigatorRows() || m.nav.offset != 1 {
@@ -175,5 +179,101 @@ func TestReflowPreservesWideCharacters(t *testing.T) {
 		if lipgloss.Width(line) > 12 {
 			t.Fatalf("wide characters exceeded pane: %q", line)
 		}
+	}
+}
+
+func TestConversationOwnsComposerAndSessionsKeepTheirHeight(t *testing.T) {
+	m := testModel()
+	m.state = stDone
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.nav.entries = []sessionEntry{{title: "Current session", mode: "Act", msgs: 2}}
+	rows := m.navigatorRows()
+	m.input.SetValue("first line\nsecond line")
+	m.fitBottom()
+	if m.navigatorRows() != rows {
+		t.Fatal("multiline composer took space from Sessions")
+	}
+	view := m.View()
+	lines := strings.Split(ansi.Strip(view.Content), "\n")
+	inputTop := m.termH - m.footerRows() - m.input.Height()
+	for y := 3; y < m.termH-m.footerRows(); y++ {
+		if []rune(lines[y])[navigatorWidth+1] != '│' && []rune(lines[y])[navigatorWidth+1] != '┤' && []rune(lines[y])[navigatorWidth+1] != '├' {
+			t.Fatalf("session divider interrupted at row %d: %q", y, lines[y])
+		}
+	}
+	if !strings.HasPrefix(string([]rune(lines[inputTop])[m.conversationOffset():]), "> first line") {
+		t.Fatal("composer did not align with the conversation")
+	}
+	if view.Cursor == nil || view.Cursor.X < m.conversationOffset() || view.Cursor.Y != inputTop+1 {
+		t.Fatalf("caret escaped the conversation composer: %+v", view.Cursor)
+	}
+	m.navFocused = true
+	m.input.Blur()
+	m.Update(tea.MouseClickMsg{X: m.conversationOffset() + 2, Y: inputTop, Button: tea.MouseLeft})
+	if m.navFocused || !m.input.Focused() {
+		t.Fatal("clicking the composer did not restore input focus")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.input.Value() != "first line\nsecond line" || m.input.Height() != 2 {
+		t.Fatal("composer navigation changed the multiline draft")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.conversationOffset() != 0 || m.View().Cursor.X >= 80 || m.input.Value() != "first line\nsecond line" {
+		t.Fatal("narrow layout lost the composer or its draft")
+	}
+}
+
+func TestConversationComposerWrapsWithinPane(t *testing.T) {
+	m := completionModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
+	m.Update(tea.PasteMsg{Content: strings.Repeat("text ", 20)})
+	if m.input.Height() < 2 {
+		t.Fatal("draft wrapped against terminal width instead of conversation width")
+	}
+	for _, state := range []runState{stDone, stRunning, stAsk, stPermission} {
+		m.state = state
+		m.fitBottom()
+		view := m.View()
+		if lipgloss.Height(view.Content) != m.termH {
+			t.Fatalf("state %d changed frame height", state)
+		}
+		if view.Cursor != nil && view.Cursor.X < m.conversationOffset() {
+			t.Fatalf("state %d placed caret in Sessions", state)
+		}
+	}
+}
+
+func TestNestedComposerCompletesFilesAndCommands(t *testing.T) {
+	m := completionModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	writeReference(t, m, "notes.txt", []byte("workspace notes"))
+	m.Update(tea.PasteMsg{Content: "first line"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+	m.Update(tea.PasteMsg{Content: "read @no"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.input.Value() != "first line\nread @notes.txt " || m.input.Height() != 2 || m.state != stDone {
+		t.Fatal("file completion submitted or lost the multiline draft")
+	}
+	view := m.View()
+	if view.Cursor == nil || view.Cursor.X < m.conversationOffset() || view.Cursor.Y != m.termH-m.footerRows()-1 {
+		t.Fatalf("file completion misplaced the caret: %+v", view.Cursor)
+	}
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(tea.PasteMsg{Content: "/hel"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.dialog == nil || !m.dialog.help || m.input.Value() != "" {
+		t.Fatal("command completion did not open help")
+	}
+	m.closeDialog()
+	m.state = stPermission
+	m.gstage = gsReject
+	m.input.Blur()
+	m.note.Focus()
+	m.note.SetValue("use another command")
+	m.fitBottom()
+	view = m.View()
+	if view.Cursor == nil || view.Cursor.X < m.conversationOffset() || view.Cursor.Y != m.termH-m.footerRows()-1 {
+		t.Fatalf("permission note misplaced the caret: %+v", view.Cursor)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/keshon/tars/internal/workspace"
 )
 
@@ -144,7 +145,8 @@ func TestPopupShowsSixSuggestionsAndUsesBreathingRow(t *testing.T) {
 		lines := strings.Split(view.Content, "\n")
 		count, bottom := 0, -1
 		for i, line := range lines {
-			if strings.Contains(line, "/") && strings.Contains(line, "│") {
+			pane := string([]rune(ansi.Strip(line))[m.conversationOffset():])
+			if strings.Contains(pane, "/") && strings.HasPrefix(pane, "│") {
 				count++
 			}
 			if strings.Contains(line, "╰") {

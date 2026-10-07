@@ -49,9 +49,8 @@ type block struct {
 	// reference block's identity, so gutters would only restripe it
 	// into fake bullets. Amends R6 (plan TUI-19).
 	bare bool
-	// breakBefore opens a turn: a faint rule renders above the block
-	// (user echoes, new-task markers), grouping the transcript into
-	// turns instead of a flat log.
+	// breakBefore opens a turn with extra breathing room above the block
+	// (user echoes, new-task markers). Pane rules stay outside the transcript.
 	breakBefore bool
 	// Tool card fields (roleTool only): callID pairs the result event,
 	// result/output text lands on attach, open until it does, failed
@@ -562,14 +561,6 @@ func renderLive(text string, st styles, width int) []string {
 	return out
 }
 
-// turnRule is a full-width dim divider opening a turn.
-func turnRule(width int, st styles) string {
-	if width < minWrapWidth {
-		width = minWrapWidth
-	}
-	return st.dim.Render(strings.Repeat("─", width))
-}
-
 // refreshContent re-renders every block into the viewport. Called on
 // append, on toggles, and on resize (reflow follows the width). YOffset
 // survives SetContent, so a reading user is never yanked (pinned by
@@ -581,10 +572,11 @@ func (m *model) refreshContent() {
 	var parts []string
 	prevBreak := false
 	for _, b := range m.blocks {
+		part := renderBlock(b, m.styles, !m.compact, m.vp.Width())
 		if b.breakBefore && len(parts) > 0 && !prevBreak {
-			parts = append(parts, turnRule(m.vp.Width(), m.styles))
+			part = "\n" + part
 		}
-		parts = append(parts, renderBlock(b, m.styles, !m.compact, m.vp.Width()))
+		parts = append(parts, part)
 		prevBreak = b.breakBefore
 	}
 	content := strings.Join(parts, "\n\n")

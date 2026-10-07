@@ -112,6 +112,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.state == stPermission || m.state == stAsk {
+			if msg.Mouse().X < m.conversationOffset() || msg.Mouse().Y < 3 || msg.Mouse().Y >= 3+m.vp.Height() {
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.gateVP, cmd = m.gateVP.Update(msg)
 			return m, cmd
@@ -119,7 +122,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessions != nil {
 			return m.browserMouse(msg)
 		}
-		if m.sidebarVisible() && msg.Mouse().X < navigatorWidth && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.vp.Height() {
+		if m.sidebarVisible() && msg.Mouse().X < navigatorWidth && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.paneHeight() {
 			if m.state == stPermission || m.state == stAsk {
 				return m, nil
 			}
@@ -145,7 +148,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			return m, nil
 		}
-		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.Mouse().X >= navigatorWidth+3 && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.vp.Height() && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
+		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.Mouse().X >= navigatorWidth+3 && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.paneHeight() && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 			m.navFocused = false
 			return m, m.input.Focus()
 		}
@@ -214,8 +217,8 @@ func (m *model) width(msg tea.WindowSizeMsg) {
 	m.input.MaxHeight = maxRows
 	m.fitInput()
 	m.fitBottom()
-	m.input.SetWidth(max(msg.Width-5, 1))
-	m.note.SetWidth(max(msg.Width-10, 1))
+	m.input.SetWidth(max(m.vp.Width()-5, 1))
+	m.note.SetWidth(max(m.vp.Width()-10, 1))
 	if m.sessions != nil {
 		m.sessions.filter.SetWidth(max(msg.Width-14, 1))
 	}
@@ -233,7 +236,7 @@ func (m *model) fitInput() {
 	if m.ready {
 		// DynamicHeight counts wrapped rows and clamps the scroll offset when
 		// the composer grows, keeping earlier lines visible after a newline.
-		m.input.SetWidth(max(m.termW-5, 1))
+		m.input.SetWidth(max(m.termW-m.conversationOffset()-5, 1))
 	}
 }
 
@@ -244,7 +247,7 @@ func (m *model) fitBottom() {
 	if !m.ready {
 		return
 	}
-	m.input.SetWidth(max(m.termW-5, 1))
+	m.input.SetWidth(max(m.termW-m.conversationOffset()-5, 1))
 	// Done budgets the input box only (the hint moved right into the
 	// status row); a run error adds its own line on top.
 	lines := 1
@@ -273,12 +276,13 @@ func (m *model) fitBottom() {
 	}
 	oldWidth := m.vp.Width()
 	m.fitColumns()
+	m.note.SetWidth(max(m.vp.Width()-10, 1))
 	if oldWidth != m.vp.Width() {
 		m.refreshContent()
 	}
 	h := m.termH - 6 - lines
 	if m.actionBarVisible() {
-		h -= m.actionBarRows()
+		h -= m.footerRows()
 	}
 	if h < 1 {
 		h = 1
