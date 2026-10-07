@@ -163,7 +163,7 @@ func helpSections() []helpSection {
 			{"Y", "Allow the requested tool once"},
 			{"A", "Allow for this run, after confirmation"},
 			{"N", "Reject a tool; optionally add a redirect note"},
-			{"F10 / Ctrl+Q", "Quit"},
+			{"Ctrl+Q / F10", "Quit when idle; stop an active run first"},
 			{"Ctrl+C", "Abort and quit, including during a run"},
 		}},
 		{"Commands", commandReference()},

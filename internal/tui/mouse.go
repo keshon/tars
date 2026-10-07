@@ -9,7 +9,10 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.actionBarVisible() && msg.Mouse().Y >= m.termH-m.actionBarRows() && msg.Mouse().Y < m.termH && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
 		for _, cell := range m.footerCells() {
 			if msg.Mouse().Y == m.termH-m.actionBarRows()+cell.row && msg.Mouse().X >= cell.start && msg.Mouse().X < cell.end {
-				return m.footerKey(tea.KeyPressMsg{Code: cell.action.key})
+				if !cell.action.enabled {
+					return m, nil
+				}
+				return m.handleKey(tea.KeyPressMsg{Code: cell.action.key, Mod: cell.action.mod})
 			}
 		}
 		return m, nil

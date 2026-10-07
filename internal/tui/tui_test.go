@@ -708,7 +708,7 @@ func TestFollowUnfollowsOnScroll(t *testing.T) {
 	if mm.follow {
 		t.Fatal("pgup must unfollow")
 	}
-	if !strings.Contains(ansi.Strip(mm.View().Content), "7 End") {
+	if !strings.Contains(ansi.Strip(mm.View().Content), "Ctrl+End Latest") {
 		t.Fatal("unfollowed state must show jump hint")
 	}
 	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl})
@@ -769,12 +769,12 @@ func TestDialogQDoesNotClose(t *testing.T) {
 	}
 }
 
-func TestAskCtrlQQuits(t *testing.T) {
+func TestAskCtrlQStopsBeforeQuit(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stAsk
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
-	if mm := updated.(*model); !mm.quit {
-		t.Fatal("ctrl+q must quit from ask")
+	if mm := updated.(*model); mm.quit || mm.state != stStopping {
+		t.Fatal("ctrl+q must stop the active ask before quitting")
 	}
 }
 
@@ -1503,22 +1503,22 @@ func TestBottomZoneHeights(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height() != 15 {
-		t.Fatalf("done viewport height = %d, want 15 (24 - header - identity - rule - status - rule - breathing row - input - footer separator - actions)", mm.vp.Height())
+	if mm := updated.(*model); mm.vp.Height() != 14 {
+		t.Fatalf("done viewport height = %d, want 14 (24 - header - identity - rule - status - rule - breathing row - input - footer separator - actions)", mm.vp.Height())
 	}
 	mm := updated.(*model)
 	mm.state = stRunning
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm := updated.(*model); mm.vp.Height() != 15 {
-		t.Fatalf("running viewport height = %d, want 15", mm.vp.Height())
+	if mm := updated.(*model); mm.vp.Height() != 14 {
+		t.Fatalf("running viewport height = %d, want 14", mm.vp.Height())
 	}
 	// Composing keeps the same budget: the hint stays put, so the
 	// layout never shifts while typing (user call: always visible).
 	mm.input.SetValue("typing")
 	mm.state = stDone
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if mm = updated.(*model); mm.vp.Height() != 15 {
-		t.Fatalf("composing viewport height = %d, want 15", mm.vp.Height())
+	if mm = updated.(*model); mm.vp.Height() != 14 {
+		t.Fatalf("composing viewport height = %d, want 14", mm.vp.Height())
 	}
 	// The frame uses every row, including the footer at the bottom edge.
 	if n := len(strings.Split(mm.View().Content, "\n")); n != 24 {

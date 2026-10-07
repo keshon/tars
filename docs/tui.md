@@ -83,7 +83,7 @@ The ownership rules and their regression tests are documented in
 
 The composer sits below the transcript inside the conversation pane; its
 suggestions and prompts share that pane's width. The Sessions divider extends
-to a full-width separator above the global function-key footer. Session
+to a full-width separator above the global action toolbar. Session
 details sit at the bottom of the pane without a separate divider. Hiding Sessions gives the composer the full
 terminal width.
 
@@ -148,7 +148,16 @@ Bare unknown mentions such as `@someone` remain literal. A missing unquoted
 image path also remains literal for compatibility; quoted missing paths and
 missing text-file paths with an extension/path separator report an error.
 
-## Function-key footer
+## Action toolbar
+
+Help (F1), Search (Ctrl+P), and New (Ctrl+N) keep fixed positions.
+The middle actions follow focus: Send/Newline in the composer, Stop/Latest
+during a run, Rename/Delete in Sessions, and Back/Choose in overlays.
+Details/Less (Ctrl+G), Sessions (Ctrl+B), and Quit (Ctrl+Q) remain at the end. Ctrl shortcuts use
+compact caret notation (for example, `^P`) in narrow cells. Below 120
+columns the toolbar uses two rows. Mouse clicks invoke the same key routing.
+
+Existing function keys remain aliases:
 
 - F1 Help: open/close the help modal.
 - F2 Search: open/close the centered session search popup.
@@ -157,13 +166,13 @@ missing text-file paths with an extension/path separator report an error.
 - F5 Mode: switch Plan/Act when idle in a direct chat.
 - F6 Sidebar: show/hide the pane when the terminal is wide enough.
 - F7 Latest: jump to the latest message.
-- F8: reserved, disabled, with no label.
+- F8: unused.
 - F9: focus the header menu. Left/Right selects a badge; Enter opens it.
   Up/Down browses details and actions; Enter chooses an action. Esc goes back
   or returns to the composer. You can also click badges and actions.
-- F10 Quit: exit TARS.
+- F10 Quit: exit when idle; stop an active run first.
 
-The footer can be clicked. Disabled actions are dimmed. Below 80 columns,
+The footer can be clicked. Disabled actions are dimmed. Below 120 columns,
 it uses two rows; very small terminals omit it.
 
 ## Sessions
@@ -196,7 +205,8 @@ Only one follow-up can be queued. Ctrl+E moves it into an empty draft;
 Ctrl+X cancels it. It starts after a successful run if the draft is empty.
 Failure, interruption, or a nonempty draft leaves it queued for editing.
 Esc stops the run and waits for cleanup; it does not quit or erase the chat.
-Ctrl+Q or F10 quits; Ctrl+C aborts and quits.
+Ctrl+Q or F10 quits when idle. During a run, it first stops the run;
+press again after stopping to quit. Ctrl+C aborts and quits immediately.
 
 Permission requests show the tool and resource with a scrollable preview:
 Y allows once, A asks for confirmation to allow the same tool/resource for

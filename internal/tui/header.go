@@ -188,7 +188,9 @@ func (m *model) closeHeader() { m.header.focused = false; m.header.menu = "" }
 func (m *model) headerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.normalizeHeader()
 	switch msg.String() {
-	case "ctrl+c", "ctrl+q", "f10":
+	case "ctrl+q", "f10":
+		return m.requestQuit()
+	case "ctrl+c":
 		m.quit = true
 		m.cancel()
 		return m, tea.Quit

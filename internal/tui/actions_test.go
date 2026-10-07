@@ -48,8 +48,8 @@ func TestFooterActionsCannotHidePendingPrompts(t *testing.T) {
 			t.Fatal("function key hid prompt")
 		}
 		m.handleKey(tea.KeyPressMsg{Code: tea.KeyF10})
-		if !m.quit {
-			t.Fatal("quit blocked on prompt")
+		if m.quit || m.state != stStopping {
+			t.Fatal("quit must first stop the active run")
 		}
 	}
 }
@@ -63,13 +63,18 @@ func TestActionBarCellsAndMouseShareGeometry(t *testing.T) {
 		top := len(rows) - m.actionBarRows()
 		for _, cell := range m.footerCells() {
 			bar := rows[top+cell.row]
-			if !strings.HasPrefix(string([]rune(bar)[cell.start:]), strings.TrimPrefix(cell.action.name, "F")) {
+			if !strings.HasPrefix(string([]rune(bar)[cell.start:]), func() string {
+				if cell.end-cell.start < 14 && strings.HasPrefix(cell.action.name, "Ctrl+") {
+					return "^" + strings.TrimPrefix(cell.action.name, "Ctrl+")
+				}
+				return cell.action.name
+			}()) {
 				t.Fatalf("button moved at width %d: %q", width, bar)
 			}
 			if cell.start > 0 && []rune(bar)[cell.start-1] != ' ' {
 				t.Fatal("button separator missing")
 			}
-			if cell.action.key == tea.KeyF2 {
+			if cell.action.key == 'p' {
 				m.Update(tea.MouseClickMsg{X: cell.start, Y: top + cell.row, Button: tea.MouseLeft})
 				if m.sessions == nil {
 					t.Fatalf("chat button click missed at width %d", width)
@@ -134,7 +139,7 @@ func TestHelpKeepsFooterOnLastRowAndHidesComposer(t *testing.T) {
 	m.fitBottom()
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
 	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
-	if !strings.Contains(rows[len(rows)-1], "10 Quit") || strings.Contains(ansi.Strip(m.View().Content), "first") || !strings.Contains(m.View().Content, "Draft preserved") {
+	if !strings.Contains(rows[len(rows)-1], "Ctrl+Q Quit") || strings.Contains(ansi.Strip(m.View().Content), "first") || !strings.Contains(m.View().Content, "Draft preserved") {
 		t.Fatal("help moved footer or exposed active composer")
 	}
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyF1})
@@ -168,5 +173,86 @@ func TestSidebarHasOneHeadingAndNoShortcutCluster(t *testing.T) {
 	view := ansi.Strip(m.View().Content)
 	if strings.Count(view, "SESSIONS") != 1 || strings.Contains(m.sidebarView(), "Ctrl+") || strings.Contains(m.identityLine(), "Chat input") {
 		t.Fatal("duplicate chat heading or shortcut clutter")
+	}
+}
+
+func TestToolbarContextAndQuitProtection(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	m.follow = true
+	actions := m.footerActions()
+	if actions[0].label != "Help" || actions[1].label != "Search" || actions[2].label != "New" || actions[3].label != "Send" || actions[4].label != "Newline" {
+		t.Fatal("composer actions")
+	}
+	m.input.SetValue("draft")
+	m.handleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if !strings.Contains(m.input.Value(), "\n") {
+		t.Fatal("toolbar newline shortcut")
+	}
+	m.navFocused = true
+	if m.footerActions()[3].label != "Rename" {
+		t.Fatal("navigator actions")
+	}
+	m.navFocused = false
+	m.state = stRunning
+	if m.footerActions()[3].label != "Stop" {
+		t.Fatal("run actions")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
+	if m.quit || m.state != stStopping {
+		t.Fatal("active run quit without stopping")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
+	if m.quit {
+		t.Fatal("quit before stop completed")
+	}
+	m.state = stDone
+	m.handleKey(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
+	if !m.quit {
+		t.Fatal("idle quit")
+	}
+}
+
+func TestSearchToolbarShortcutClosesPopup(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	key := tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}
+	m.handleKey(key)
+	if m.sessions == nil {
+		t.Fatal("search shortcut did not open")
+	}
+	m.handleKey(key)
+	if m.sessions != nil {
+		t.Fatal("search shortcut did not close")
+	}
+}
+
+func TestDetailsToolbarRemainsVisibleAndClickable(t *testing.T) {
+	m := sizeModel(t, testModel())
+	m.state = stDone
+	m.width(tea.WindowSizeMsg{Width: 160, Height: 30})
+	for _, compact := range []bool{true, false} {
+		m.compact = compact
+		label := "Details"
+		if !compact {
+			label = "Less"
+		}
+		found := false
+		for _, cell := range m.footerCells() {
+			if cell.action.key != 'g' {
+				continue
+			}
+			found = true
+			if cell.action.label != label || !cell.action.enabled {
+				t.Fatal("incorrect details action")
+			}
+			m.Update(tea.MouseClickMsg{X: cell.start, Y: m.termH - m.actionBarRows() + cell.row, Button: tea.MouseLeft})
+			if m.compact == compact {
+				t.Fatal("details click did not toggle")
+			}
+		}
+		if !found {
+			t.Fatal("details action missing")
+		}
 	}
 }

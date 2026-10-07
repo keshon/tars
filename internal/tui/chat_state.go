@@ -96,7 +96,7 @@ func (m *model) actionHint() string {
 	case stRunning:
 		return "Enter queue  Shift+Enter newline  Esc stop"
 	case stStopping:
-		return "Stopping…  draft is preserved  Ctrl+Q quit"
+		return "Stopping…  draft is preserved  Ctrl+C exit"
 	default:
 		hint := "Enter send  Shift+Enter newline"
 		if m.sidebarVisible() {

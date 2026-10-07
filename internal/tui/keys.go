@@ -7,6 +7,17 @@ import (
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	defer m.syncFocus()
+	if msg.String() == "ctrl+q" {
+		return m.requestQuit()
+	}
+	switch msg.String() {
+	case "ctrl+p":
+		return m.footerKey(tea.KeyPressMsg{Code: tea.KeyF2})
+	case "ctrl+n":
+		return m.footerKey(tea.KeyPressMsg{Code: tea.KeyF4})
+	case "ctrl+b":
+		return m.footerKey(tea.KeyPressMsg{Code: tea.KeyF6})
+	}
 	if m.activeInputOwner() == focusHeader {
 		return m.headerKey(msg)
 	}
