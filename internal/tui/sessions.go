@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -55,6 +54,7 @@ type sessionEntry struct {
 }
 
 type sessionsState struct {
+	loading bool
 	entries []sessionEntry
 	all     []sessionEntry
 	filter  textinput.Model
@@ -85,65 +85,8 @@ func listSessions() []sessionEntry {
 }
 
 func listSessionsIn(root string) []sessionEntry {
-	dirs, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	var out []sessionEntry
-	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, d.Name())
-		e := sessionEntry{id: d.Name(), dir: dir, title: workspace.ReadSessionTitle(dir), status: "Saved", mode: readChatMode(dir)}
-		state := filepath.Join(dir, "state.json")
-		if fi, err := os.Stat(state); err == nil {
-			e.status = "Unreadable"
-			e.updated = fi.ModTime()
-			// Histories are context-bounded, but a pathological
-			// snapshot must not stall an explicit user action.
-			if fi.Size() < 64<<20 {
-				if history, err := agent.LoadState(state); err == nil {
-					e.status = "Saved"
-					e.msgs = len(history)
-					for i, b := range renderHistory(history) {
-						if b.role == roleUser || b.role == roleAnswer {
-							e.search = append(e.search, sessionText{text: b.text, block: i})
-						}
-					}
-					if _, question, paused := agent.PausedOnQuestion(history); paused {
-						e.status, e.preview = "Needs input", question
-					} else {
-						for i := len(history) - 1; i >= 0; i-- {
-							if history[i].Role == llm.RoleAssistant && history[i].Content != "" {
-								e.preview = truncate(history[i].Content, 500)
-								break
-							}
-						}
-					}
-					if e.title == "" {
-						e.title = session.TitleFor(history)
-					}
-				}
-			}
-		}
-		if fi, err := os.Stat(filepath.Join(dir, "mission.json")); err == nil {
-			e.mode = "Mission"
-			if e.updated.IsZero() {
-				e.updated = fi.ModTime()
-			}
-			e.preview = "Mission snapshot. Resume with agent -tui -resume " + dir
-		}
-		if e.updated.IsZero() {
-			continue
-		}
-		if e.title == "" {
-			e.title = e.id
-		}
-		out = append(out, e)
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].updated.After(out[j].updated) })
-	return out
+	entries, _ := scanSessions(root, nil, true)
+	return entries
 }
 
 // sessChrome counts border title, search, gap, hint and bottom border,
@@ -206,18 +149,10 @@ func ageString(t time.Time) string {
 // tears it down with focus restored. Balanced by construction: every
 // open pairs with esc/enter or run start.
 func (m *model) openSessions() {
-	m.refreshNavigator()
-	filter := textinput.New()
-	filter.Prompt = "> "
-	filter.SetVirtualCursor(false)
-	style := filter.Styles()
-	style.Cursor.Shape = tea.CursorUnderline
-	filter.SetStyles(style)
-	filter.Placeholder = "Session name or conversation text"
-	filter.CharLimit = 80
-	filter.SetWidth(max(m.termW-14, 1))
+	filter := newSearchInput(max(m.termW-14, 1))
 	filter.Focus()
 	m.sessions = &sessionsState{entries: m.nav.entries, all: m.nav.entries, root: m.sessionRoot(), filter: filter}
+	m.refreshNavigator()
 	m.pushOverlay(ovSessions)
 	// Search overlays the existing panes without changing composer geometry.
 	m.fitBottom()
@@ -288,11 +223,6 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	key := msg.String()
-	if s.filter.Focused() {
-		if key == "r" || key == "R" || key == "d" || key == "D" {
-			key = ""
-		}
-	}
 	switch key {
 	case "esc", "ctrl+p":
 		m.closeSessions()
@@ -331,7 +261,7 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.clampOffset()
 		return m, nil
-	case "r", "R", "ctrl+r":
+	case "ctrl+r":
 		if len(s.entries) == 0 {
 			return m, nil
 		}
@@ -341,7 +271,7 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.note.CharLimit = 80
 		m.note.SetValue("")
 		return m, m.note.Focus()
-	case "d", "D", "ctrl+d":
+	case "ctrl+d":
 		if len(s.entries) == 0 {
 			return m, nil
 		}
@@ -349,15 +279,10 @@ func (m *model) sessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		s.mode = sessConfirm
 		return m, nil
 	}
-	if s.filter.Focused() {
-		before := s.filter.Value()
-		var cmd tea.Cmd
-		s.filter, cmd = s.filter.Update(msg)
-		if before != s.filter.Value() {
-			s.applyFilter()
-		}
-		return m, cmd
+	if m.activeInputOwner() == focusSearch {
+		return m.updateSearchInput(msg)
 	}
+
 	return m, nil
 }
 
@@ -408,6 +333,7 @@ func (m *model) openSelected() tea.Cmd {
 	m.saveDraft()
 	m.sess = sess
 	m.stateFile = stateFile
+	m.sessionTitle = cur.title
 	m.mission = false
 	m.resetRunFacts()
 	m.restoreDraft()
@@ -419,7 +345,6 @@ func (m *model) openSelected() tea.Cmd {
 	m.runErr = nil
 	m.answer = ""
 	m.steps = 0
-	m.tokens = 0
 	m.state = stDone
 	m.navFocused = false
 	m.closeSessions()
@@ -488,6 +413,10 @@ func renderHistory(history []llm.Message) []block {
 			}
 		}
 	}
+	// Saved histories do not store message times; do not invent them on reopen.
+	for i := range out {
+		out[i].at = time.Time{}
+	}
 	return out
 }
 
@@ -524,9 +453,10 @@ func (m *model) commitRename() {
 	}
 	s.flash = ""
 	cur.title = name
+	m.updateSessionTitle(cur.dir, name)
 	m.refreshNavigator()
 	if s.all != nil {
-		s.replaceEntries(m.nav.entries)
+		s.replaceEntries(s.all)
 	}
 	if s.fromNavigator {
 		m.closeSessions()
@@ -564,13 +494,11 @@ func (m *model) deleteSelected() {
 		return
 	}
 	delete(m.drafts, filepath.Join(cur.dir, "state.json"))
-	entries := listSessionsIn(s.root)
+	m.nav.entries = withoutSession(m.nav.entries, cur.dir)
+	s.all = withoutSession(s.all, cur.dir)
+	s.entries = withoutSession(s.entries, cur.dir)
 	m.refreshNavigator()
-	if s.all != nil {
-		s.replaceEntries(entries)
-	} else {
-		s.entries = entries
-	}
+
 	if s.cursor >= len(s.entries) && s.cursor > 0 {
 		s.cursor--
 	}
@@ -582,10 +510,8 @@ func (m *model) deleteSelected() {
 	}
 }
 
-// headerLine renders the top bar: brand + session title left, wall
-// clock right. The brand animates while running (spinner) and sits
-// solid amber at rest — motion alone tells working from idle, so no
-// state word is needed anywhere near it.
+// headerLine renders the static brand and session title beside the clock.
+// During a run the clock shows elapsed time; activity lives in the badge strip.
 func (m *model) headerLine() string {
 	w := max(m.termW, 0)
 	clock := time.Now().Format("15:04:05")
@@ -613,8 +539,8 @@ func (m *model) activeSessionTitle() string {
 			return e.title
 		}
 	}
-	if title := workspace.ReadSessionTitle(dir); title != "" {
-		return title
+	if m.sessionTitle != "" {
+		return m.sessionTitle
 	}
 	return filepath.Base(dir)
 }
@@ -638,20 +564,7 @@ func sameSession(dir, stateFile string) bool {
 	b, err := filepath.Abs(filepath.Dir(stateFile))
 	return err == nil && strings.EqualFold(a, b)
 }
-func (m *model) refreshNavigator() {
-	selected := ""
-	if len(m.nav.entries) > 0 && m.nav.cursor < len(m.nav.entries) {
-		selected = m.nav.entries[m.nav.cursor].dir
-	}
-	m.nav.entries = listSessionsIn(m.sessionRoot())
-	for i, e := range m.nav.entries {
-		if e.dir == selected {
-			m.nav.cursor = i
-			break
-		}
-	}
-	m.nav.clamp(m.navigatorRows())
-}
+
 func (s *sessionsState) clamp(visible int) {
 	s.cursor = max(0, min(s.cursor, len(s.entries)-1))
 	if s.offset > s.cursor {
@@ -737,4 +650,55 @@ func (m *model) browserMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampOffset()
 	return m, nil
+}
+
+func (m *model) updateSearchInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	s := m.sessions
+	before := s.filter.Value()
+	var cmd tea.Cmd
+	s.filter, cmd = s.filter.Update(msg)
+	if s.filter.Value() != before {
+		s.applyFilter()
+	}
+	return m, cmd
+}
+
+func newSearchInput(width int) textinput.Model {
+	filter := textinput.New()
+	filter.Prompt = "> "
+	filter.SetVirtualCursor(false)
+	style := filter.Styles()
+	style.Cursor.Shape = tea.CursorUnderline
+	filter.SetStyles(style)
+	filter.Placeholder = "Session name or conversation text"
+	filter.CharLimit = 80
+	filter.SetWidth(width)
+	return filter
+}
+
+func withoutSession(entries []sessionEntry, dir string) []sessionEntry {
+	out := make([]sessionEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.dir != dir {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+func (m *model) updateSessionTitle(dir, title string) {
+	for i := range m.nav.entries {
+		if m.nav.entries[i].dir == dir {
+			m.nav.entries[i].title = title
+		}
+	}
+	if m.sessions != nil {
+		for i := range m.sessions.all {
+			if m.sessions.all[i].dir == dir {
+				m.sessions.all[i].title = title
+			}
+		}
+	}
+	if sameSession(dir, m.stateFile) {
+		m.sessionTitle = title
+	}
 }

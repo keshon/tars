@@ -59,6 +59,7 @@ func TestSearchPopupGeometryAndDraftPreservation(t *testing.T) {
 		m.input.SetValue("draft\nsecond line")
 		m.fitBottom()
 		m.openSessions()
+		finishSessionRefresh(t, m)
 		m.sessions.filter.SetValue("Session")
 		m.sessions.applyFilter()
 		g := m.searchGeometry()
@@ -103,6 +104,7 @@ func TestSearchHistoryMatchOpensAtMessage(t *testing.T) {
 	m.newSession = func(string, string, []string) (*api.Session, error) { return &api.Session{}, nil }
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.openSessions()
+	finishSessionRefresh(t, m)
 	m.sessions.filter.SetValue("unique phrase")
 	m.sessions.applyFilter()
 	m.openSelected()
@@ -118,6 +120,7 @@ func TestNavigatorRenameAndDeleteKeepPaneFocus(t *testing.T) {
 	dir := writeSessionState(t, filepath.Join(m.wsRoot, tasksRoot()), "one", userHistory("Original title"))
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.refreshNavigator()
+	finishSessionRefresh(t, m)
 	m.navFocused = true
 	m.input.Blur()
 	m.navigatorKey(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})

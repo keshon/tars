@@ -81,7 +81,7 @@ func (m *model) screenContent() string {
 	if m.sessions != nil {
 		content = m.overlaySearch(content)
 	}
-	if m.headerMenu != "" {
+	if m.header.menu != "" {
 		content = m.overlayHeader(content)
 	}
 	return content
@@ -91,7 +91,8 @@ func (m *model) View() tea.View {
 	v := tea.NewView(m.screenContent())
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	if !m.ready || m.dialog != nil || m.headerFocused {
+	owner := m.activeInputOwner()
+	if !m.ready || owner == focusDialog || owner == focusHeader {
 		return v
 	}
 	if m.sessions != nil {
@@ -117,7 +118,7 @@ func (m *model) View() tea.View {
 				v.Cursor.Y += m.termH - m.footerRows() - 1
 			}
 		}
-	} else if !m.navFocused {
+	} else if owner == focusInput {
 		v.Cursor = m.input.Cursor()
 		if v.Cursor != nil {
 			v.Cursor.X += m.conversationOffset()

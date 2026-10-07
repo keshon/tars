@@ -63,7 +63,7 @@ func (m *model) completionToken() (start, end int, prefix string) {
 
 func (m *model) syncSuggestions() {
 	s := &m.suggestions
-	if m.headerFocused || m.navFocused || m.dialog != nil || m.sessions != nil || (m.ready && (m.vp.Height() < 4 || m.vp.Width() < 24)) || (m.state != stDone && m.state != stRunning) {
+	if m.activeInputOwner() != focusInput || (m.ready && (m.vp.Height() < 4 || m.vp.Width() < 24)) || (m.state != stDone && m.state != stRunning) {
 		s.items = nil
 		s.key = ""
 		return
@@ -216,13 +216,18 @@ func (m *model) suggestionView(body string) string {
 		title, action = "Commands", "Enter run  Tab insert"
 	}
 	rows := []string{border.Render("╭─ " + title + " " + strings.Repeat("─", width-len(title)-5) + "╮")}
+	valueWidth := 0
+	for _, item := range s.items {
+		valueWidth = max(valueWidth, lipgloss.Width(item.value))
+	}
+	valueWidth = min(valueWidth, max((width-6)/2, 1))
 	for i := start; i < start+count; i++ {
 		item := s.items[i]
 		mark, style := "  ", normal
 		if i == s.selected {
 			mark, style = "› ", selected
 		}
-		label := mark + item.value + "  " + item.description
+		label := mark + cellLine(item.value, valueWidth) + "  " + item.description
 		rows = append(rows, border.Render("│")+style.Render(cellLine(label, width-2))+border.Render("│"))
 	}
 	hint := "↑↓ select  " + action + "  Esc dismiss"

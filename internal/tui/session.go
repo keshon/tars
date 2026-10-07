@@ -92,28 +92,27 @@ func splitAttachments(ws *workspace.Workspace, text string) (string, []string, e
 	if ws == nil || !strings.Contains(text, "@") {
 		return text, nil, nil
 	}
-	var kept, images, files []string
+	var images, files []string
+	var imageSpans []tokenSpan
 	seen := map[string]bool{}
 	total := 0
-	for _, tok := range splitTokens(text) {
+	for _, span := range tokenSpans(text) {
+		tok := text[span.start:span.end]
 		raw := tok
 		quoted := strings.HasPrefix(tok, "@\"") && strings.HasSuffix(tok, "\"") && len(tok) > 3
 		if quoted {
 			raw = "@" + tok[2:len(tok)-1]
 		}
 		if !strings.HasPrefix(raw, "@") || len(raw) == 1 {
-			kept = append(kept, tok)
 			continue
 		}
 		full, err := referencePath(ws, raw[1:])
 		if err != nil {
 			if os.IsNotExist(err) && !quoted && !strings.ContainsAny(raw[1:], "/\\.") {
-				kept = append(kept, tok)
 				continue
 			}
 			// Preserve legacy literal mentions of missing unquoted images.
 			if os.IsNotExist(err) && !quoted && llm.IsImagePath(raw[1:]) {
-				kept = append(kept, tok)
 				continue
 			}
 			return "", nil, fmt.Errorf("reference %s: %w", tok, err)
@@ -126,13 +125,13 @@ func splitAttachments(ws *workspace.Workspace, text string) (string, []string, e
 			return "", nil, fmt.Errorf("%s is not a regular file", tok)
 		}
 		if llm.IsImagePath(full) {
+			imageSpans = append(imageSpans, span)
 			if !seen[full] {
 				images = append(images, full)
 				seen[full] = true
 			}
 			continue
 		}
-		kept = append(kept, tok)
 		if seen[full] {
 			continue
 		}
@@ -161,7 +160,14 @@ func splitAttachments(ws *workspace.Workspace, text string) (string, []string, e
 	}
 	clean := text
 	if len(images) > 0 {
-		clean = strings.Join(kept, " ")
+		var b strings.Builder
+		pos := 0
+		for _, span := range imageSpans {
+			b.WriteString(text[pos:span.start])
+			pos = span.end
+		}
+		b.WriteString(text[pos:])
+		clean = strings.TrimSpace(b.String())
 	}
 	if len(files) > 0 {
 		clean += referenceStart + strings.Join(files, "\n\n") + referenceEnd
@@ -205,32 +211,38 @@ func referencePath(ws *workspace.Workspace, path string) (string, error) {
 
 // splitTokens splits on whitespace but keeps @"..." quoted spans
 // whole: screenshot filenames love spaces.
+type tokenSpan struct{ start, end int }
+
+func tokenSpans(text string) []tokenSpan {
+	var spans []tokenSpan
+	start, quoted := -1, false
+	for i, r := range text {
+		if (r == ' ' || r == '\t' || r == '\n') && !quoted {
+			if start >= 0 {
+				spans = append(spans, tokenSpan{start, i})
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+		if r == '"' && (quoted || (i > start && text[i-1] == '@')) {
+			quoted = !quoted
+		}
+	}
+	if start >= 0 {
+		spans = append(spans, tokenSpan{start, len(text)})
+	}
+	return spans
+}
+
 func splitTokens(text string) []string {
-	var toks []string
-	var cur strings.Builder
-	inQuotes := false
-	flush := func() {
-		if cur.Len() > 0 {
-			toks = append(toks, cur.String())
-			cur.Reset()
-		}
+	var tokens []string
+	for _, span := range tokenSpans(text) {
+		tokens = append(tokens, text[span.start:span.end])
 	}
-	for _, r := range text {
-		switch {
-		case r == '"' && !inQuotes && strings.HasSuffix(cur.String(), "@"):
-			inQuotes = true
-			cur.WriteRune(r)
-		case r == '"' && inQuotes:
-			inQuotes = false
-			cur.WriteRune(r)
-		case (r == ' ' || r == '\t' || r == '\n') && !inQuotes:
-			flush()
-		default:
-			cur.WriteRune(r)
-		}
-	}
-	flush()
-	return toks
+	return tokens
 }
 
 // imageSuffix marks attached pictures on the echoed user block, so the
@@ -292,8 +304,8 @@ func (m *model) startRun(run func(ctx context.Context) (string, error)) {
 	m.fitBottom()
 	m.started = time.Now()
 	m.steps = 0
-	m.usageThisRun = false
-	m.headerFocused, m.headerMenu = false, ""
+	m.usage.thisRun = false
+	m.header.focused, m.header.menu = false, ""
 	go func() {
 		answer, err := run(runCtx)
 		m.send(doneMsg{answer: answer, err: err})
@@ -309,6 +321,7 @@ func (m *model) startInitial(task string, images []string) error {
 		return err
 	}
 	m.sess = sess
+	m.sessionTitle = workspace.TitleLine(task)
 	if err := m.saveMode(); err != nil {
 		return err
 	}
@@ -329,6 +342,7 @@ func (m *model) newChat() {
 	m.saveDraft()
 	m.cancel()
 	m.sess, m.stateFile, m.blocks = nil, "", nil
+	m.sessionTitle = ""
 	m.mission = false
 	m.resetRunFacts()
 	m.state, m.navFocused = stDone, false
@@ -410,6 +424,7 @@ func (m *model) startFreshPrompt(task, display string, images []string) error {
 		delete(m.drafts, "")
 	}
 	m.sess, m.stateFile = sess, stateFile
+	m.sessionTitle = workspace.TitleLine(display)
 	m.clearContext()
 	m.hist, m.histIdx, m.draft = []string{display}, 1, ""
 	m.queued = ""

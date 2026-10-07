@@ -7,10 +7,8 @@ import (
 )
 
 // markdown-lite: headers, bold, inline code, lists, fences for
-// answer-grade text. Deliberately NOT a full renderer: no tables,
-// links, quotes, or nesting. Rationale: the model emits all five
-// constantly and nothing else often; a 100-line subset fixes ~70% of
-// the rough-MVP feel without a glamour dependency (scope discipline).
+// answer-grade text, including simple pipe tables. Links, quotes, nested
+// formatting, and escaped table pipes remain literal or unsupported.
 //
 // Applied to answer, user, and think roles only. Tool args/results,
 // gates, and markers keep raw text: a glob like `*.go` must never
@@ -144,7 +142,7 @@ func parseTableAlign(sep string, ncol int) []alignDir {
 }
 
 func padCell(s string, w int, a alignDir) string {
-	n := len([]rune(stripMd(s)))
+	n := lipgloss.Width(stripMd(s))
 	if n >= w {
 		return s
 	}
@@ -174,7 +172,7 @@ func renderTable(rows []string) []mdLine {
 	widths := make([]int, ncol)
 	measure := func(cells []string) {
 		for i := 0; i < ncol && i < len(cells); i++ {
-			if n := len([]rune(stripMd(cells[i]))); n > widths[i] {
+			if n := lipgloss.Width(stripMd(cells[i])); n > widths[i] {
 				widths[i] = n
 			}
 		}

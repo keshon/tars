@@ -61,9 +61,10 @@ func (m *model) navigatorRows() int { return max(m.paneHeight()-1, 1) }
 func (m *model) sidebarView() string {
 	rows := []string{}
 	visible := m.navigatorRows()
-	m.nav.clamp(visible)
-	end := min(m.nav.offset+visible, len(m.nav.entries))
-	for i := m.nav.offset; i < end; i++ {
+	nav := m.nav
+	nav.clamp(visible)
+	end := min(nav.offset+visible, len(nav.entries))
+	for i := nav.offset; i < end; i++ {
 		e := m.nav.entries[i]
 		mark := " "
 		switch m.entryState(e) {
@@ -91,7 +92,11 @@ func (m *model) sidebarView() string {
 		rows = append(rows, line+" "+m.styles.dim.Render(age))
 	}
 	if len(m.nav.entries) == 0 {
-		rows = append(rows, m.styles.dim.Render("No saved sessions yet"))
+		label := "No saved sessions yet"
+		if m.nav.loading {
+			label = "Loading sessions…"
+		}
+		rows = append(rows, m.styles.dim.Render(label))
 	}
 	for len(rows) < m.navigatorRows() {
 		rows = append(rows, "")
@@ -104,8 +109,9 @@ func (m *model) sidebarDetails() string {
 	if len(m.nav.entries) == 0 {
 		return "No session selected"
 	}
-	m.nav.clamp(m.navigatorRows())
-	e := m.nav.entries[m.nav.cursor]
+	nav := m.nav
+	nav.clamp(m.navigatorRows())
+	e := nav.entries[nav.cursor]
 	noun := "messages"
 	if e.msgs == 1 {
 		noun = "message"

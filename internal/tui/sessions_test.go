@@ -17,7 +17,7 @@ import (
 
 // writeSessionState stores a history as state.json in root/<id>/,
 // mirroring the on-disk session layout.
-func writeSessionState(t *testing.T, root, id string, history []llm.Message) string {
+func writeSessionState(t testing.TB, root, id string, history []llm.Message) string {
 	t.Helper()
 	dir := filepath.Join(root, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -117,7 +117,8 @@ func sessionsTestModel(t *testing.T, entries []sessionEntry) *model {
 	t.Helper()
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	m.sessions = &sessionsState{entries: entries, root: tasksRoot()}
+	m.nav.entries = append([]sessionEntry(nil), entries...)
+	m.sessions = &sessionsState{filter: newSearchInput(80), entries: entries, root: tasksRoot()}
 	// Resume needs a session object for follow-ups; api.New validates
 	// a full Env, so tests stub the constructor (production always
 	// wires the real one in Run).
@@ -133,7 +134,7 @@ func TestSessions_RenameWritesTitleFile(t *testing.T) {
 	dir := writeSessionState(t, filepath.Join(".tars", "tasks"), "aaa", userHistory("original text"))
 	m := sessionsTestModel(t, listSessions())
 
-	updated, _ := m.Update(keyRunes('r'))
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	mm := updated.(*model)
 	if mm.sessions.mode != sessRename {
 		t.Fatalf("mode = %v, want sessRename", mm.sessions.mode)
@@ -166,7 +167,7 @@ func TestSessions_EmptyRenameClearsTitle(t *testing.T) {
 	}
 	m := sessionsTestModel(t, listSessions())
 
-	updated, _ := m.Update(keyRunes('r'))
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	mm := updated.(*model)
 	mm.note.SetValue("  ")
 	updated, _ = mm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -190,7 +191,7 @@ func TestSessions_DeleteRemovesDir(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	mm := updated.(*model)
 	victim := mm.sessions.entries[mm.sessions.cursor]
-	updated, _ = mm.Update(keyRunes('d'))
+	updated, _ = mm.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	mm = updated.(*model)
 	if mm.sessions.mode != sessConfirm {
 		t.Fatalf("mode = %v, want sessConfirm", mm.sessions.mode)
@@ -217,7 +218,7 @@ func TestSessions_DeleteActiveUnloadsFirst(t *testing.T) {
 	m.sess = &api.Session{}
 	m.blocks = []block{answerBlock("old transcript")}
 
-	updated, _ := m.Update(keyRunes('d'))
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	mm := updated.(*model)
 	updated, _ = mm.Update(keyRunes('y'))
 	mm = updated.(*model)
@@ -240,7 +241,7 @@ func TestSessions_DeleteActiveRefusesWhileRunning(t *testing.T) {
 	m.state = stRunning
 	m.stateFile = filepath.Join(dir, "state.json")
 
-	updated, _ := m.Update(keyRunes('d'))
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	mm := updated.(*model)
 	updated, _ = mm.Update(keyRunes('y'))
 	mm = updated.(*model)
@@ -563,7 +564,7 @@ func TestSplitAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clean != "look please" || len(images) != 1 || filepath.Base(images[0]) != "shot.png" {
+	if clean != "look  please" || len(images) != 1 || filepath.Base(images[0]) != "shot.png" {
 		t.Fatalf("clean=%q images=%v", clean, images)
 	}
 
@@ -583,7 +584,7 @@ func TestSplitAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clean != "describe now" || len(images) != 1 || filepath.Base(images[0]) != "my shot.png" {
+	if clean != "describe  now" || len(images) != 1 || filepath.Base(images[0]) != "my shot.png" {
 		t.Fatalf("quoted: clean=%q images=%v", clean, images)
 	}
 	if _, _, err = splitAttachments(ws, `look @"nope.png"`); err == nil {
@@ -609,4 +610,27 @@ func TestRenderHistory_ShowsImageMarkers(t *testing.T) {
 	if len(blocks) != 1 || !strings.Contains(blocks[0].text, "[image: shot.png]") {
 		t.Fatalf("blocks = %+v", blocks)
 	}
+}
+
+// Drive only the queued disk commands; the normal event reader remains parked.
+func finishSessionRefresh(t *testing.T, m *model) {
+	t.Helper()
+	var execute func(tea.Cmd)
+	execute = func(cmd tea.Cmd) {
+		if cmd == nil {
+			return
+		}
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, item := range batch {
+				execute(item)
+			}
+			return
+		}
+		if _, ok := msg.(sessionsLoadedMsg); !ok {
+			t.Fatalf("unexpected queued message %T", msg)
+		}
+		m.Update(msg)
+	}
+	execute(m.takeCommands())
 }

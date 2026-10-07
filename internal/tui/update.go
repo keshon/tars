@@ -14,7 +14,7 @@ import (
 
 func (m *model) Init() tea.Cmd {
 	// The terminal owns the native caret's blink and shape.
-	return tea.Batch(waitEvents(m), tick(m.busy()))
+	return tea.Batch(waitEvents(m), tick(m.busy()), m.takeCommands())
 }
 func waitEvents(m *model) tea.Cmd {
 	return func() tea.Msg {
@@ -39,9 +39,14 @@ func tick(active bool) tea.Cmd {
 		return tickMsg(t)
 	})
 }
-func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (next tea.Model, cmd tea.Cmd) {
+	defer func() { cmd = tea.Batch(cmd, m.takeCommands()) }()
 	defer m.syncSuggestions()
+	defer m.syncFocus()
 	switch msg := msg.(type) {
+	case sessionsLoadedMsg:
+		m.acceptSessions(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width(msg)
 		return m, nil
@@ -64,6 +69,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitEvents(m)
 	case doneMsg:
+		if m.state == stPermission {
+			m.popOverlay()
+			m.resetNote()
+			m.gstage = gsPermit
+		}
+		m.gate = ""
 		m.persistUsage()
 		wasInterrupted := m.interrupted
 		m.answer = msg.answer
@@ -103,103 +114,27 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmd, waitEvents(m))
 			}
 		}
-		return m, tea.Batch(m.input.Focus(), waitEvents(m))
+		return m, waitEvents(m)
 	case tea.MouseMsg:
-		if handled, cmd := m.headerMouse(msg); handled {
-			return m, cmd
-		}
-		if m.actionBarVisible() && msg.Mouse().Y >= m.termH-m.actionBarRows() && msg.Mouse().Y < m.termH && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
-			for _, cell := range m.footerCells() {
-				if msg.Mouse().Y == m.termH-m.actionBarRows()+cell.row && msg.Mouse().X >= cell.start && msg.Mouse().X < cell.end {
-					return m.footerKey(tea.KeyPressMsg{Code: cell.action.key})
-				}
-			}
-			return m, nil
-		}
-		if m.state == stPermission || m.state == stAsk {
-			if msg.Mouse().X < m.conversationOffset() || msg.Mouse().Y < 3 || msg.Mouse().Y >= 3+m.vp.Height() {
-				return m, nil
-			}
-			var cmd tea.Cmd
-			m.gateVP, cmd = m.gateVP.Update(msg)
-			return m, cmd
-		}
-		if m.sessions != nil {
-			return m.browserMouse(msg)
-		}
-		if m.sidebarVisible() && msg.Mouse().X < navigatorWidth && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.paneHeight() {
-			if m.state == stPermission || m.state == stAsk {
-				return m, nil
-			}
-			switch msg.Mouse().Button {
-			case tea.MouseWheelUp:
-				m.nav.cursor--
-			case tea.MouseWheelDown:
-				m.nav.cursor++
-			case tea.MouseLeft:
-				if !isMouseClick(msg) {
-					return m, nil
-				}
-				row := msg.Mouse().Y - 3
-				if msg.Mouse().Y < 3 || row >= m.navigatorRows() || m.nav.offset+row >= len(m.nav.entries) {
-					return m, nil
-				}
-				m.nav.cursor = m.nav.offset + row
-			default:
-				return m, nil
-			}
-			m.nav.clamp(m.navigatorRows())
-			m.navFocused = true
-			m.input.Blur()
-			return m, nil
-		}
-		if m.dialog == nil && m.sessions == nil && m.sidebarVisible() && msg.Mouse().X >= navigatorWidth+3 && msg.Mouse().Y >= 3 && msg.Mouse().Y < 3+m.paneHeight() && msg.Mouse().Button == tea.MouseLeft && isMouseClick(msg) {
-			m.navFocused = false
-			return m, m.input.Focus()
-		}
-		if m.dialog != nil && m.dialog.help {
-			switch msg.Mouse().Button {
-			case tea.MouseWheelDown:
-				m.dialog.offset++
-			case tea.MouseWheelUp:
-				m.dialog.offset = max(m.dialog.offset-1, 0)
-			}
-			return m, nil
-		}
-		// An overlay freezes the background: scroll resumes on close.
-		if m.dialog != nil || m.sessions != nil {
-			return m, nil
-		}
-		// The input never consumes mouse messages, so scroll works in
-		// every state: wheel in ask/done used to fall through and die.
-		return m.scrollViewport(msg)
+		return m.handleMouse(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	default:
-		// Clipboard and other widget messages reach the focused input.
-		// Background panes never consume the active composer's input.
-		if m.state == stPermission && m.gstage == gsReject {
+		switch m.activeInputOwner() {
+		case focusNote:
 			var cmd tea.Cmd
 			m.note, cmd = m.note.Update(msg)
 			return m, cmd
-		}
-		if m.sessions != nil && m.sessions.mode == sessRename {
-			var cmd tea.Cmd
-			m.note, cmd = m.note.Update(msg)
-			return m, cmd
-		}
-		if m.sessions != nil && m.sessions.mode == sessList {
-			var cmd tea.Cmd
-			m.sessions.filter, cmd = m.sessions.filter.Update(msg)
-			return m, cmd
-		}
-		if m.input.Focused() && !m.headerFocused {
+		case focusSearch:
+			return m.updateSearchInput(msg)
+		case focusInput:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			m.fitInput()
 			m.fitBottom()
 			return m, cmd
 		}
+
 	}
 	return m, nil
 }
@@ -320,6 +255,8 @@ func (m *model) scrollViewport(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 func (m *model) handleEvent(ev api.Event) {
+	m.beginTranscriptUpdate()
+	defer m.endTranscriptUpdate()
 	switch ev.Name {
 	case "step":
 		m.steps++
@@ -336,7 +273,7 @@ func (m *model) handleEvent(ev api.Event) {
 		// adopt, calls are work.
 		live := m.live
 		m.live, m.liveCut, m.livePainted = "", false, 0
-		// Reasoning above its reply (TUI-15, user call): the collapsed
+		// Reasoning above its reply: the collapsed
 		// think line introduces the answer it produced, causal order.
 		// Tool calls render as cards below, whatever prompted them.
 		reasoning, _ := ev.Fields["reasoning"].(string)
@@ -388,13 +325,13 @@ func (m *model) handleEvent(ev api.Event) {
 		if p, ok := ev.Fields["prompt"].(float64); ok && int(p) > 0 {
 			m.tokens = int(p)
 			m.tokensEst, _ = ev.Fields["estimated"].(bool)
-			m.contextSource = "Last request prompt"
+			m.usage.source = "Last request prompt"
 			if m.tokensEst {
-				m.contextSource = "Last request estimate"
+				m.usage.source = "Last request estimate"
 			}
-			m.usageAt = time.Now()
-			m.usageThisRun = true
-			m.lastUsage = usageSnapshot{Tokens: m.tokens, Estimated: m.tokensEst, At: m.usageAt, Model: m.modelName}
+			m.usage.at = time.Now()
+			m.usage.thisRun = true
+			m.usage.last = usageSnapshot{Tokens: m.tokens, Estimated: m.tokensEst, At: m.usage.at, Model: m.modelName}
 		}
 	case "awaiting_input":
 		m.closeHeader()
@@ -472,7 +409,7 @@ func (m *model) handleEvent(ev api.Event) {
 		}
 	case "delta":
 		// Streamed chunk: accumulate into the live buffer, repaint on
-		// completed lines or heartbeat (spec P26). No markdown yet
+		// completed lines or heartbeat. No markdown yet
 		// (partial spans would break); the step event brings the
 		// full render.
 		if text, _ := ev.Fields["text"].(string); text != "" && !m.liveCut {
@@ -493,257 +430,3 @@ func (m *model) handleEvent(ev api.Event) {
 		}
 	}
 }
-func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.headerFocused {
-		return m.headerKey(msg)
-	}
-	switch msg.String() {
-	case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10":
-		return m.footerKey(msg)
-	}
-	if msg.String() == "ctrl+q" || msg.String() == "ctrl+c" {
-		m.quit = true
-		m.cancel()
-		return m, tea.Quit
-	}
-	if m.state == stPermission || m.state == stAsk {
-		if msg.String() == "pgup" || msg.String() == "pgdown" || msg.String() == "ctrl+end" {
-			var cmd tea.Cmd
-			if msg.String() == "ctrl+end" {
-				m.gateVP.GotoBottom()
-				return m, nil
-			}
-			m.gateVP, cmd = m.gateVP.Update(msg)
-			return m, cmd
-		}
-	}
-	if m.sessions == nil && m.dialog == nil && m.state != stPermission {
-		switch msg.String() {
-		case "ctrl+end":
-			m.vp.GotoBottom()
-			m.follow = true
-			return m, nil
-		case "ctrl+u":
-			m.input.SetValue("")
-			m.fitInput()
-			m.fitBottom()
-			return m, nil
-		case "ctrl+x":
-			if m.queued != "" {
-				m.queued = ""
-				m.fitBottom()
-				return m, nil
-			}
-		case "ctrl+e":
-			if m.queued != "" && m.state != stAsk {
-				if m.input.Value() != "" {
-					m.appendBlock(markerBlock("Keep or clear the current draft before editing the queue."))
-					return m, nil
-				}
-				m.input.SetValue(m.queued)
-				m.queued = ""
-				m.fitInput()
-				m.fitBottom()
-				return m, m.input.Focus()
-			}
-		}
-	}
-	m.syncSuggestions()
-	commandSelected := len(m.suggestions.items) > 0 && strings.HasPrefix(m.suggestions.items[m.suggestions.selected].value, "/")
-	if m.suggestionKey(msg) {
-		if msg.String() != "enter" || !commandSelected {
-			return m, nil
-		}
-		if m.state == stDone {
-			return m.followUp()
-		}
-		// During a run, queue the completed command through the normal Enter path.
-	}
-	if m.sessions == nil && m.dialog == nil && !m.navFocused && (m.state == stDone || m.state == stAsk || m.state == stRunning) && msg.Mod.Contains(tea.ModAlt) && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
-		m.historyWalk(msg.Code == tea.KeyUp)
-		m.fitInput()
-		m.fitBottom()
-		return m, nil
-	}
-	if m.state != stPermission && m.state != stAsk && m.sessions == nil && m.dialog == nil {
-		switch msg.String() {
-		case "ctrl+p":
-			m.openSessions()
-			return m, nil
-		case "ctrl+b":
-			m.sidebarHidden = !m.sidebarHidden
-			m.fitBottom()
-			m.refreshContent()
-			return m, nil
-		case "tab", "shift+tab":
-			if m.sidebarVisible() {
-				m.navFocused = !m.navFocused
-				if m.navFocused {
-					m.input.Blur()
-				} else {
-					return m, m.input.Focus()
-				}
-				return m, nil
-			}
-		case "ctrl+n":
-			if m.state == stDone {
-				m.navFocused = false
-				m.newChat()
-				return m, m.input.Focus()
-			}
-			return m, nil
-		}
-		if m.navFocused {
-			return m.navigatorKey(msg)
-		}
-	}
-	if m.sessions != nil && m.state != stPermission {
-		// The sessions screen owns its keys like a dialog — except
-		// over a permission gate, which is always on top: its y/n/a
-		// answers must never land in a list.
-		return m.sessionsKey(msg)
-	}
-	if m.dialog != nil {
-		// Takeover: the dialog eats every key but close and quit so
-		// typing can neither reach the input nor toggle state behind it.
-		// Close is esc/enter only: "q" must stay typable for dialogs
-		// with inputs tomorrow.
-		switch msg.String() {
-		case "esc", "enter":
-			m.closeDialog()
-			return m, nil
-		case "ctrl+c":
-			m.quit = true
-			m.cancel()
-			return m, tea.Quit
-		}
-		if m.dialog.help {
-			switch msg.String() {
-			case "tab", "right":
-				m.dialog.page = (m.dialog.page + 1) % len(helpSections())
-				m.dialog.offset = 0
-			case "shift+tab", "left":
-				m.dialog.page = (m.dialog.page + len(helpSections()) - 1) % len(helpSections())
-				m.dialog.offset = 0
-			case "down":
-				m.dialog.offset++
-			case "up":
-				m.dialog.offset = max(m.dialog.offset-1, 0)
-			case "pgdown":
-				m.dialog.offset += max(m.vp.Height()/2, 1)
-			case "pgup":
-				m.dialog.offset = max(m.dialog.offset-max(m.vp.Height()/2, 1), 0)
-			}
-		}
-		return m, nil
-	}
-	if msg.String() == "ctrl+g" {
-		return m.footerKey(tea.KeyPressMsg{Code: tea.KeyF3})
-	}
-
-	switch m.state {
-	case stPermission:
-		return m.gateKey(msg)
-	case stAsk:
-		switch msg.String() {
-		case "esc":
-			if answer := m.input.Value(); answer != "" {
-				if m.gateDraft != "" {
-					answer = m.gateDraft + "\n" + answer
-				}
-				m.input.SetValue(answer)
-				m.gateDraft = ""
-				m.fitInput()
-			}
-			m.interrupted = true
-			m.cancel()
-			m.state = stStopping
-			m.fitBottom()
-			return m, nil
-		case "pgup", "pgdown":
-			// Paging scrolls the transcript in every state; the
-			// input keeps arrows and typing only.
-			return m.scrollViewport(msg)
-		case "enter":
-			m.pushHistory(strings.TrimSpace(m.input.Value()))
-			_ = m.hub.Respond(m.input.Value())
-			m.state = stRunning
-			return m, nil
-		case "ctrl+c", "ctrl+q":
-			m.quit = true
-			m.cancel()
-			return m, tea.Quit
-
-		}
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.fitInput()
-		m.fitBottom()
-		return m, cmd
-	case stDone:
-		switch msg.String() {
-		case "pgup", "pgdown":
-			// Same routing as ask: paging belongs to the transcript.
-			return m.scrollViewport(msg)
-		case "enter":
-			return m.followUp()
-		case "esc":
-			return m, nil
-		case "ctrl+c", "ctrl+q":
-			// Quit lives on ctrl+q (and ctrl+c): a letter key must
-			// never quit, or words starting with q ("queen") become
-			// untypable on an empty box. Empty+enter still quits.
-			m.quit = true
-			m.cancel()
-			return m, tea.Quit
-
-		}
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.fitInput()
-		m.fitBottom()
-		return m, cmd
-	default:
-		switch msg.String() {
-		case "ctrl+c", "ctrl+q":
-			m.quit = true
-			m.cancel()
-			return m, tea.Quit
-		case "esc":
-			if m.state != stStopping {
-				m.interrupted = true
-				m.cancel()
-				m.state = stStopping
-				m.fitBottom()
-			}
-			return m, nil
-		case "enter":
-			if m.state == stStopping {
-				return m, nil
-			}
-			text := strings.TrimSpace(m.input.Value())
-			if text == "" {
-				return m, nil
-			}
-			if m.queued != "" {
-				m.appendBlock(markerBlock("a follow-up is already queued"))
-				return m, nil
-			}
-			m.queued = text
-			m.input.SetValue("")
-			m.appendBlock(markerBlock("queued follow-up: " + truncate(text, 120)))
-			m.fitInput()
-			m.fitBottom()
-			return m, nil
-		case "pgup", "pgdown":
-			return m.scrollViewport(msg)
-		}
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.fitInput()
-		m.fitBottom()
-		return m, cmd
-	}
-}
-
-func isMouseClick(msg tea.MouseMsg) bool { _, ok := msg.(tea.MouseClickMsg); return ok }

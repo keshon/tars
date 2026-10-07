@@ -20,11 +20,11 @@ type footerCell struct {
 
 func (m *model) footerActions() []footerAction {
 	gated := m.state == stPermission || m.state == stAsk
-	chat := !gated && m.dialog == nil && m.sessions == nil && !m.headerFocused
+	chat := !gated && m.dialog == nil && m.sessions == nil && !m.header.focused
 	idle := chat && m.state == stDone
 	return []footerAction{
-		{tea.KeyF1, "F1", "Help", "Help", !gated && m.sessions == nil && !m.headerFocused},
-		{tea.KeyF2, "F2", "Search", "Search", !gated && m.dialog == nil && !m.headerFocused},
+		{tea.KeyF1, "F1", "Help", "Help", !gated && m.sessions == nil && !m.header.focused},
+		{tea.KeyF2, "F2", "Search", "Search", !gated && m.dialog == nil && !m.header.focused},
 		{tea.KeyF3, "F3", "Details", "View", chat},
 		{tea.KeyF4, "F4", "New", "New", idle},
 		{tea.KeyF5, "F5", "Mode", "Mode", idle && !m.mission},
@@ -95,11 +95,11 @@ func (m *model) actionBar() string {
 		if cell.action.key == tea.KeyF3 && !m.compact {
 			label = "Less"
 		}
-		numberStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#77818E")).Background(lipgloss.Color("#20262E"))
-		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#77818E")).Background(lipgloss.Color("#282E36"))
+		numberStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDisabledText)).Background(lipgloss.Color(colorDisabledNumber))
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDisabledText)).Background(lipgloss.Color(colorDisabledLabel))
 		if cell.action.enabled {
-			numberStyle = numberStyle.Foreground(lipgloss.Color("#DCE5EF")).Background(lipgloss.Color("#303944")).Bold(true)
-			labelStyle = labelStyle.Foreground(lipgloss.Color("#F1F4F8")).Background(lipgloss.Color("#526F91"))
+			numberStyle = numberStyle.Foreground(lipgloss.Color(colorNumberText)).Background(lipgloss.Color(colorNumberBackground)).Bold(true)
+			labelStyle = labelStyle.Foreground(lipgloss.Color(colorSelectedText)).Background(lipgloss.Color(colorActionBackground))
 		}
 		row += numberStyle.Render(number) + labelStyle.Render(cellLine(" "+label, cell.end-cell.start-len(number)))
 	}
@@ -146,8 +146,8 @@ func (m *model) footerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.vp.GotoBottom()
 		m.follow = true
 	case tea.KeyF9:
-		m.headerFocused = !m.headerFocused
-		m.headerMenu = ""
+		m.header.focused = !m.header.focused
+		m.header.menu = ""
 	case tea.KeyF10:
 		m.quit = true
 		m.cancel()

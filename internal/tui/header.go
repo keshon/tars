@@ -9,6 +9,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+type headerState struct {
+	focused bool
+	index   int
+	menu    string
+	row     int
+}
+
 type headerBadge struct {
 	id, label  string
 	start, end int
@@ -80,24 +87,24 @@ func (m *model) headerBadges() []headerBadge {
 func (m *model) badgeLine() string {
 	normal, _, selected := popupStyles()
 	badges := m.headerBadges()
-	m.headerIndex = min(max(m.headerIndex, 0), len(badges)-1)
+	index := min(max(m.header.index, 0), len(badges)-1)
 	var out []string
 	for i, b := range badges {
 		style := normal
 		switch b.id {
 		case "mode":
-			style = style.Foreground(lipgloss.Color("#65CCD0"))
+			style = style.Foreground(lipgloss.Color(colorMode))
 		case "activity":
-			color := "#A6C59A"
+			color := colorReady
 			if m.state != stDone {
-				color = "#D7BC7C"
+				color = colorBusy
 			}
 			if m.runErr != nil {
-				color = "#E58F93"
+				color = colorFailed
 			}
 			style = style.Foreground(lipgloss.Color(color))
 		}
-		if m.headerFocused && i == m.headerIndex {
+		if m.header.focused && i == index {
 			style = selected
 		}
 		out = append(out, style.Render(" "+b.label+" "))
@@ -108,9 +115,9 @@ func (m *model) badgeLine() string {
 func (m *model) rawHeaderItems() []headerItem {
 	info := func(s string) headerItem { return headerItem{text: s} }
 	idle := m.state == stDone
-	switch m.headerMenu {
+	switch m.header.menu {
 	case "mode":
-		return []headerItem{info("Act uses tools; Plan allows read-only work."), {"Act mode", "/mode act", idle && !m.mission}, {"Plan mode", "/mode plan", idle && !m.mission}}
+		return []headerItem{{"ACT   Execute changes with tools", "/mode act", idle && !m.mission}, {"PLAN  Read-only exploration and planning", "/mode plan", idle && !m.mission}}
 	case "activity":
 		rows := []headerItem{info("State: " + m.statusWord()), info(fmt.Sprintf("Steps: %d / %d", m.steps, m.maxSteps)), info("Elapsed: " + formatElapsed(m.elapsed))}
 		if m.runErr != nil {
@@ -127,18 +134,18 @@ func (m *model) rawHeaderItems() []headerItem {
 		}
 		return []headerItem{info("Model: " + nonEmpty(m.modelName)), info("Backend: " + nonEmpty(m.backendKind)), info("Endpoint: " + nonEmpty(m.backendURL)), info("Transport: " + transport), info(fmt.Sprintf("Context window: %d tokens", m.limit)), info(fmt.Sprintf("Response budget: %d tokens", m.responseCap))}
 	case "context":
-		rows := []headerItem{info(m.meter()), info("Source: " + nonEmpty(m.contextSource))}
-		if !m.usageAt.IsZero() {
-			rows = append(rows, info("Measured: "+m.usageAt.Format("15:04:05")))
+		rows := []headerItem{info("Context: " + strings.Replace(m.meter(), "ctx ", "", 1)), info("Source: " + nonEmpty(m.usage.source))}
+		if !m.usage.at.IsZero() {
+			rows = append(rows, info("Measured: "+m.usage.at.Format("15:04:05")))
 		}
-		if m.lastUsage.Tokens > 0 {
+		if m.usage.last.Tokens > 0 {
 			kind := "reported"
-			if m.lastUsage.Estimated {
+			if m.usage.last.Estimated {
 				kind = "estimated"
 			}
-			rows = append(rows, info(fmt.Sprintf("Last request: %s tokens (%s)", kTokens(m.lastUsage.Tokens), kind)), info("Request time: "+m.lastUsage.At.Format("Jan 2 15:04:05")))
+			rows = append(rows, info(fmt.Sprintf("Last request: %s tokens (%s)", kTokens(m.usage.last.Tokens), kind)), info("Request time: "+m.usage.last.At.Format("Jan 2 15:04:05")))
 		}
-		if m.contextSource == "Saved history estimate" {
+		if m.usage.source == "Saved history estimate" {
 			rows = append(rows, info("Estimate excludes tool schemas and images."))
 		}
 		return append(rows, headerItem{"Compact saved history", "/compact", idle && !m.mission && m.stateFile != ""})
@@ -155,7 +162,17 @@ func (m *model) rawHeaderItems() []headerItem {
 // Wrap informational rows so full model names, endpoints, and errors remain accessible.
 func (m *model) headerItems() []headerItem {
 	var rows []headerItem
-	for _, item := range m.rawHeaderItems() {
+	items := m.rawHeaderItems()
+	labelWidth := 0
+	for _, item := range items {
+		if label, _, ok := strings.Cut(item.text, ": "); ok && item.command == "" {
+			labelWidth = max(labelWidth, lipgloss.Width(label+":"))
+		}
+	}
+	for _, item := range items {
+		if label, value, ok := strings.Cut(item.text, ": "); ok && item.command == "" {
+			item.text = cellLine(label+":", labelWidth) + "  " + value
+		}
 		if item.command != "" {
 			rows = append(rows, item)
 			continue
@@ -167,16 +184,17 @@ func (m *model) headerItems() []headerItem {
 	return rows
 }
 
-func (m *model) closeHeader() { m.headerFocused = false; m.headerMenu = "" }
+func (m *model) closeHeader() { m.header.focused = false; m.header.menu = "" }
 func (m *model) headerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.normalizeHeader()
 	switch msg.String() {
 	case "ctrl+c", "ctrl+q", "f10":
 		m.quit = true
 		m.cancel()
 		return m, tea.Quit
 	case "esc":
-		if m.headerMenu != "" {
-			m.headerMenu = ""
+		if m.header.menu != "" {
+			m.header.menu = ""
 		} else {
 			m.closeHeader()
 		}
@@ -190,28 +208,28 @@ func (m *model) headerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			delta = -1
 		}
 		badges := m.headerBadges()
-		m.headerIndex = (m.headerIndex + delta + len(badges)) % len(badges)
-		if m.headerMenu != "" {
-			m.headerMenu = badges[m.headerIndex].id
-			m.headerRow = 0
+		m.header.index = (m.header.index + delta + len(badges)) % len(badges)
+		if m.header.menu != "" {
+			m.header.menu = badges[m.header.index].id
+			m.header.row = 0
 		}
 	case "up", "down":
 		delta := 1
 		if msg.String() == "up" {
 			delta = -1
 		}
-		m.headerRow = min(max(m.headerRow+delta, 0), max(len(m.headerItems())-1, 0))
+		m.header.row = min(max(m.header.row+delta, 0), max(len(m.headerItems())-1, 0))
 	case "enter":
-		if m.headerMenu == "" {
-			m.headerMenu = m.headerBadges()[min(m.headerIndex, len(m.headerBadges())-1)].id
-			m.headerRow = 0
+		if m.header.menu == "" {
+			m.header.menu = m.headerBadges()[min(m.header.index, len(m.headerBadges())-1)].id
+			m.header.row = 0
 			return m, nil
 		}
 		items := m.headerItems()
-		if m.headerRow >= len(items) {
+		if m.header.row >= len(items) {
 			return m, nil
 		}
-		item := items[m.headerRow]
+		item := items[m.header.row]
 		if item.enabled && item.command != "" {
 			m.closeHeader()
 			if item.command == "stop" {
@@ -231,15 +249,15 @@ func (m *model) headerGeometry() (x, width, capacity, offset int) {
 	width = min(58, m.termW)
 	x = 0
 	for _, b := range m.headerBadges() {
-		if b.id == m.headerMenu {
+		if b.id == m.header.menu {
 			x = b.start
 			break
 		}
 	}
 	x = min(x, max(m.termW-width, 0))
 	capacity = max(min(len(m.headerItems()), m.termH-m.footerRows()-5), 1)
-	m.headerRow = min(max(m.headerRow, 0), max(len(m.headerItems())-1, 0))
-	offset = max(m.headerRow-capacity+1, 0)
+	row := min(max(m.header.row, 0), max(len(m.headerItems())-1, 0))
+	offset = max(row-capacity+1, 0)
 	return
 }
 func (m *model) overlayHeader(background string) string {
@@ -248,7 +266,7 @@ func (m *model) overlayHeader(background string) string {
 		return background
 	}
 	normal, border, selected := popupStyles()
-	rows := []string{border.Render("┌" + cellLine(" "+strings.ToUpper(m.headerMenu)+" ", width-2) + "┐")}
+	rows := []string{border.Render("┌" + cellLine(" "+strings.ToUpper(m.header.menu)+" ", width-2) + "┐")}
 	items := m.headerItems()
 	for i := offset; i < min(offset+capacity, len(items)); i++ {
 		style := normal
@@ -259,7 +277,7 @@ func (m *model) overlayHeader(background string) string {
 				style = border
 			}
 		}
-		if i == m.headerRow {
+		if i == m.header.row {
 			style = selected
 		}
 		rows = append(rows, border.Render("│")+style.Render(cellLine(prefix+items[i].text, width-2))+border.Render("│"))
@@ -286,19 +304,19 @@ func (m *model) headerMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	if mouse.Button == tea.MouseLeft && isMouseClick(msg) && mouse.Y == 1 {
 		for i, b := range m.headerBadges() {
 			if mouse.X >= b.start && mouse.X < b.end {
-				m.headerFocused = true
-				m.headerIndex = i
-				m.headerMenu = b.id
-				m.headerRow = 0
+				m.header.focused = true
+				m.header.index = i
+				m.header.menu = b.id
+				m.header.row = 0
 				return true, nil
 			}
 		}
 	}
-	if m.headerMenu != "" {
+	if m.header.menu != "" {
 		x, w, capacity, offset := m.headerGeometry()
 		if mouse.Button == tea.MouseLeft && isMouseClick(msg) {
 			if mouse.X >= x && mouse.X < x+w && mouse.Y >= 3 && mouse.Y < 3+capacity {
-				m.headerRow = offset + mouse.Y - 3
+				m.header.row = offset + mouse.Y - 3
 				_, cmd := m.headerKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 				return true, cmd
 			} else {
@@ -306,16 +324,21 @@ func (m *model) headerMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 			}
 		}
 		if mouse.Button == tea.MouseWheelUp {
-			m.headerRow = max(m.headerRow-1, 0)
+			m.header.row = max(m.header.row-1, 0)
 		}
 		if mouse.Button == tea.MouseWheelDown {
-			m.headerRow = min(m.headerRow+1, len(m.headerItems())-1)
+			m.header.row = min(m.header.row+1, len(m.headerItems())-1)
 		}
 		return true, nil
 	}
-	if m.headerFocused && mouse.Button == tea.MouseLeft && isMouseClick(msg) {
+	if m.header.focused && mouse.Button == tea.MouseLeft && isMouseClick(msg) {
 		m.closeHeader()
 		return true, nil
 	}
 	return false, nil
+}
+
+func (m *model) normalizeHeader() {
+	m.header.index = min(max(m.header.index, 0), len(m.headerBadges())-1)
+	m.header.row = min(max(m.header.row, 0), max(len(m.headerItems())-1, 0))
 }

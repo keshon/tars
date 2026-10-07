@@ -15,8 +15,8 @@ import (
 	"github.com/keshon/tars/internal/workspace"
 )
 
-// gateStage is the permission overlay stage (opencode permission.tsx
-// steal: permit -> always-confirm -> reject-with-note). Ask gates keep
+// gateStage is the permission overlay stage: permit, always-confirm,
+// or reject-with-note. Ask gates keep
 // their own path and never touch stages.
 type gateStage int
 

@@ -30,8 +30,9 @@ func (m *model) searchGeometry() searchGeometry {
 }
 
 func (m *model) searchView() string {
-	s := m.sessions
-	m.clampOffset()
+	state := *m.sessions
+	state.clamp(m.sessVisible())
+	s := &state
 	g := m.searchGeometry()
 	normal, border, selected := popupStyles()
 	inner := g.width - 2
@@ -45,6 +46,9 @@ func (m *model) searchView() string {
 		label := "No saved sessions"
 		if query != "" {
 			label = "No matching sessions"
+		}
+		if s.loading {
+			label = "Loading history…"
 		}
 		rows = append(rows, line(label, normal), line("", normal))
 	}
@@ -60,7 +64,7 @@ func (m *model) searchView() string {
 		}
 		ageWidth := min(lipgloss.Width(age), max(inner/3, 1))
 		title := cellLine(mark+e.title, max(inner-ageWidth-1, 1))
-		ageStyle := style.Foreground(lipgloss.Color("#8895A6"))
+		ageStyle := style.Foreground(lipgloss.Color(colorSecondaryText))
 		rows = append(rows, border.Render("│")+highlightSearch(title, query, style)+style.Render(" ")+ageStyle.Render(cellLine(age, ageWidth))+border.Render("│"))
 		text := e.preview
 		if e.matchText != "" {
@@ -70,10 +74,10 @@ func (m *model) searchView() string {
 			text = e.mode
 		}
 		snippet := searchExcerpt(text, query, max(inner-2, 1))
-		rows = append(rows, border.Render("│")+highlightSearch(cellLine("  "+snippet, inner), query, style.Foreground(lipgloss.Color("#8895A6")))+border.Render("│"))
+		rows = append(rows, border.Render("│")+highlightSearch(cellLine("  "+snippet, inner), query, style.Foreground(lipgloss.Color(colorSecondaryText)))+border.Render("│"))
 	}
 	if s.flash != "" {
-		rows = append(rows, line(s.flash, normal.Foreground(lipgloss.Color("#EF8790"))))
+		rows = append(rows, line(s.flash, normal.Foreground(lipgloss.Color(colorPopupError))))
 	}
 	switch s.mode {
 	case sessRename:
@@ -117,7 +121,7 @@ func highlightSearch(text, query string, style lipgloss.Style) string {
 	pos := 0
 	for _, loc := range matches {
 		out.WriteString(style.Render(text[pos:loc[0]]))
-		out.WriteString(style.Foreground(lipgloss.Color("#F3D58A")).Bold(true).Render(text[loc[0]:loc[1]]))
+		out.WriteString(style.Foreground(lipgloss.Color(colorSearchMatch)).Bold(true).Render(text[loc[0]:loc[1]]))
 		pos = loc[1]
 	}
 	out.WriteString(style.Render(text[pos:]))

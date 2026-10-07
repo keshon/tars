@@ -49,7 +49,8 @@ func (m *model) closeDialog() {
 // title, body, close hint. Widths are clamped to the viewport; heights
 // are top-padded to center, the viewport clips the rest.
 func (m *model) dialogView() string {
-	d := m.dialog
+	state := *m.dialog
+	d := &state
 	availW, availH := m.termW, m.termH-3
 	if m.ready {
 		availW, availH = m.vp.Width(), m.vp.Height()
@@ -102,7 +103,7 @@ func renderBox(rows []string, availW, availH int) string {
 			bw = n
 		}
 	}
-	border := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	framed := []string{border.Render("╭" + strings.Repeat("─", bw+2) + "╮")}
 	for _, row := range rows {
 		framed = append(framed, border.Render("│ ")+cellLine(row, bw)+border.Render(" │"))

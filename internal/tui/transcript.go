@@ -15,8 +15,7 @@ import (
 const thinkToggleHint = "Ctrl+G"
 
 // role names the kind of a transcript block. The renderer maps every
-// role to a style + gutter, so unstyled text in the transcript is a
-// bug, never a default (R2).
+// role to a style + gutter, so each role has a stable display identity.
 type role int
 
 const (
@@ -47,7 +46,7 @@ type block struct {
 	at time.Time
 	// bare skips the per-line role gutter: section titles carry a
 	// reference block's identity, so gutters would only restripe it
-	// into fake bullets. Amends R6 (plan TUI-19).
+	// into fake bullets.
 	bare bool
 	// breakBefore opens a turn with extra breathing room above the block
 	// (user echoes, new-task markers). Pane rules stay outside the transcript.
@@ -152,7 +151,7 @@ func (m *model) attachResult(callID, text string, failed ...bool) bool {
 	return false
 }
 
-// gutterWidth is fixed so future wrap math can count it (R6).
+// gutterWidth is fixed for wrap geometry.
 const gutterWidth = 2
 
 // gutterGlyph is the role's unstyled 2-cell left marker. Kept separate
@@ -220,7 +219,7 @@ func thinkSummary(s string) string {
 // think roles run the markdown-lite path (fences/headers/spans);
 // tool args, diffs, gates, and markers stay raw so a glob `*.go` can
 // never toggle bold and diff prefixes survive styling. Lines reflow
-// to width columns (P10-6): the viewport never wraps, so unbroken long
+// to width columns: the viewport never wraps, so unbroken long
 // lines would vanish past the right edge. Continuation fragments take
 // a blank gutter, marking them as wrapped rather than new.
 func renderBlock(b block, st styles, expandThink bool, width int) string {
@@ -457,7 +456,7 @@ func renderMdBlock(b block, raw string, st styles, stamped bool, width int) []st
 				if ml.header {
 					bb = base.Bold(true)
 				}
-				body = renderSpans(f, bb, bb.Bold(true), bb.Foreground(lipgloss.Color("6")), span)
+				body = renderSpans(f, bb, bb.Bold(true), bb.Foreground(lipgloss.Color(colorAccent)), span)
 			}
 			g := ""
 			if !b.bare {
@@ -569,16 +568,30 @@ func (m *model) refreshContent() {
 	if !m.ready {
 		return
 	}
-	var parts []string
+	if m.render.batch > 0 {
+		m.render.dirty = true
+		return
+	}
+	parts := make([]string, 0, len(m.blocks))
+	cache := make([]renderedBlock, len(m.blocks))
 	prevBreak := false
-	for _, b := range m.blocks {
-		part := renderBlock(b, m.styles, !m.compact, m.vp.Width())
+	for i, b := range m.blocks {
+		var rendered renderedBlock
+		if i < len(m.render.cache) && m.render.cache[i].block == b && m.render.cache[i].width == m.vp.Width() && m.render.cache[i].expanded == !m.compact {
+			rendered = m.render.cache[i]
+		} else {
+			rendered = renderedBlock{block: b, width: m.vp.Width(), expanded: !m.compact, text: renderBlock(b, m.styles, !m.compact, m.vp.Width())}
+		}
+		cache[i] = rendered
+		part := rendered.text
 		if b.breakBefore && len(parts) > 0 && !prevBreak {
 			part = "\n" + part
 		}
 		parts = append(parts, part)
 		prevBreak = b.breakBefore
 	}
+	m.render.cache = cache
+
 	content := strings.Join(parts, "\n\n")
 	if m.live != "" {
 		if content != "" {
@@ -671,4 +684,27 @@ func reflow(line string, width int) []string {
 var allRoles = []role{
 	roleAnswer, roleUser, roleThink, roleTool, roleResult,
 	roleGate, roleMission, roleMarker, roleError, roleWarning,
+}
+
+type transcriptRenderState struct {
+	cache []renderedBlock
+	batch int
+	dirty bool
+}
+
+// Cached text belongs to the update loop; View only reads the viewport.
+type renderedBlock struct {
+	block    block
+	width    int
+	expanded bool
+	text     string
+}
+
+func (m *model) beginTranscriptUpdate() { m.render.batch++ }
+func (m *model) endTranscriptUpdate() {
+	m.render.batch--
+	if m.render.batch == 0 && m.render.dirty {
+		m.render.dirty = false
+		m.refreshContent()
+	}
 }

@@ -96,6 +96,7 @@ func TestBrowserSearchUsesWorkspace(t *testing.T) {
 	writeSessionState(t, root, "bbb", userHistory("speed up search"))
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m.openSessions()
+	finishSessionRefresh(t, m)
 	m.sessionsKey(tea.KeyPressMsg{Text: string("repair")})
 	if len(m.sessions.entries) != 1 || m.sessions.entries[0].id != "aaa" {
 		t.Fatal("search did not filter workspace sessions")
@@ -126,6 +127,7 @@ func TestNavigatorCannotSwitchDuringRun(t *testing.T) {
 	}
 	// A gate arriving during browsing takes over both rendering and keys.
 	m.openSessions()
+	finishSessionRefresh(t, m)
 	m.handleEvent(api.Event{Name: "awaiting_input", Fields: map[string]any{"kind": "permission", "prompt": "Run tests?"}})
 	if m.sessions != nil || m.navFocused || m.state != stPermission {
 		t.Fatal("permission gate did not take over")
@@ -155,6 +157,7 @@ func TestFramesFitTerminalCells(t *testing.T) {
 			m.fitBottom()
 			if browser {
 				m.openSessions()
+				finishSessionRefresh(t, m)
 			}
 			lines := strings.Split(m.View().Content, "\n")
 			if len(lines) != size[1] {

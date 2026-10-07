@@ -62,7 +62,7 @@ func TestChatSwitchPreservesDraftAndResetsRunFacts(t *testing.T) {
 		t.Fatal("stale state in second chat")
 	}
 	m.input.SetValue("Second draft")
-	m.sessions = &sessionsState{entries: listSessionsIn(root)}
+	m.sessions = &sessionsState{filter: newSearchInput(80), entries: listSessionsIn(root)}
 	for i, e := range m.sessions.entries {
 		if e.dir == a {
 			m.sessions.cursor = i
@@ -116,7 +116,7 @@ func TestGlobalQuitWorksInEveryPermissionStage(t *testing.T) {
 func TestSessionBrowserMouseSelects(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	m.sessions = &sessionsState{entries: []sessionEntry{{id: "a"}, {id: "b"}}}
+	m.sessions = &sessionsState{filter: newSearchInput(80), entries: []sessionEntry{{id: "a"}, {id: "b"}}}
 	g := m.searchGeometry()
 	m.Update(tea.MouseClickMsg{X: g.x + 2, Y: g.y + 5, Button: tea.MouseLeft})
 	if m.sessions.cursor != 1 {
@@ -231,7 +231,7 @@ func TestPromptTransitionsFitWideAndNarrowTerminals(t *testing.T) {
 func TestBrowserActionsRemainInsideTerminalFrame(t *testing.T) {
 	m := sizeModel(t, testModel())
 	m.state = stDone
-	m.sessions = &sessionsState{entries: []sessionEntry{{id: "a", title: "Saved chat"}}}
+	m.sessions = &sessionsState{filter: newSearchInput(80), entries: []sessionEntry{{id: "a", title: "Saved chat"}}}
 	m.fitBottom()
 	if !strings.Contains(m.View().Content, "╭─ Search") || !strings.Contains(m.View().Content, "Enter open") {
 		t.Fatal("search popup actions clipped")

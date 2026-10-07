@@ -1,6 +1,6 @@
 // Package tui renders a run in the terminal: transcript, status, and
-// gate prompts. It decides nothing — it renders api.Session events and
-// answers gates through a GateHub, the same seam the stdio server uses.
+// gate prompts. It owns UI state and local session actions; agent execution
+// and permissions use api.Session events and GateHub.
 //
 // Print mode remains the default; -tui renders direct, plan, and mission runs.
 package tui
@@ -101,7 +101,8 @@ type model struct {
 	// its doneMsg renders neutrally instead of as an error.
 	interrupted bool
 	// stateFile locates the saved transcript for follow-ups.
-	stateFile string
+	stateFile    string
+	sessionTitle string
 	// ws resolves @file paths against the workspace, escape-checked
 	// like every file tool path. Stored, not rebuilt per turn.
 	ws *workspace.Workspace
@@ -118,22 +119,17 @@ type model struct {
 	// state transitions can resize the viewport to fit the bottom bar.
 	termW int
 	termH int
-	// tokens is the latest backend-reported prompt size; limit is the
+	// tokens is the current prompt measurement or saved-history estimate; limit is the
 	// context window from Env. Together they drive the status meter.
 	tokens int
 	limit  int
 	// tokensEst marks estimated numbers (streaming backends that report
 	// no usage block); the meter prefixes "~" so estimates never pose
 	// as measurements.
-	tokensEst     bool
-	contextSource string
-	usageAt       time.Time
-	lastUsage     usageSnapshot
-	usageThisRun  bool
-	headerFocused bool
-	headerIndex   int
-	headerMenu    string
-	headerRow     int
+	tokensEst bool
+	usage     usageState
+	header    headerState
+
 	// follow tracks viewport stickiness: new blocks auto-scroll only
 	// while the user hasn't scrolled away. Any manual scroll re-arms
 	// on reaching the bottom; End always re-arms.
@@ -157,14 +153,14 @@ type model struct {
 	// cleared with live at every turn boundary.
 	firstToken time.Time
 	// toolsUsed counts tool calls this run; filesTouched collects
-	// observed changed paths. Both reset in startRun with steps and
-	// tokens, and feed the status counters.
+	// observed changed paths. They reset with the step counter in startRun.
 	toolsUsed    int
 	filesTouched map[string]bool
 	// partLines holds rendered line counts per transcript part, kept so
 	// pure re-renders (toggles, resizes) can hold the reader's content
 	// position instead of its offset. See refreshContent.
 	partLines []int
+	render    transcriptRenderState
 	// overlays is the overlay stack (overlay.go); gates are its first
 	// client. gstage/gateTool/gateResource describe the open permission
 	// gate; note is the reject-note input; always remembers run-local
@@ -183,14 +179,17 @@ type model struct {
 	// title/history results with rename/delete. It overlays the existing
 	// panes and owns its keys; like permission prompts it borrows
 	// the note input for rename entry.
-	sessions      *sessionsState
-	nav           sessionsState
-	navFocused    bool
-	sidebarHidden bool
-	drafts        map[string]chatDraft
-	plan          bool
-	mission       bool
-	gateVP        viewport.Model
+	sessions        *sessionsState
+	nav             sessionsState
+	navFocused      bool
+	sidebarHidden   bool
+	sessionIndex    map[string]cachedSession
+	sessionRevision uint64
+	pendingCommands []tea.Cmd
+	drafts          map[string]chatDraft
+	plan            bool
+	mission         bool
+	gateVP          viewport.Model
 	// Status facts snapshotted from cfg at construction for /status:
 	// backend/workspace identity and budgets the run was given.
 	backendKind string

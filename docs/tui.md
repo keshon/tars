@@ -70,6 +70,15 @@ tokens. Context details identify the source and show previous request usage,
 which is saved in optional `usage.json` alongside `state.json`. Missing or
 corrupt usage metadata does not prevent opening a session.
 
+Session scans run in background commands, with revision checks preventing stale
+results from replacing newer state. The sidebar loads session metadata; opening
+Search prepares conversation text. Unchanged histories reuse the session cache.
+Opening old history omits message timestamps because the saved format does not
+record them; live messages retain their actual display times.
+
+The ownership rules and their regression tests are documented in
+[tui-ownership.md](tui-ownership.md).
+
 ## Input and suggestions
 
 The composer sits below the transcript inside the conversation pane; its

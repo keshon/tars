@@ -5,12 +5,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// truncate shortens display strings with a marker (R5). Rune-based:
+// truncate shortens display strings with a marker. Rune-based:
 // a byte slice can split multi-byte UTF-8 and emit invalid output.
 func truncate(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n]) + "…"
+	count := 0
+	for i := range s {
+		if count >= max(n, 0) {
+			return s[:i] + "…"
+		}
+		count++
 	}
+
 	return s
 }
 

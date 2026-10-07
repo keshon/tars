@@ -11,6 +11,13 @@ import (
 	"github.com/keshon/tars/internal/llm"
 )
 
+type usageState struct {
+	source  string
+	at      time.Time
+	last    usageSnapshot
+	thisRun bool
+}
+
 type usageSnapshot struct {
 	Tokens    int       `json:"tokens"`
 	Estimated bool      `json:"estimated"`
@@ -28,8 +35,8 @@ func safeEndpoint(endpoint string) string {
 }
 
 func (m *model) clearContext() {
-	m.tokens, m.tokensEst, m.contextSource = 0, false, ""
-	m.usageAt, m.lastUsage, m.usageThisRun = time.Time{}, usageSnapshot{}, false
+	m.tokens, m.tokensEst, m.usage.source = 0, false, ""
+	m.usage.at, m.usage.last, m.usage.thisRun = time.Time{}, usageSnapshot{}, false
 }
 
 func (m *model) restoreContext(history []llm.Message) {
@@ -44,22 +51,22 @@ func (m *model) restoreContext(history []llm.Message) {
 	}
 	if chars > 0 {
 		m.tokens, m.tokensEst = (chars+3)/4, true
-		m.contextSource = "Saved history estimate"
+		m.usage.source = "Saved history estimate"
 	}
 	if m.stateFile != "" {
 		data, err := os.ReadFile(filepath.Join(filepath.Dir(m.stateFile), "usage.json"))
 		var saved usageSnapshot
 		if err == nil && json.Unmarshal(data, &saved) == nil && saved.Tokens > 0 && saved.Model == m.modelName {
-			m.lastUsage = saved
+			m.usage.last = saved
 		}
 	}
 }
 
 func (m *model) persistUsage() {
-	if !m.usageThisRun || m.stateFile == "" {
+	if !m.usage.thisRun || m.stateFile == "" {
 		return
 	}
-	data, err := json.Marshal(m.lastUsage)
+	data, err := json.Marshal(m.usage.last)
 	if err == nil {
 		_ = os.WriteFile(filepath.Join(filepath.Dir(m.stateFile), "usage.json"), data, 0644)
 	}
